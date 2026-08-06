@@ -1,0 +1,17 @@
+{
+  "name": "@capstone/brand",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "sideEffects": [
+    "./src/*.css"
+  ],
+  "exports": {
+    ".": "./src/index.css",
+    "./styles.css": "./src/index.css",
+    "./fonts.css": "./src/fonts.css",
+    "./tokens.css": "./src/tokens.css",
+    "./tokens.json": "./src/tokens.json",
+    "./assets/*": "./assets/*"
+  }
+}

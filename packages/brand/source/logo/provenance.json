@@ -1,0 +1,30 @@
+{
+  "brand": "CAPSTONE",
+  "package_version": "2.0.0",
+  "logo_revision": "L1 Refined",
+  "approval_date": "2026-07-21",
+  "decision": "The cleaner outlined wordmark in logo-clean was selected as the production master.",
+  "source": {
+    "symbol": "Approved five-stone arch retained without geometric changes",
+    "wordmark": "Custom outlined artwork derived from Urbanist variable weight 750, with bespoke t and optical spacing",
+    "build_dependency": "None; frozen SVG outlines are the only production geometry source"
+  },
+  "master_file_sha256": {
+    "icon.svg": "61bafd3673e1e05bbf0915b9a86c169d2905a9fdca39d0a7478cf0ca84642bf4",
+    "wordmark.svg": "b9c1ec154aa17cba97c6c4540c03399d843db6e3890d5c30ffe4602cf55de873",
+    "primary-approved.svg": "be8a7c3d4fbae4ba8cd0c24ed8e4d48bb2cfad684ea0722989ef48b17fa87569"
+  },
+  "path_data_sha256": {
+    "icon_outer_stones": "ab76418075d93545543fb90cbd5e46fa38e463f1c96f1140524e4c879433690a",
+    "icon_keystone": "acb6c1438c9d3e0fb78a7a244eb7304399e664e6e066d6c4e9aeb292244c1578",
+    "wordmark": "473c52e2e99b6de6031654bbbf71c2dc4814ab1f1757e42435943b5d9a0b731d"
+  },
+  "font_provenance": {
+    "family": "Urbanist",
+    "weight_axis": 750,
+    "license": "SIL Open Font License 1.1",
+    "license_file": "../../licenses/Urbanist-LICENSE.txt",
+    "upstream": "https://github.com/coreyhu/Urbanist"
+  },
+  "historical_reference": "../../source-reference/l1-selected-concept.png"
+}

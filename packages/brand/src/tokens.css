@@ -1,0 +1,71 @@
+:root {
+  /* Core identity */
+  --capstone-navy: #0c2939;
+  --capstone-navy-lift: #123449;
+  --capstone-gold: #e2ab33;
+  --capstone-teal: #008c7e;
+  --capstone-teal-ink: #007265;
+  --capstone-mint: #7fd1c5;
+  --capstone-white: #ffffff;
+  --capstone-paper: #f2f6f5;
+  --capstone-warm-white: #f7f7f4;
+  --capstone-border: #d9dfe1;
+  --capstone-slate: #44565f;
+  --capstone-muted: #5b6b74;
+  --capstone-danger: #b4232a;
+
+  /* Semantic roles */
+  --capstone-surface: var(--capstone-white);
+  --capstone-surface-soft: var(--capstone-paper);
+  --capstone-ink: var(--capstone-navy);
+  --capstone-ink-muted: var(--capstone-muted);
+  --capstone-accent-decisive: var(--capstone-gold);
+  --capstone-accent-guidance: var(--capstone-teal-ink);
+  --capstone-rule: var(--capstone-border);
+
+  /* Typography */
+  --capstone-font-display: 'Bricolage Grotesque', Arial, sans-serif;
+  --capstone-font-body: 'Figtree', Arial, sans-serif;
+  --capstone-font-data: 'IBM Plex Mono', 'Courier New', monospace;
+  --capstone-weight-regular: 400;
+  --capstone-weight-medium: 500;
+  --capstone-weight-semibold: 600;
+  --capstone-weight-bold: 700;
+  --capstone-weight-extrabold: 800;
+
+  /* Type scale */
+  --capstone-type-display-xl: clamp(3.25rem, 5.5vw, 5.125rem);
+  --capstone-type-display-lg: clamp(2.75rem, 4vw, 4rem);
+  --capstone-type-h1: clamp(2.25rem, 3vw, 3.25rem);
+  --capstone-type-h2: clamp(1.75rem, 2.2vw, 2.5rem);
+  --capstone-type-h3: 1.5rem;
+  --capstone-type-body-lg: 1.125rem;
+  --capstone-type-body: 1rem;
+  --capstone-type-small: 0.875rem;
+  --capstone-type-label: 0.75rem;
+
+  /* Layout rhythm */
+  --capstone-space-1: 0.25rem;
+  --capstone-space-2: 0.5rem;
+  --capstone-space-3: 0.75rem;
+  --capstone-space-4: 1rem;
+  --capstone-space-5: 1.5rem;
+  --capstone-space-6: 2rem;
+  --capstone-space-7: 3rem;
+  --capstone-space-8: 4rem;
+  --capstone-space-9: 6rem;
+  --capstone-gutter-wide: 4rem;
+  --capstone-gutter-medium: 1.75rem;
+  --capstone-gutter-small: 1.25rem;
+
+  /* Shape and motion */
+  --capstone-radius-xs: 0.25rem;
+  --capstone-radius-sm: 0.375rem;
+  --capstone-radius-md: 0.625rem;
+  --capstone-shadow-lift: 0 1rem 2.5rem rgb(12 41 57 / 16%);
+  --capstone-duration-fast: 150ms;
+  --capstone-duration-standard: 240ms;
+  --capstone-duration-reveal: 520ms;
+  --capstone-ease-standard: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+

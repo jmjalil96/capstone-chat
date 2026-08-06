@@ -1,0 +1,101 @@
+{
+  "brand": "CAPSTONE",
+  "package_version": "2.0.0",
+  "master_direction": "L1 Refined",
+  "wordmark": "capstone",
+  "geometry_source": "source/logo/master frozen SVG outlines",
+  "coordinate_systems": {
+    "icon": [
+      0,
+      0,
+      368,
+      200
+    ],
+    "wordmark": [
+      0,
+      0,
+      1094,
+      207
+    ],
+    "primary": [
+      0,
+      0,
+      1521,
+      217
+    ],
+    "stacked": [
+      0,
+      0,
+      1094,
+      399
+    ],
+    "primary_on_navy": [
+      0,
+      0,
+      1645,
+      341
+    ],
+    "social_avatar": [
+      0,
+      0,
+      512,
+      512
+    ],
+    "favicon": [
+      0,
+      0,
+      32,
+      32
+    ]
+  },
+  "path_data_sha256": {
+    "icon_outer_stones": "ab76418075d93545543fb90cbd5e46fa38e463f1c96f1140524e4c879433690a",
+    "icon_keystone": "acb6c1438c9d3e0fb78a7a244eb7304399e664e6e066d6c4e9aeb292244c1578",
+    "wordmark": "473c52e2e99b6de6031654bbbf71c2dc4814ab1f1757e42435943b5d9a0b731d"
+  },
+  "clear_space": {
+    "primary": "0.5H around all sides; H equals the visible icon height",
+    "compact_navigation": "0.25H around all sides",
+    "icon": "25% of the icon width around all sides"
+  },
+  "minimum_size": {
+    "primary_digital": "128px wide",
+    "primary_print": "34mm wide",
+    "icon_master": "24px",
+    "favicon_dedicated": "16px"
+  },
+  "colors": {
+    "navy": "#0C2939",
+    "gold": "#E2AB33",
+    "teal_bright": "#008C7E",
+    "teal_ink": "#007265",
+    "white": "#FFFFFF",
+    "black": "#000000",
+    "paper": "#F2F6F5",
+    "warm_white": "#F7F7F4"
+  },
+  "files": [
+    "capstone-favicon.svg",
+    "capstone-icon-micro.svg",
+    "capstone-icon-mono-black.svg",
+    "capstone-icon-mono-navy.svg",
+    "capstone-icon-mono-white.svg",
+    "capstone-icon-reverse.svg",
+    "capstone-icon.svg",
+    "capstone-primary-mono-black.svg",
+    "capstone-primary-mono-navy.svg",
+    "capstone-primary-mono-white.svg",
+    "capstone-primary-on-navy.svg",
+    "capstone-primary-reverse.svg",
+    "capstone-primary.svg",
+    "capstone-safari-pinned-tab.svg",
+    "capstone-social-avatar.svg",
+    "capstone-stacked-mono-black.svg",
+    "capstone-stacked-mono-navy.svg",
+    "capstone-stacked-mono-white.svg",
+    "capstone-stacked-reverse.svg",
+    "capstone-stacked.svg",
+    "capstone-wordmark-white.svg",
+    "capstone-wordmark.svg"
+  ]
+}

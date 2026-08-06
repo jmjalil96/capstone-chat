@@ -1,0 +1,21 @@
+name: capstone-chat
+
+services:
+  postgres:
+    image: postgres:18.4-alpine
+    environment:
+      POSTGRES_DB: capstone_chat
+      POSTGRES_USER: capstone
+      POSTGRES_PASSWORD: capstone
+    ports:
+      - "${CAPSTONE_POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - capstone-postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U capstone -d capstone_chat"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+volumes:
+  capstone-postgres:

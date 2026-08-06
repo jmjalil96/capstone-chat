@@ -1,0 +1,33 @@
+{
+  "brand": "CAPSTONE",
+  "package_version": "2.0.0",
+  "logo_revision": "L1 Refined",
+  "release_date": "2026-07-21",
+  "market_context": "Ecuador",
+  "status": {
+    "visual_identity": "approved production master",
+    "asset_build": "validated",
+    "legal_and_claims": "subject to the launch gates documented in README.md and strategy/claims-validation.md"
+  },
+  "canonical_source": {
+    "icon": "source/logo/master/icon.svg",
+    "wordmark": "source/logo/master/wordmark.svg",
+    "approved_lockup": "source/logo/golden/primary-approved.svg",
+    "source_checksums": "source/logo/MASTER.sha256"
+  },
+  "quality_assurance": {
+    "approved_lockup_pixel_comparison": "0 differing RGBA channel values at 1521 x 217",
+    "logo_matrix": "22 SVG, 32 PNG, 3 ICO frames, 8 vector logo PDFs",
+    "manual": "30 pages rendered and visually inspected with Poppler",
+    "validator": "tools/validate_brand_package.mjs",
+    "release_checklist": "RELEASE-CHECKLIST.md"
+  },
+  "build_environment": {
+    "node": "24.13.0",
+    "npm": "11.6.2",
+    "python": "3.14.3",
+    "chrome": "150.0.7871.129",
+    "platform": "macOS"
+  },
+  "governance_note": "The original AI-generated L1 raster is historical art direction only. Frozen outlined SVGs in source/logo are the production geometry authority."
+}

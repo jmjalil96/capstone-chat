@@ -1,0 +1,26 @@
+{
+  "name": "capstone-chat",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.20.0",
+  "engines": {
+    "node": ">=24.13.0 <25",
+    "pnpm": "11.20.0"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @capstone/protocol build && pnpm --parallel --filter @capstone/api --filter @capstone/web run dev",
+    "build": "pnpm --filter @capstone/protocol build && pnpm --filter @capstone/api build && pnpm --filter @capstone/web build",
+    "test": "pnpm --filter @capstone/protocol build && pnpm --filter @capstone/protocol test && pnpm --filter @capstone/api test && pnpm --filter @capstone/web test",
+    "test:e2e": "pnpm --filter @capstone/protocol build && pnpm --filter @capstone/web test:e2e",
+    "typecheck": "pnpm --filter @capstone/protocol typecheck && pnpm --filter @capstone/api typecheck && pnpm --filter @capstone/web typecheck",
+    "check": "biome check .",
+    "ci": "pnpm check && pnpm typecheck && pnpm test && pnpm build",
+    "db:migrate": "pnpm --filter @capstone/api db:migrate"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.7",
+    "@types/node": "24.13.3",
+    "typescript": "7.0.2"
+  }
+}

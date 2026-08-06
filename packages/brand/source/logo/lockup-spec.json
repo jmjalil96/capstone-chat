@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "logo_revision": "2.0.0",
+  "coordinate_systems": {
+    "icon": [0, 0, 368, 200],
+    "wordmark": [0, 0, 1094, 207],
+    "primary": [0, 0, 1521, 217],
+    "stacked": [0, 0, 1094, 399],
+    "primary_on_navy": [0, 0, 1645, 341],
+    "social_avatar": [0, 0, 512, 512],
+    "favicon": [0, 0, 32, 32]
+  },
+  "primary": {
+    "icon_transform": null,
+    "wordmark_transform": "translate(427 10)"
+  },
+  "stacked": {
+    "icon_transform": "translate(394.875 0) scale(.842391)",
+    "wordmark_transform": "translate(0 192)"
+  },
+  "primary_on_navy": {
+    "padding": 62,
+    "content_transform": "translate(62 62)"
+  },
+  "social_avatar": {
+    "corner_radius": 72,
+    "icon_transform": "translate(120 182.087) scale(.73913)"
+  },
+  "favicon": {
+    "corner_radius": 5,
+    "icon_transform": "translate(4 9.478) scale(.065217)"
+  },
+  "colors": {
+    "navy": "#0C2939",
+    "gold": "#E2AB33",
+    "teal_bright": "#008C7E",
+    "teal_ink": "#007265",
+    "white": "#FFFFFF",
+    "black": "#000000",
+    "paper": "#F2F6F5",
+    "warm_white": "#F7F7F4"
+  }
+}
