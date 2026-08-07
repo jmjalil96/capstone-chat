@@ -1,7 +1,53 @@
 # Phase 2 — Identity Implementation Plan
 
-Status: proposed for approval  
-Code authorization: not granted
+Status: implemented and accepted; the local-delivery amendment was approved by the user on 2026-08-06
+
+Code authorization: granted by the user on 2026-08-06
+
+## Implementation record
+
+- Phase 1 baseline: commit `13140c5` (`Add Phase 1 foundation`). Its `check`, `typecheck`,
+  `test`, and `build` gates passed before Phase 2 changes began.
+- Identity dependencies: Better Auth `1.6.26`, `@better-auth/drizzle-adapter` `1.6.26`, and
+  the pinned `auth` CLI `1.6.26`. The selected release is compatible with the repository's pinned
+  Node.js 24, TypeScript 7, Fastify 5, Drizzle ORM 0.45, PostgreSQL 18, React 19, and Vite 8
+  toolchain.
+- The reviewed Better Auth Drizzle definitions regenerate without a database connection through
+  `pnpm --filter @capstone/api auth:schema:generate`. The command uses the committed CLI-only
+  configuration at `apps/api/src/auth/schema-generation.ts` and never invokes an unpinned remote
+  package.
+- Sessions expire after seven days, update after one day, and are fresh for 15 minutes. Cookie
+  session caching is disabled.
+- The ordinary authentication rate limit is 100 requests per 60 seconds. Stricter limits are five
+  sign-in requests per 60 seconds, ten verification requests per 60 seconds, three verification
+  resend requests per 15 minutes, three password-recovery requests per 15 minutes, and five
+  password-reset requests per 15 minutes. Better Auth's database retention horizon is also set to
+  15 minutes while an explicit catch-all preserves the effective 60-second ordinary rule; this
+  prevents its cleanup pass from prematurely deleting the longer custom counters.
+- Authentication request bodies are limited to 16 KiB, and the development fake mailbox retains
+  at most 100 deliveries.
+- `trustProxy` is `false` in every Phase 2 environment. Better Auth receives only the client address
+  derived by Fastify and placed in the server-owned internal header; browser forwarding headers
+  are not trusted.
+- The development Vite server binds and advertises `localhost`, matching the default
+  `PUBLIC_ORIGIN`. A configuration regression test keeps that exact local origin aligned; custom
+  web ports must also be reflected in `PUBLIC_ORIGIN`.
+- No production transactional-email provider, deployment venue, static host, secret-manager
+  integration, or edge proxy is selected. Fake delivery is refused in production;
+  `EMAIL_DELIVERY=disabled` is an explicit non-launch configuration until Phase 8 supplies
+  deployment wiring and a real provider.
+- Approved local-delivery amendment (user approval, 2026-08-06): the required fake sender is process-local, so a
+  standalone operator CLI process cannot populate the separately running API process's mailbox.
+  Operator results expose only the non-secret `/sign-up` path, while the browser suite exercises
+  invitation links with a fake sender shared by its in-process API harness. The approval workflow,
+  verification delivery, and recovery delivery remain covered; acceptance steps 5 and 8 cannot
+  literally retrieve the CLI invitation from another process without replacing the required
+  in-memory transport or adding forbidden persistence or an administration endpoint.
+- Final repository verification passed 142 protocol, API, PostgreSQL integration, and web unit
+  tests plus formatting, strict type checking, and production builds. `pnpm test:e2e` passed all
+  five Chromium tests. Pinned auth-schema regeneration was byte-identical. The production API image
+  built successfully, runs as non-root `node`, and contains the compiled runtime and committed SQL
+  migrations. `git diff --check` passed.
 
 ## Objective
 
@@ -9,7 +55,9 @@ Add the smallest complete identity boundary for Capstone Chat: approved employee
 
 Phase 2 makes authentication and authorization production-shaped, but it is not a production launch and it is not a partial implementation of conversations or the Phase 7 administration experience.
 
-The implementation choices described by this plan are proposed, not locked. Approving the plan makes them the Phase 2 baseline; it does not authorize code until code authorization is granted explicitly.
+The user approved the implementation choices in this plan and granted Phase 2 code authorization.
+They are the implemented Phase 2 baseline. The user approved the process-local invitation
+amendment on 2026-08-06, completing Phase 2 acceptance.
 
 ## Required context
 

@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
-import { defineConfig, loadEnv } from "vite";
+import { defineConfig, loadEnv, type UserConfig } from "vite";
 
 const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -14,14 +14,18 @@ function readPort(value: string | undefined, fallback: number, name: string): nu
   return port;
 }
 
-export default defineConfig(({ mode }) => {
-  const environment = loadEnv(mode, repositoryRoot, ["CAPSTONE_WEB_", "PORT"]);
+interface ViteEnvironment {
+  readonly CAPSTONE_WEB_PORT?: string;
+  readonly PORT?: string;
+}
+
+export function createViteConfig(environment: ViteEnvironment): UserConfig {
   const apiPort = readPort(environment.PORT, 3000, "PORT");
 
   return {
     plugins: [react()],
     server: {
-      host: "127.0.0.1",
+      host: "localhost",
       port: readPort(environment.CAPSTONE_WEB_PORT, 5173, "CAPSTONE_WEB_PORT"),
       strictPort: true,
       proxy: {
@@ -36,4 +40,9 @@ export default defineConfig(({ mode }) => {
       strictPort: true,
     },
   };
+}
+
+export default defineConfig(({ mode }) => {
+  const environment = loadEnv(mode, repositoryRoot, ["CAPSTONE_WEB_", "PORT"]);
+  return createViteConfig(environment);
 });

@@ -11,11 +11,15 @@
     "migrations"
   ],
   "scripts": {
+    "auth:schema:generate": "auth generate --config src/auth/schema-generation.ts --output src/database/auth-schema.generated.ts --adapter drizzle --dialect postgresql --yes && biome check --write src/database/auth-schema.generated.ts",
     "build": "tsc -p tsconfig.build.json",
     "check": "biome check .",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/database/migrate-command.ts",
     "dev": "tsx watch src/server.ts",
+    "identity:approve": "tsx src/operator/identity-command.ts approve",
+    "identity:bootstrap": "tsx src/operator/identity-command.ts bootstrap",
+    "identity:deactivate": "tsx src/operator/identity-command.ts deactivate",
     "migrate": "tsx src/database/migrate-command.ts",
     "migrate:production": "node dist/database/migrate-command.js",
     "start": "node dist/server.js",
@@ -23,8 +27,10 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@better-auth/drizzle-adapter": "1.6.26",
     "@capstone/protocol": "workspace:*",
     "@fastify/type-provider-typebox": "6.1.0",
+    "better-auth": "1.6.26",
     "dotenv": "17.4.2",
     "drizzle-orm": "0.45.2",
     "fastify": "5.11.2",
@@ -35,6 +41,7 @@
     "@testcontainers/postgresql": "12.1.0",
     "@types/node": "24.13.3",
     "@types/pg": "8.20.4",
+    "auth": "1.6.26",
     "drizzle-kit": "0.31.10",
     "testcontainers": "12.1.0",
     "tsx": "4.23.9",

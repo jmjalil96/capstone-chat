@@ -1,24 +1,134 @@
 export const copy = {
   brand: {
     homeLabel: "Ir al inicio de Capstone Chat",
+    pageTitle: (title: string) => `${title} | Capstone Chat`,
   },
-  foundation: {
-    eyebrow: "Estado del servicio",
+  service: {
     loading: {
-      title: "Verificando disponibilidad",
-      description: "Estamos comprobando la conexión con el servicio.",
       status: "Verificando el servicio",
     },
     ready: {
-      title: "Capstone Chat está listo",
-      description: "La aplicación y sus servicios esenciales están disponibles.",
       status: "Servicio disponible",
     },
     unavailable: {
-      title: "Capstone Chat no está disponible",
-      description:
-        "No pudimos confirmar la conexión con el servicio. Inténtalo de nuevo en unos momentos.",
       status: "Servicio no disponible",
+    },
+  },
+  identity: {
+    common: {
+      emailLabel: "Correo electrónico",
+      nameLabel: "Nombre",
+      currentPasswordLabel: "Contraseña actual",
+      newPasswordLabel: "Nueva contraseña",
+      confirmPasswordLabel: "Confirmar contraseña",
+      passwordLabel: "Contraseña",
+      passwordHelp: "Usa entre 12 y 128 caracteres.",
+      validationSummary: "Revisa los campos indicados.",
+      required: "Este campo es obligatorio.",
+      invalidEmail: "Escribe un correo electrónico válido.",
+      invalidPasswordLength: "La contraseña debe tener entre 12 y 128 caracteres.",
+      passwordsDoNotMatch: "Las contraseñas no coinciden.",
+      genericError: "No pudimos completar la solicitud. Inténtalo de nuevo.",
+      goToSignIn: "Ir a iniciar sesión",
+      backToHome: "Volver al inicio",
+    },
+    signIn: {
+      eyebrow: "Acceso",
+      title: "Inicia sesión",
+      description: "Usa tu correo de Capstone y tu contraseña.",
+      submit: "Iniciar sesión",
+      submitting: "Iniciando sesión…",
+      error:
+        "No pudimos iniciar sesión. Revisa tus datos o verifica tu correo e inténtalo de nuevo.",
+      forgotPassword: "¿Olvidaste tu contraseña?",
+      signUpPrompt: "¿Recibiste una invitación?",
+      signUpLink: "Crear cuenta",
+    },
+    signUp: {
+      eyebrow: "Invitación",
+      title: "Crea tu cuenta",
+      description: "Completa tus datos con el correo que recibió la invitación.",
+      submit: "Crear cuenta",
+      submitting: "Enviando solicitud…",
+      successTitle: "Revisa tu correo",
+      success:
+        "Si los datos corresponden a una invitación vigente, recibirás un enlace para verificar tu correo.",
+      signInPrompt: "¿Ya tienes una cuenta?",
+      signInLink: "Iniciar sesión",
+    },
+    verifyEmail: {
+      eyebrow: "Verificación",
+      title: "Verifica tu correo",
+      description: "Abre el enlace que enviamos a tu correo para continuar.",
+      verifiedTitle: "Correo verificado",
+      verified: "Tu correo quedó verificado. Ya puedes iniciar sesión.",
+      invalidTitle: "El enlace no es válido",
+      invalid: "El enlace venció o ya fue utilizado. Puedes solicitar uno nuevo con tu correo.",
+      resendTitle: "Enviar un enlace nuevo",
+      resend: "Enviar enlace",
+      resending: "Enviando enlace…",
+      resendSuccess:
+        "Si el correo corresponde a una cuenta pendiente, enviaremos un enlace de verificación.",
+    },
+    forgotPassword: {
+      eyebrow: "Recuperación",
+      title: "Recupera tu contraseña",
+      description: "Escribe tu correo y te enviaremos instrucciones para continuar.",
+      submit: "Enviar instrucciones",
+      submitting: "Enviando instrucciones…",
+      successTitle: "Revisa tu correo",
+      success:
+        "Si el correo corresponde a una cuenta, enviaremos un enlace para restablecer la contraseña.",
+    },
+    resetPassword: {
+      eyebrow: "Recuperación",
+      title: "Crea una contraseña nueva",
+      description: "La nueva contraseña cerrará todas tus sesiones activas.",
+      submit: "Guardar contraseña",
+      submitting: "Guardando contraseña…",
+      successTitle: "Contraseña actualizada",
+      success: "Tu contraseña cambió y cerramos todas tus sesiones. Ya puedes iniciar sesión.",
+      invalidTitle: "El enlace no es válido",
+      invalid: "El enlace venció o ya fue utilizado. Solicita nuevas instrucciones para continuar.",
+      requestNewLink: "Solicitar otro enlace",
+    },
+    security: {
+      eyebrow: "Cuenta",
+      title: "Seguridad de la cuenta",
+      description:
+        "Cambia tu contraseña. Cerraremos tus otras sesiones y mantendremos activa esta.",
+      submit: "Cambiar contraseña",
+      submitting: "Cambiando contraseña…",
+      success: "Contraseña actualizada. Cerramos tus otras sesiones y esta sesión sigue activa.",
+      error: "No pudimos cambiar la contraseña. Revisa tu contraseña actual e inténtalo de nuevo.",
+    },
+    checkpoint: {
+      eyebrow: "Sesión activa",
+      documentTitle: "Inicio",
+      title: (name: string) => `Hola, ${name}`,
+      description: "Tu identidad y acceso al espacio de trabajo están confirmados.",
+      employee: "Empleado",
+      email: "Correo",
+      workspace: "Espacio de trabajo",
+      role: "Rol",
+      securityLink: "Seguridad de la cuenta",
+      signOut: "Cerrar sesión",
+      signingOut: "Cerrando sesión…",
+      signOutError: "No pudimos cerrar la sesión. Inténtalo de nuevo.",
+    },
+    roles: {
+      admin: "Administrador",
+      member: "Miembro",
+    },
+    route: {
+      loading: "Cargando tu sesión",
+      unavailableTitle: "No pudimos cargar tu sesión",
+      unavailable:
+        "El servicio no respondió como esperábamos. Inténtalo de nuevo en unos momentos.",
+      retry: "Intentar de nuevo",
+      deniedTitle: "Tu acceso no está activo",
+      denied:
+        "Tu cuenta no tiene acceso activo a este espacio de trabajo. Si crees que es un error, contacta al equipo responsable.",
     },
   },
 } as const;

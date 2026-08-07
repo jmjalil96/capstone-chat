@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import { loadConfig, publicConfigMetadata } from "../src/config.js";
 
 const productionEnvironment = {
+  BETTER_AUTH_SECRET: "production-auth-secret-with-at-least-thirty-two-characters",
   DATABASE_URL: "postgresql://app:secret@database.internal:5432/capstone",
+  EMAIL_DELIVERY: "disabled",
   NODE_ENV: "production",
   PUBLIC_ORIGIN: "https://chat.capstone.example",
 } satisfies NodeJS.ProcessEnv;
@@ -12,12 +14,15 @@ describe("loadConfig", () => {
     const config = loadConfig({});
 
     expect(config).toEqual({
+      authSecret: "capstone-chat-local-auth-secret-not-for-production-use",
       databaseUrl: "postgresql://capstone:capstone@127.0.0.1:5432/capstone_chat",
+      emailDelivery: "fake",
       host: "127.0.0.1",
       logLevel: "info",
       nodeEnv: "development",
       port: 3000,
       publicOrigin: "http://localhost:5173",
+      trustProxy: false,
     });
     expect(Object.isFrozen(config)).toBe(true);
   });
@@ -33,6 +38,7 @@ describe("loadConfig", () => {
     });
 
     expect(config).toMatchObject({
+      emailDelivery: "fake",
       host: "0.0.0.0",
       logLevel: "debug",
       nodeEnv: "test",
@@ -43,6 +49,7 @@ describe("loadConfig", () => {
 
   it.each([
     [{ NODE_ENV: "production", PUBLIC_ORIGIN: "https://chat.capstone.example" }, "DATABASE_URL"],
+    [{ ...productionEnvironment, BETTER_AUTH_SECRET: undefined }, "BETTER_AUTH_SECRET"],
     [
       {
         DATABASE_URL: "postgresql://database.internal/capstone",
@@ -54,6 +61,10 @@ describe("loadConfig", () => {
     [{ ...productionEnvironment, PORT: "0" }, "PORT"],
     [{ ...productionEnvironment, DATABASE_URL: "https://database.internal/capstone" }, "postgres"],
     [{ ...productionEnvironment, LOG_LEVEL: "verbose" }, "LOG_LEVEL"],
+    [{ ...productionEnvironment, BETTER_AUTH_SECRET: "too-short" }, "32 characters"],
+    [{ ...productionEnvironment, EMAIL_DELIVERY: "fake" }, "prohibited"],
+    [{ ...productionEnvironment, EMAIL_DELIVERY: "provider" }, "fake or disabled"],
+    [{ ...productionEnvironment, EMAIL_DELIVERY: undefined }, "EMAIL_DELIVERY"],
   ] satisfies [NodeJS.ProcessEnv, string][])(
     "rejects invalid production configuration %#",
     (environment, message) => {
@@ -65,6 +76,7 @@ describe("loadConfig", () => {
     const metadata = publicConfigMetadata(loadConfig(productionEnvironment));
 
     expect(metadata).not.toHaveProperty("databaseUrl");
+    expect(metadata).not.toHaveProperty("authSecret");
     expect(JSON.stringify(metadata)).not.toContain("secret");
     expect(Object.isFrozen(metadata)).toBe(true);
   });

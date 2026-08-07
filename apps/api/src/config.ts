@@ -7,14 +7,18 @@ const logLevels = ["fatal", "error", "warn", "info", "debug", "trace", "silent"]
 
 export type RuntimeMode = (typeof runtimeModes)[number];
 export type LogLevel = (typeof logLevels)[number];
+export type EmailDelivery = "disabled" | "fake";
 
 export interface ApiConfig {
+  readonly authSecret: string;
   readonly databaseUrl: string;
+  readonly emailDelivery: EmailDelivery;
   readonly host: string;
   readonly logLevel: LogLevel;
   readonly nodeEnv: RuntimeMode;
   readonly port: number;
   readonly publicOrigin: string;
+  readonly trustProxy: false;
 }
 
 const developmentDefaults = {
@@ -22,6 +26,7 @@ const developmentDefaults = {
   host: "127.0.0.1",
   port: 3000,
   publicOrigin: "http://localhost:5173",
+  authSecret: "capstone-chat-local-auth-secret-not-for-production-use",
 } as const;
 
 function isIncluded<const T extends string>(values: readonly T[], value: string): value is T {
@@ -40,7 +45,7 @@ function readRuntimeMode(value: string | undefined): RuntimeMode {
 
 function readRequired(
   source: NodeJS.ProcessEnv,
-  key: "DATABASE_URL" | "PUBLIC_ORIGIN",
+  key: "BETTER_AUTH_SECRET" | "DATABASE_URL" | "PUBLIC_ORIGIN",
   fallback: string | undefined,
 ): string {
   const value = source[key]?.trim() || fallback;
@@ -50,6 +55,38 @@ function readRequired(
   }
 
   return value;
+}
+
+function readAuthSecret(source: NodeJS.ProcessEnv, mode: RuntimeMode): string {
+  const secret = readRequired(
+    source,
+    "BETTER_AUTH_SECRET",
+    mode === "production" ? undefined : developmentDefaults.authSecret,
+  );
+
+  if (secret.length < 32) {
+    throw new Error("BETTER_AUTH_SECRET must contain at least 32 characters");
+  }
+
+  return secret;
+}
+
+function readEmailDelivery(value: string | undefined, mode: RuntimeMode): EmailDelivery {
+  const delivery = value?.trim() || (mode === "production" ? undefined : "fake");
+
+  if (delivery === undefined) {
+    throw new Error("EMAIL_DELIVERY is required in production");
+  }
+
+  if (delivery !== "fake" && delivery !== "disabled") {
+    throw new Error("EMAIL_DELIVERY must be fake or disabled");
+  }
+
+  if (mode === "production" && delivery === "fake") {
+    throw new Error("EMAIL_DELIVERY=fake is prohibited in production");
+  }
+
+  return delivery;
 }
 
 function readHost(value: string | undefined, mode: RuntimeMode): string {
@@ -156,21 +193,26 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): Readonly<Ap
   );
 
   return Object.freeze({
+    authSecret: readAuthSecret(source, nodeEnv),
     databaseUrl,
+    emailDelivery: readEmailDelivery(source.EMAIL_DELIVERY, nodeEnv),
     host: readHost(source.HOST, nodeEnv),
     logLevel: readLogLevel(source.LOG_LEVEL, nodeEnv),
     nodeEnv,
     port: readPort(source.PORT),
     publicOrigin,
+    trustProxy: false,
   });
 }
 
 export function publicConfigMetadata(config: ApiConfig): Readonly<Record<string, unknown>> {
   return Object.freeze({
+    emailDelivery: config.emailDelivery,
     host: config.host,
     logLevel: config.logLevel,
     nodeEnv: config.nodeEnv,
     port: config.port,
     publicOrigin: config.publicOrigin,
+    trustProxy: config.trustProxy,
   });
 }

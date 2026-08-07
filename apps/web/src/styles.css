@@ -10,6 +10,7 @@
   --app-text: var(--capstone-ink);
   --app-text-muted: var(--capstone-ink-muted);
   --app-border: var(--capstone-rule);
+  --app-control-border: var(--capstone-muted);
   --app-action: var(--capstone-accent-guidance);
   --app-accent: var(--capstone-accent-decisive);
   --app-danger: var(--capstone-danger);
@@ -41,11 +42,22 @@ select {
   font: inherit;
 }
 
+a {
+  color: var(--app-action);
+  font-weight: var(--capstone-weight-semibold);
+  text-underline-offset: 0.18em;
+}
+
+a:hover {
+  text-decoration-thickness: 2px;
+}
+
 a:focus-visible,
 button:focus-visible,
 input:focus-visible,
 textarea:focus-visible,
-select:focus-visible {
+select:focus-visible,
+[tabindex="-1"]:focus-visible {
   outline: 3px solid var(--app-action);
   outline-offset: 3px;
 }
@@ -54,7 +66,7 @@ select:focus-visible {
   min-height: 100vh;
 }
 
-.foundation-shell {
+.app-shell {
   min-height: 100svh;
   display: grid;
   grid-template-rows: auto 1fr;
@@ -63,6 +75,10 @@ select:focus-visible {
 
 .site-header {
   width: min(100%, 72rem);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--capstone-space-5);
   margin-inline: auto;
   padding-block-end: var(--capstone-space-5);
   border-bottom: 1px solid var(--app-border);
@@ -85,15 +101,55 @@ select:focus-visible {
   height: auto;
 }
 
-.foundation-main {
+.service-status,
+.route-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--capstone-space-2);
+  margin: 0;
+  color: var(--app-text-muted);
+  font-family: var(--capstone-font-data);
+  font-size: var(--capstone-type-label);
+  font-weight: var(--capstone-weight-medium);
+  line-height: 1.5;
+}
+
+.status-marker {
+  width: 0.65rem;
+  height: 0.65rem;
+  flex: 0 0 auto;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+}
+
+.service-status[data-state="loading"] .status-marker,
+.route-status .status-marker {
+  animation: status-pulse var(--capstone-duration-reveal) var(--capstone-ease-standard) infinite
+    alternate;
+}
+
+.service-status[data-state="ready"] {
+  color: var(--app-action);
+}
+
+.service-status[data-state="ready"] .status-marker,
+.service-status[data-state="unavailable"] .status-marker {
+  background: currentColor;
+}
+
+.service-status[data-state="unavailable"] {
+  color: var(--app-danger);
+}
+
+.identity-main {
   width: 100%;
   display: grid;
   place-items: center;
-  padding-block: clamp(var(--capstone-space-7), 10vh, var(--capstone-space-9));
+  padding-block: clamp(var(--capstone-space-7), 9vh, var(--capstone-space-9));
 }
 
-.foundation-panel {
-  width: min(100%, 42rem);
+.identity-panel {
+  width: min(100%, 36rem);
   padding: clamp(var(--capstone-space-6), 6vw, var(--capstone-space-8));
   background: var(--app-panel);
   border: 1px solid var(--app-border);
@@ -101,7 +157,11 @@ select:focus-visible {
   border-radius: var(--capstone-radius-md);
 }
 
-.foundation-eyebrow {
+.identity-panel[data-wide="true"] {
+  width: min(100%, 48rem);
+}
+
+.identity-eyebrow {
   margin: 0 0 var(--capstone-space-4);
   color: var(--app-action);
   font-family: var(--capstone-font-data);
@@ -112,64 +172,209 @@ select:focus-visible {
   text-transform: uppercase;
 }
 
-.foundation-panel h1 {
-  max-width: 13ch;
+.identity-panel h1 {
+  max-width: 15ch;
   margin: 0;
   font-family: var(--capstone-font-display);
   font-size: var(--capstone-type-h1);
   font-weight: var(--capstone-weight-bold);
   letter-spacing: -0.035em;
-  line-height: 1.05;
+  line-height: 1.08;
 }
 
-.foundation-description {
+.identity-description {
   max-width: 36rem;
-  margin: var(--capstone-space-5) 0 0;
+  margin: var(--capstone-space-4) 0 0;
   color: var(--app-text-muted);
   font-size: var(--capstone-type-body-lg);
-  line-height: 1.6;
+  line-height: 1.55;
 }
 
-.foundation-status {
-  display: flex;
-  align-items: center;
-  gap: var(--capstone-space-3);
+.identity-form {
+  display: grid;
+  gap: var(--capstone-space-5);
+  margin-block-start: var(--capstone-space-6);
+}
+
+.form-heading {
   margin: var(--capstone-space-6) 0 0;
-  padding-block-start: var(--capstone-space-5);
-  border-top: 1px solid var(--app-border);
+  font-family: var(--capstone-font-body);
+  font-size: var(--capstone-type-body-lg);
+  line-height: 1.4;
+}
+
+.form-field {
+  display: grid;
+  gap: var(--capstone-space-2);
+}
+
+.form-field label,
+.field-label-row label {
   font-size: var(--capstone-type-small);
   font-weight: var(--capstone-weight-semibold);
+  line-height: 1.4;
+}
+
+.field-label-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--capstone-space-4);
+}
+
+.field-label-row a {
+  font-size: var(--capstone-type-small);
+}
+
+.form-field input {
+  width: 100%;
+  min-height: 2.9rem;
+  padding: var(--capstone-space-3) var(--capstone-space-4);
+  background: var(--app-panel);
+  border: 1px solid var(--app-control-border);
+  border-radius: var(--capstone-radius-sm);
+  color: var(--app-text);
+  transition:
+    border-color var(--capstone-duration-fast) var(--capstone-ease-standard),
+    box-shadow var(--capstone-duration-fast) var(--capstone-ease-standard);
+}
+
+.form-field input:hover {
+  border-color: var(--app-text-muted);
+}
+
+.form-field input[aria-invalid="true"] {
+  border-color: var(--app-danger);
+}
+
+.field-help,
+.field-error {
+  margin: 0;
+  font-size: var(--capstone-type-small);
+  line-height: 1.45;
+}
+
+.field-help {
+  color: var(--app-text-muted);
+}
+
+.field-error {
+  color: var(--app-danger);
+  font-weight: var(--capstone-weight-medium);
+}
+
+.form-message {
+  padding: var(--capstone-space-3) var(--capstone-space-4);
+  border-inline-start: 3px solid var(--app-action);
+  background: var(--app-panel-soft);
+  font-size: var(--capstone-type-small);
+  font-weight: var(--capstone-weight-medium);
   line-height: 1.5;
 }
 
-.status-marker {
-  width: 0.75rem;
-  height: 0.75rem;
-  flex: 0 0 auto;
-  border: 2px solid currentColor;
-  border-radius: 50%;
+.form-message[data-kind="error"] {
+  border-inline-start-color: var(--app-danger);
 }
 
-.foundation-shell[data-state="loading"] .foundation-status {
+.primary-button,
+.secondary-button {
+  min-height: 2.9rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--capstone-space-2);
+  padding: var(--capstone-space-3) var(--capstone-space-5);
+  border: 1px solid var(--app-action);
+  border-radius: var(--capstone-radius-sm);
+  font-weight: var(--capstone-weight-semibold);
+  line-height: 1.4;
+  text-align: center;
+  text-decoration: none;
+  cursor: pointer;
+  transition:
+    background-color var(--capstone-duration-fast) var(--capstone-ease-standard),
+    color var(--capstone-duration-fast) var(--capstone-ease-standard);
+}
+
+.primary-button {
+  background: var(--app-action);
+  color: var(--capstone-white);
+}
+
+.primary-button:hover {
+  background: var(--app-text);
+  border-color: var(--app-text);
+  color: var(--capstone-white);
+}
+
+.secondary-button {
+  background: transparent;
   color: var(--app-action);
 }
 
-.foundation-shell[data-state="loading"] .status-marker {
-  animation: status-pulse var(--capstone-duration-reveal) var(--capstone-ease-standard) infinite
-    alternate;
+.secondary-button:hover {
+  background: var(--app-panel-soft);
 }
 
-.foundation-shell[data-state="ready"] .foundation-status {
-  color: var(--app-action);
+.primary-button:disabled,
+.secondary-button:disabled {
+  cursor: wait;
+  opacity: 0.65;
 }
 
-.foundation-shell[data-state="ready"] .status-marker,
-.foundation-shell[data-state="unavailable"] .status-marker {
-  background: currentColor;
+.text-link {
+  display: inline-block;
+  margin-block-start: var(--capstone-space-5);
 }
 
-.foundation-shell[data-state="unavailable"] .foundation-status {
-  color: var(--app-danger);
+.identity-alternate {
+  margin: var(--capstone-space-6) 0 0;
+  padding-block-start: var(--capstone-space-5);
+  border-top: 1px solid var(--app-border);
+  color: var(--app-text-muted);
+  font-size: var(--capstone-type-small);
+  line-height: 1.5;
+}
+
+.session-details {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  margin: var(--capstone-space-6) 0 0;
+  overflow: hidden;
+  background: var(--app-border);
+  border: 1px solid var(--app-border);
+  border-radius: var(--capstone-radius-sm);
+}
+
+.session-details div {
+  min-width: 0;
+  padding: var(--capstone-space-4);
+  background: var(--app-panel);
+}
+
+.session-details dt {
+  margin-block-end: var(--capstone-space-1);
+  color: var(--app-text-muted);
+  font-family: var(--capstone-font-data);
+  font-size: var(--capstone-type-label);
+  letter-spacing: 0.04em;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+.session-details dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-weight: var(--capstone-weight-semibold);
+  line-height: 1.45;
+}
+
+.checkpoint-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--capstone-space-3);
+  margin-block-start: var(--capstone-space-6);
 }
 
 @keyframes status-pulse {
@@ -185,30 +390,46 @@ select:focus-visible {
 }
 
 @media (max-width: 37.5rem) {
-  .foundation-shell {
+  .app-shell {
     padding: var(--capstone-gutter-small);
   }
 
   .site-header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: var(--capstone-space-3);
     padding-block-end: var(--capstone-space-4);
   }
 
-  .foundation-main {
+  .identity-main {
     align-items: start;
     padding-block: var(--capstone-space-7);
   }
 
-  .foundation-panel {
+  .identity-panel {
     padding: var(--capstone-space-6) var(--capstone-space-5);
+  }
+
+  .session-details {
+    grid-template-columns: 1fr;
+  }
+
+  .checkpoint-actions,
+  .checkpoint-actions > * {
+    width: 100%;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .brand-link {
+  .brand-link,
+  .form-field input,
+  .primary-button,
+  .secondary-button {
     transition: none;
   }
 
-  .foundation-shell[data-state="loading"] .status-marker {
+  .service-status[data-state="loading"] .status-marker,
+  .route-status .status-marker {
     animation: none;
   }
 }

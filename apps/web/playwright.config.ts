@@ -4,18 +4,26 @@ export default defineConfig({
   testDir: "./e2e",
   fullyParallel: true,
   forbidOnly: Boolean(process.env.CI),
-  retries: process.env.CI ? 2 : 0,
+  retries: 0,
   reporter: process.env.CI ? [["github"], ["html", { open: "never" }]] : "list",
   use: {
     baseURL: "http://127.0.0.1:4173",
     screenshot: "only-on-failure",
     trace: "retain-on-failure",
   },
-  webServer: {
-    command: "pnpm exec vite --host 127.0.0.1 --port 4173",
-    url: "http://127.0.0.1:4173",
-    reuseExistingServer: !process.env.CI,
-  },
+  webServer: [
+    {
+      command: "pnpm --filter @capstone/api exec tsx tests/support/identity-e2e-server.ts",
+      url: "http://127.0.0.1:3011/api/health/ready",
+      reuseExistingServer: false,
+      timeout: 120_000,
+    },
+    {
+      command: "PORT=3011 pnpm exec vite --host 127.0.0.1 --port 4173",
+      url: "http://127.0.0.1:4173",
+      reuseExistingServer: false,
+    },
+  ],
   projects: [
     {
       name: "chromium",

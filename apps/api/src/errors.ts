@@ -7,6 +7,18 @@ const errorCopy = {
   notFound: "No se encontró el recurso solicitado.",
 } as const;
 
+export class ApplicationError extends Error {
+  readonly code: string;
+  readonly statusCode: number;
+
+  constructor(statusCode: number, code: string, message: string) {
+    super(message);
+    this.name = "ApplicationError";
+    this.code = code;
+    this.statusCode = statusCode;
+  }
+}
+
 function sendErrorEnvelope(reply: FastifyReply, statusCode: number, error: ApiError): void {
   const serializer = reply.compileSerializationSchema(
     ApiErrorSchema as unknown as Record<string, unknown>,
@@ -24,6 +36,16 @@ export function registerErrorHandling(fastify: FastifyInstance): void {
   });
 
   fastify.setErrorHandler<FastifyError>((error, request, reply) => {
+    if (error instanceof ApplicationError) {
+      logError(request, error, error.statusCode, true);
+      sendErrorEnvelope(reply, error.statusCode, {
+        code: error.code,
+        message: error.message,
+        requestId: request.id,
+      });
+      return;
+    }
+
     const statusCode = error.validation === undefined ? (error.statusCode ?? 500) : 400;
     const isClientError = statusCode >= 400 && statusCode < 500;
 

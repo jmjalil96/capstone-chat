@@ -1,12 +1,31 @@
+import { readdir, readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApplication } from "../src/app.js";
 import { loadConfig } from "../src/config.js";
-import { migrateDatabase } from "../src/database/migrate.js";
+import { migrateDatabase, migrationsFolder } from "../src/database/migrate.js";
 import { createDatabasePool } from "../src/database/pool.js";
 
-describe("PostgreSQL foundation", () => {
+const identityTableNames = [
+  "account",
+  "employee_approvals",
+  "rate_limit",
+  "session",
+  "user",
+  "verification",
+  "workspace_memberships",
+  "workspaces",
+] as const;
+
+function databaseUrlFor(baseUrl: string, databaseName: string): string {
+  const parsed = new URL(baseUrl);
+  parsed.pathname = `/${databaseName}`;
+  return parsed.href;
+}
+
+describe("PostgreSQL identity schema", () => {
   let container: StartedPostgreSqlContainer | undefined;
   let databaseUrl: string;
 
@@ -25,7 +44,7 @@ describe("PostgreSQL foundation", () => {
     }
   });
 
-  it("applies the complete empty migration history to a clean database", async () => {
+  it("applies the complete migration history to a clean database", async () => {
     await migrateDatabase(databaseUrl);
     const verificationPool = new Pool({ connectionString: databaseUrl });
 
@@ -38,10 +57,80 @@ describe("PostgreSQL foundation", () => {
       );
 
       expect(migrationTable.rows[0]?.migrationTable).toBe("drizzle.__drizzle_migrations");
-      expect(productTables.rows).toEqual([]);
+      expect(productTables.rows.map(({ tableName }) => tableName).sort()).toEqual(
+        identityTableNames,
+      );
     } finally {
       await verificationPool.end();
     }
+  });
+
+  it("upgrades the exact empty Phase 1 migration state and remains retry-safe", async () => {
+    const phaseOneDatabaseName = "capstone_phase_one_upgrade";
+    const phaseOneDatabaseUrl = databaseUrlFor(databaseUrl, phaseOneDatabaseName);
+    const administrativePool = new Pool({ connectionString: databaseUrl });
+
+    try {
+      await administrativePool.query(`CREATE DATABASE "${phaseOneDatabaseName}"`);
+    } finally {
+      await administrativePool.end();
+    }
+
+    const phaseOnePool = new Pool({ connectionString: phaseOneDatabaseUrl });
+    try {
+      await phaseOnePool.query("CREATE SCHEMA drizzle");
+      await phaseOnePool.query(`
+        CREATE TABLE drizzle.__drizzle_migrations (
+          id SERIAL PRIMARY KEY,
+          hash text NOT NULL,
+          created_at bigint
+        )
+      `);
+      const productTablesBeforeUpgrade = await phaseOnePool.query<{ tableName: string }>(
+        "SELECT table_name AS \"tableName\" FROM information_schema.tables WHERE table_schema = 'public'",
+      );
+      expect(productTablesBeforeUpgrade.rows).toEqual([]);
+    } finally {
+      await phaseOnePool.end();
+    }
+
+    await migrateDatabase(phaseOneDatabaseUrl);
+    await migrateDatabase(phaseOneDatabaseUrl);
+
+    const verificationPool = new Pool({ connectionString: phaseOneDatabaseUrl });
+    try {
+      const appliedMigrations = await verificationPool.query<{
+        createdAt: string;
+        hash: string;
+      }>('SELECT created_at::text AS "createdAt", hash FROM drizzle.__drizzle_migrations');
+      const productTables = await verificationPool.query<{ tableName: string }>(
+        "SELECT table_name AS \"tableName\" FROM information_schema.tables WHERE table_schema = 'public'",
+      );
+
+      expect(appliedMigrations.rows).toHaveLength(1);
+      expect(appliedMigrations.rows[0]?.hash).toMatch(/^[a-f0-9]{64}$/u);
+      expect(Number(appliedMigrations.rows[0]?.createdAt)).toBeGreaterThan(0);
+      expect(productTables.rows.map(({ tableName }) => tableName).sort()).toEqual(
+        identityTableNames,
+      );
+    } finally {
+      await verificationPool.end();
+    }
+  });
+
+  it("keeps the Phase 2 migration additive for the expand-contract release", async () => {
+    const migrationFiles = (await readdir(migrationsFolder))
+      .filter((fileName) => fileName.endsWith(".sql"))
+      .sort();
+    const migrationSql = (
+      await Promise.all(
+        migrationFiles.map((fileName) => readFile(resolve(migrationsFolder, fileName), "utf8")),
+      )
+    ).join("\n");
+
+    expect(migrationFiles.length).toBeGreaterThan(0);
+    expect(migrationSql).toMatch(/\bCREATE (?:TABLE|TYPE)\b/iu);
+    expect(migrationSql).not.toMatch(/\b(?:DELETE\s+FROM|DROP|TRUNCATE)\b/iu);
   });
 
   it("keeps liveness healthy when PostgreSQL becomes unavailable", async () => {

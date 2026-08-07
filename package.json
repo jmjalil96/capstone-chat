@@ -16,7 +16,10 @@
     "typecheck": "pnpm --filter @capstone/protocol typecheck && pnpm --filter @capstone/api typecheck && pnpm --filter @capstone/web typecheck",
     "check": "biome check .",
     "ci": "pnpm check && pnpm typecheck && pnpm test && pnpm build",
-    "db:migrate": "pnpm --filter @capstone/api db:migrate"
+    "db:migrate": "pnpm --filter @capstone/api db:migrate",
+    "identity:approve": "pnpm --filter @capstone/api identity:approve",
+    "identity:bootstrap": "pnpm --filter @capstone/api identity:bootstrap",
+    "identity:deactivate": "pnpm --filter @capstone/api identity:deactivate"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.7",

@@ -13,6 +13,26 @@ jobs:
     name: Quality, integration, and build
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      BETTER_AUTH_SECRET: capstone-chat-ci-auth-secret-not-for-production-use
+      DATABASE_URL: postgresql://capstone:capstone-test-password@127.0.0.1:5432/capstone_chat_ci
+      EMAIL_DELIVERY: fake
+      LOG_LEVEL: silent
+      PUBLIC_ORIGIN: http://127.0.0.1:4173
+    services:
+      postgres:
+        image: postgres:18.4-alpine
+        env:
+          POSTGRES_DB: capstone_chat_ci
+          POSTGRES_PASSWORD: capstone-test-password
+          POSTGRES_USER: capstone
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U capstone -d capstone_chat_ci"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 15
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -32,16 +52,47 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Run repository gates
-        run: pnpm run ci
+      - name: Check formatting and lint
+        run: pnpm check
+
+      - name: Check TypeScript
+        run: pnpm typecheck
+
+      - name: Apply migrations to a clean database
+        run: pnpm db:migrate
+        env:
+          NODE_ENV: test
+
+      - name: Run unit and PostgreSQL integration tests
+        run: pnpm test
+        env:
+          NODE_ENV: test
+
+      - name: Build production applications
+        run: pnpm build
 
       - name: Build production API image
         run: docker build --file apps/api/Dockerfile --tag capstone-chat-api:ci .
 
+      - name: Verify API image runtime contents and user
+        run: |
+          test "$(docker image inspect capstone-chat-api:ci --format '{{.Config.User}}')" = "node"
+          docker run --rm --entrypoint sh capstone-chat-api:ci -ec '
+            test "$(id -u)" -ne 0
+            test -f /app/apps/api/dist/server.js
+            test -d /app/apps/api/migrations
+            test -n "$(find /app/apps/api/migrations -maxdepth 1 -name \*.sql -print -quit)"
+          '
+
   playwright:
-    name: Playwright smoke
+    name: Playwright identity suite
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      BETTER_AUTH_SECRET: capstone-chat-ci-auth-secret-not-for-production-use
+      EMAIL_DELIVERY: fake
+      LOG_LEVEL: silent
+      PUBLIC_ORIGIN: http://127.0.0.1:4173
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -64,7 +115,7 @@ jobs:
       - name: Install Chromium
         run: pnpm --filter @capstone/web exec playwright install --with-deps chromium
 
-      - name: Run smoke test
+      - name: Run identity browser tests
         run: pnpm test:e2e
 
       - name: Retain Playwright artifacts

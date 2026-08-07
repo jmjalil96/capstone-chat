@@ -1,3 +1,2 @@
-// Phase 1 intentionally defines no product tables. Future schemas start with an
-// explicit, reviewed migration rather than a synthetic foundation table.
-export {};
+export * from "./auth-schema.generated.js";
+export * from "./identity-schema.js";
