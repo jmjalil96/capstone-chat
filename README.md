@@ -1,14 +1,16 @@
 # Capstone Chat
 
-Capstone Chat is an internal AI chat product. The repository currently implements the Phase 3
-conversation core: an approved employee can create and verify an account, sign in with a
-database-backed session, keep server-side drafts, browse and search owned conversation history,
-and rename, archive, unarchive, or permanently delete a conversation. Operators manage the first
-workspace, employee approvals, and deactivation through explicit commands.
+Capstone Chat is an internal AI chat product. The repository currently implements the Phase 4
+streaming-chat checkpoint: an approved employee can create and verify an account, sign in with a
+database-backed session, keep server-side drafts, manage and search owned conversation history,
+send a draft, see an incremental simulated answer, stop it, and continue an answer that reached its
+output limit. Operators manage the first workspace, employee approvals, and deactivation through
+explicit commands.
 
-Phase 3 intentionally has no Send action and cannot generate an answer. Model access, streaming,
-conversation controls such as edit and retry, budgets, web administration, and production
-deployment remain outside this milestone.
+Phase 4 deliberately uses a deterministic local `FakeModelGateway`; it makes no external model
+request and is prohibited in production. Real model access, tier selection, cost and budget policy,
+edit/retry/branch controls, Markdown rendering, web administration, and production deployment
+remain outside this milestone.
 
 ## Prerequisites
 
@@ -63,6 +65,13 @@ pnpm dev
 Open [http://localhost:5173](http://localhost:5173). Vite proxies `/api` to Fastify at
 `http://127.0.0.1:3000`.
 
+After signing in, enter a draft and choose **Enviar** (or press Enter on desktop). The local fake
+streams this clearly simulated answer in three deterministic chunks about 400 ms apart:
+
+> Esta es una respuesta simulada de Capstone Chat para desarrollo local.
+
+No OpenRouter key or model configuration is used in Phase 4.
+
 The development fake sender is process-local. The bootstrap and approval commands therefore report
 the safe `signUpPath` in their JSON result; open [http://localhost:5173/sign-up](http://localhost:5173/sign-up)
 to continue locally. Invitation URLs contain no email, approval identifier, or credential.
@@ -95,7 +104,7 @@ Deactivate an employee and revoke their database sessions:
 pnpm identity:deactivate --workspace capstone --email employee@example.test
 ```
 
-Deactivation blocks authorization before session cleanup and is safe to retry. Phase 3 has no web
+Deactivation blocks authorization before session cleanup and is safe to retry. Phase 4 has no web
 administration surface.
 
 ## Identity and recovery flow
@@ -129,8 +138,8 @@ workspace and employee; an administrator has no exception for reading another em
 - New-chat and conversation drafts autosave 600 ms after typing pauses. Drafts allow 32,768 UTF-8
   bytes and use independent compare-and-swap revisions so concurrent tabs cannot silently
   overwrite one another.
-- Manual titles allow 120 Unicode code points. The initial-title helper reserved for first-send in
-  Phase 4 collapses whitespace and limits its result to 72 Unicode code points.
+- Manual titles allow 120 Unicode code points. First Send derives an initial title by collapsing
+  whitespace and limiting the result to 72 Unicode code points.
 - Rename, branch selection, archive, unarchive, and permanent deletion use the observed structural
   revision. A stale change is rejected instead of overwriting newer state.
 - Permanent deletion removes the conversation, its messages, and its conversation-scoped draft
@@ -142,10 +151,32 @@ replace it using the newest observed revision. A failed or conflicted save never
 localStorage or IndexedDB. Reloading or closing a tab can therefore lose text that never reached
 Fastify. The only persisted browser preference is the desktop sidebar's collapsed state.
 
-The conversation tables and PostgreSQL `unaccent` search extension are added by the committed Phase
-3 migration. Apply migrations explicitly with `pnpm db:migrate`; API replicas never migrate during
-startup. If conversation routes fail after upgrading a checkout, confirm the complete migration
-history ran against the selected `DATABASE_URL`.
+## Streaming chat checkpoint
+
+Sending first confirms the server draft, then atomically creates one user message, an assistant
+placeholder, and one active generation. Fastify constructs prior context from the selected owned
+branch; the browser cannot supply history. The response is newline-delimited JSON and is rendered as
+safe plain text with preserved line breaks.
+
+- One conversation can have only one active response; separate conversations may stream at the
+  same time, including while navigating between them.
+- The composer stays editable during a response so the next draft can autosave, but it cannot be
+  sent until the current response reaches a terminal state.
+- **Detener** records durable cancellation before the browser reconciles canonical conversation
+  state. The serving API replica preserves text already streamed to the employee; cancellation on
+  another replica preserves the latest durable checkpoint.
+- A response ending because of the output limit exposes **Continuar**. Its backend-owned visible
+  message does not consume a separately typed draft.
+- Interrupted streams are never resumed or automatically retried. The browser reloads canonical
+  messages and lifecycle state; explicit employee action is required to generate again.
+- User messages are limited to 32,768 UTF-8 bytes. Assistant accumulation and selected-branch
+  context are each bounded at 1 MiB.
+
+The committed migration history includes the Phase 3 conversation tables and PostgreSQL `unaccent`
+search extension plus the Phase 4 durable generation lifecycle. Apply the complete history with
+`pnpm db:migrate` after updating a checkout; API replicas never migrate during startup. If
+conversation or response routes fail after an update, confirm the migrations ran against the
+selected `DATABASE_URL` before investigating application code.
 
 ## Health and troubleshooting
 
@@ -159,6 +190,8 @@ Common local checks:
 
 - A readiness failure usually means PostgreSQL is unavailable or migrations were not applied. Run
   `docker compose up -d --wait postgres` and `pnpm db:migrate`.
+- A response route returning an ordinary database error after an update usually means the Phase 4
+  generation migration is missing; apply the complete migration history and retry.
 - A startup error naming `BETTER_AUTH_SECRET`, `EMAIL_DELIVERY`, `DATABASE_URL`, or `PUBLIC_ORIGIN`
   means the selected runtime mode rejected its configuration.
 - A missing local mailbox requires both development mode and fake delivery. A `403` means the
@@ -184,7 +217,7 @@ report that the service is unavailable. Restart it with `docker compose start po
 | `pnpm check` | Run Biome formatting, linting, and import checks |
 | `pnpm typecheck` | Run strict TypeScript checks in each executable TypeScript workspace |
 | `pnpm test` | Run protocol, API unit/PostgreSQL integration, and deterministic web tests |
-| `pnpm test:e2e` | Run the separate Playwright identity and conversation browser suite |
+| `pnpm test:e2e` | Run Playwright in Chromium plus critical streaming flows in Firefox and WebKit |
 | `pnpm build` | Build the protocol, production API JavaScript, and static web assets |
 | `pnpm run ci` | Run `check`, `typecheck`, `test`, and `build` in order |
 | `pnpm db:migrate` | Apply every committed Drizzle migration to `DATABASE_URL` |
@@ -197,17 +230,19 @@ Use `pnpm run ci`, not `pnpm ci`: `ci` is also a built-in pnpm install alias and
 repository script.
 
 The API integration suite starts isolated PostgreSQL 18.4 containers and never uses the developer
-database. Docker must be running for `pnpm test`. Install Chromium once before running the browser
-suite locally:
+database. Docker must be running for `pnpm test`. Install the supported Playwright browsers once
+before running the browser suite locally:
 
 ```sh
-pnpm --filter @capstone/web exec playwright install chromium
+pnpm --filter @capstone/web exec playwright install chromium firefox webkit
 pnpm test:e2e
 ```
 
 The Playwright command starts its own migrated PostgreSQL container, seeds synthetic conversation
-trees before the API listens, and starts the fake-email API harness and Vite server. It does not use
-the local development database, expose a test-only application route, or use a real email provider.
+trees before the API listens, and starts the fake-email API harness, deterministic fake model, and
+Vite server. It does not use the local development database, expose a test-only application route,
+or contact a real email or model provider. The broad suite remains Chromium-first; tagged Send,
+Stop, navigation, reload, and mobile composer cases also run in Firefox and WebKit.
 
 GitHub Actions exposes formatting/linting, type checking, clean migrations, unit and PostgreSQL
 integration tests, production builds, the non-root API image, and Playwright as separate gates. CI
@@ -284,7 +319,8 @@ docker build --file apps/api/Dockerfile --tag capstone-chat-api .
 
 The Vite output is static content in `apps/web/dist`; no production static host has been selected.
 The API image runs as the non-root `node` user and includes the compiled runtime and committed
-migrations.
+migrations. Building the image verifies the artifact, but Phase 4 does not ship a production model
+gateway.
 
 Provide `DATABASE_URL`, an HTTPS `PUBLIC_ORIGIN`, and a unique `BETTER_AUTH_SECRET` of at least 32
 characters through deployment secret/configuration management. Apply migrations as a separate
@@ -301,25 +337,13 @@ docker run --rm \
   node apps/api/dist/database/migrate-command.js
 ```
 
-Then start the API with the same explicit configuration:
-
-```sh
-docker run --rm --publish 3000:3000 \
-  --env NODE_ENV=production \
-  --env HOST=0.0.0.0 \
-  --env PORT=3000 \
-  --env EMAIL_DELIVERY=disabled \
-  --env DATABASE_URL \
-  --env PUBLIC_ORIGIN \
-  --env BETTER_AUTH_SECRET \
-  --env LOG_LEVEL=info \
-  capstone-chat-api
-```
-
 `EMAIL_DELIVERY=disabled` is an honest Phase 2 validation mode, not a launch-capable email setup:
 verification and password-recovery sends fail safely. `EMAIL_DELIVERY=fake` is rejected during
-production startup. A real transactional provider, secret wiring, deployment venue, static host,
-and edge configuration remain deliberately unselected until production hardening.
+production startup. Likewise, the Phase 4 fake model gateway is rejected in production and no
+environment variable can enable or script it. Consequently the server image is not a deployable AI
+service in this milestone. A real model gateway arrives with Phase 6; a transactional email
+provider, secret wiring, deployment venue, static host, and edge configuration remain deliberately
+unselected until production hardening.
 
 Bootstrap and approval commit their database change before attempting invitation delivery. With
 delivery disabled, the command reports `"outcome":"approval-committed"` and

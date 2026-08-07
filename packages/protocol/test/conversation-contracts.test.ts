@@ -221,8 +221,10 @@ describe("conversation detail contracts", () => {
 });
 
 describe("conversation mutation contracts", () => {
-  it("requires an explicit strict empty body for conversation creation", () => {
+  it("accepts optional new-draft adoption without widening conversation creation", () => {
     expect(Value.Check(CreateConversationRequestSchema, {})).toBe(true);
+    expect(Value.Check(CreateConversationRequestSchema, { adoptNewDraftRevision: 4 })).toBe(true);
+    expect(Value.Check(CreateConversationRequestSchema, { adoptNewDraftRevision: -1 })).toBe(false);
     expect(Value.Check(CreateConversationRequestSchema, { title: "Título" })).toBe(false);
   });
 
@@ -513,13 +515,13 @@ describe("stable API error codes", () => {
     });
   });
 
-  it("keeps the ordinary envelope forward-compatible with additive codes", () => {
+  it("closes the ordinary envelope over the approved v1 catalog", () => {
     expect(
       Value.Check(ApiErrorSchema, {
         code: "A_FUTURE_STABLE_CODE",
         message: "Mensaje seguro.",
         requestId: "request-123",
       }),
-    ).toBe(true);
+    ).toBe(false);
   });
 });

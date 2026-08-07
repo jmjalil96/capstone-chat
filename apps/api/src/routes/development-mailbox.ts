@@ -35,7 +35,7 @@ export function registerDevelopmentMailboxRoute(
       if (!isLoopback(request.ip)) {
         void reply.code(403);
         return {
-          code: "DEVELOPMENT_MAILBOX_DENIED",
+          code: "DEVELOPMENT_MAILBOX_DENIED" as const,
           message: "El buzón local solo está disponible desde este equipo.",
           requestId: request.id,
         };

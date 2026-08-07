@@ -17,12 +17,18 @@ import {
   workspaces,
 } from "../src/database/identity-schema.js";
 import { migrateDatabase } from "../src/database/migrate.js";
+import type { ModelGateway } from "../src/generations/model-gateway.js";
 import { FakeEmailSender } from "../src/identity/email.js";
 import { createIdentityService, type IdentityService } from "../src/identity/service.js";
 
 const publicOrigin = "http://localhost:5173";
 const adminEmail = "admin.identity@example.test";
 const originalPassword = "correct-horse-battery";
+const inertProductionGateway: ModelGateway = {
+  async *stream() {
+    yield { errorCode: "GENERATION_FAILED", type: "response.failed" };
+  },
+};
 
 function cookieHeader(response: LightMyRequestResponse): string {
   const values = response.headers["set-cookie"];
@@ -745,7 +751,7 @@ describe.sequential("identity integration", () => {
         NODE_ENV: "production",
         PUBLIC_ORIGIN: productionOrigin,
       }),
-      { emailSender: sender },
+      { emailSender: sender, modelGateway: inertProductionGateway },
     );
     application = app;
     const productionSignIn = await app.server.inject({

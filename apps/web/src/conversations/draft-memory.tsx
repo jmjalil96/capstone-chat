@@ -29,6 +29,7 @@ import {
   completeDraftSave,
   type DraftRecord,
   editDraft,
+  initializeDraft,
   markDraftConflict,
   markDraftUnsaved,
   prepareDraftReplacement,
@@ -45,9 +46,11 @@ interface DraftMemoryContextValue {
   readonly hasUnsavedDraftsNow: () => boolean;
   readonly lockEditing: () => void;
   readonly isCurrent: (capture: AbortSignal) => boolean;
+  readonly moveDraftToConversation: (conversationId: string) => void;
   readonly queryScope: ConversationQueryScope;
   readonly registerActiveDraft: (key: string, flush: () => Promise<boolean>) => () => void;
   readonly unlockEditing: () => void;
+  readonly consumeDraft: (scope: DraftScope) => void;
   readonly updateRecord: (
     key: string,
     update: (current: DraftRecord | undefined) => DraftRecord | undefined,
@@ -97,6 +100,58 @@ export function DraftMemoryProvider({ children, queryScope }: DraftMemoryProvide
     recordsRef.current = next;
     setRecords(next);
   }, []);
+  const moveDraftToConversation = useCallback(
+    (conversationId: string) => {
+      const generation = generationRef.current;
+      if (!generation?.active || generation.controller.signal.aborted) {
+        return;
+      }
+      const sourceScope = { kind: "new" } as const;
+      const targetScope = { kind: "conversation", conversationId } as const;
+      const sourceKey = draftScopeKey(sourceScope);
+      const targetKey = draftScopeKey(targetScope);
+      const sourceRecord = recordsRef.current[sourceKey];
+      const next = { ...recordsRef.current };
+      delete next[sourceKey];
+      if (sourceRecord) {
+        next[targetKey] = sourceRecord;
+      }
+      recordsRef.current = next;
+      setRecords(next);
+
+      const sourceQueryKey = conversationQueryKeys.draft(queryScope, sourceScope);
+      const targetQueryKey = conversationQueryKeys.draft(queryScope, targetScope);
+      const cached = queryClient.getQueryData<DraftState>(sourceQueryKey);
+      if (cached) {
+        queryClient.setQueryData<DraftState>(targetQueryKey, {
+          ...cached,
+          scope: targetScope,
+        });
+      }
+      queryClient.removeQueries({ queryKey: sourceQueryKey, exact: true });
+    },
+    [queryClient, queryScope],
+  );
+  const consumeDraft = useCallback(
+    (scope: DraftScope) => {
+      const generation = generationRef.current;
+      if (!generation?.active || generation.controller.signal.aborted) {
+        return;
+      }
+      const key = draftScopeKey(scope);
+      const empty: DraftState = {
+        scope,
+        content: "",
+        revision: 0,
+        updatedAt: null,
+      };
+      const next = { ...recordsRef.current, [key]: initializeDraft(empty) };
+      recordsRef.current = next;
+      setRecords(next);
+      queryClient.setQueryData(conversationQueryKeys.draft(queryScope, scope), empty);
+    },
+    [queryClient, queryScope],
+  );
   const registerActiveDraft = useCallback((key: string, flush: () => Promise<boolean>) => {
     activeFlushRef.current = flush;
     activeDraftKeyRef.current = key;
@@ -162,6 +217,7 @@ export function DraftMemoryProvider({ children, queryScope }: DraftMemoryProvide
   const value = useMemo(
     () => ({
       capture,
+      consumeDraft,
       records,
       discardDraft,
       editingLocked,
@@ -173,6 +229,7 @@ export function DraftMemoryProvider({ children, queryScope }: DraftMemoryProvide
       hasUnsavedDraftsNow,
       isCurrent,
       lockEditing,
+      moveDraftToConversation,
       queryScope,
       registerActiveDraft,
       unlockEditing,
@@ -180,6 +237,7 @@ export function DraftMemoryProvider({ children, queryScope }: DraftMemoryProvide
     }),
     [
       capture,
+      consumeDraft,
       discardDraft,
       activeDraftKey,
       editingLocked,
@@ -188,6 +246,7 @@ export function DraftMemoryProvider({ children, queryScope }: DraftMemoryProvide
       hasUnsavedDraftsNow,
       isCurrent,
       lockEditing,
+      moveDraftToConversation,
       queryScope,
       records,
       registerActiveDraft,
@@ -211,6 +270,7 @@ export interface DraftEditorState {
   readonly acceptServer: () => void;
   readonly content: string;
   readonly conflict: DraftState | undefined;
+  readonly confirmForSend: () => Promise<ConfirmedDraft | undefined>;
   readonly isLoading: boolean;
   readonly interactionLocked: boolean;
   readonly loadError: boolean;
@@ -220,6 +280,11 @@ export interface DraftEditorState {
   readonly retrySave: () => void;
   readonly setContent: (content: string) => void;
   readonly status: DraftRecord["status"];
+}
+
+export interface ConfirmedDraft {
+  readonly content: string;
+  readonly revision: number;
 }
 
 interface DraftRequestLifetime {
@@ -484,9 +549,26 @@ export function useServerDraft(scope: DraftScope): DraftEditorState {
       }
     })();
   }, [generationCapture, lifetime, queryClient, queryScope, requestIsCurrent, scope, update]);
+  const confirmForSend = useCallback(async (): Promise<ConfirmedDraft | undefined> => {
+    const saved = await saveRef.current(true);
+    if (!saved || !requestIsCurrent()) {
+      return undefined;
+    }
+    const confirmed = recordRef.current;
+    if (
+      !confirmed ||
+      confirmed.dirty ||
+      confirmed.blocked ||
+      confirmed.content.trim().length === 0
+    ) {
+      return undefined;
+    }
+    return { content: confirmed.content, revision: confirmed.revision };
+  }, [requestIsCurrent]);
 
   return {
     acceptServer,
+    confirmForSend,
     content: record?.content ?? "",
     conflict: record?.conflict,
     isLoading: query.isPending || !record,

@@ -44,7 +44,7 @@ describe("ApiErrorSchema", () => {
   it("accepts the common API error envelope", () => {
     expect(
       Value.Check(ApiErrorSchema, {
-        code: "SERVICE_UNAVAILABLE",
+        code: "INTERNAL_ERROR",
         message: "Service unavailable",
         requestId: "request-123",
       }),
@@ -52,13 +52,18 @@ describe("ApiErrorSchema", () => {
   });
 
   it.each([
-    { code: "SERVICE_UNAVAILABLE", message: "Service unavailable" },
+    { code: "INTERNAL_ERROR", message: "Service unavailable" },
     { code: "", message: "Service unavailable", requestId: "request-123" },
     {
       code: "SERVICE_UNAVAILABLE",
       message: "Service unavailable",
       requestId: "request-123",
       cause: "database",
+    },
+    {
+      code: "SERVICE_UNAVAILABLE",
+      message: "Service unavailable",
+      requestId: "request-123",
     },
   ])("rejects an invalid API error envelope", (response) => {
     expect(Value.Check(ApiErrorSchema, response)).toBe(false);

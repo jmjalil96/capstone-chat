@@ -3,6 +3,7 @@ import {
   type ConversationSummary,
   ConversationTitleSchema,
   type OpaqueCursor,
+  type ResponseState,
 } from "@capstone/protocol";
 import {
   type InfiniteData,
@@ -10,8 +11,8 @@ import {
   useMutation,
   useQueryClient,
 } from "@tanstack/react-query";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useLocation, useNavigate, useParams } from "react-router";
 import Value from "typebox/value";
 
 import { copy } from "../copy";
@@ -24,14 +25,16 @@ import {
   renameConversation,
   unarchiveConversation,
 } from "./api";
+import { useOptionalChatRuntime, useOptionalConversationRuntime } from "./chat-runtime-provider";
 import { orderedBranchMessages } from "./collection";
-import { DraftEditor } from "./draft-editor";
+import { DraftEditor, generationErrorCodeCopy, type RemoteResponseOutcome } from "./draft-editor";
 import { useDraftMemory } from "./draft-memory";
 import { Icon } from "./icons";
 import {
   type ConversationRequestCapture,
   useConversationRequestLifetime,
 } from "./request-lifetime";
+import { useConversationResponseStates } from "./response-state";
 import { useRouteHeading } from "./route-heading";
 
 function openDialog(dialog: HTMLDialogElement | null): void {
@@ -56,22 +59,103 @@ function closeDialog(dialog: HTMLDialogElement | null): void {
   }
 }
 
+function responseTerminalLabel(state: ResponseState | undefined): string | undefined {
+  if (!state || state.status === "active") {
+    return undefined;
+  }
+  if (state.status === "cancelled") {
+    return copy.conversations.generation.terminal.cancelled;
+  }
+  if (state.status === "incomplete") {
+    return copy.conversations.generation.terminal.incomplete;
+  }
+  if (state.status === "failed") {
+    return copy.conversations.generation.terminal.failed;
+  }
+  if (state.reason === "length") {
+    return copy.conversations.generation.terminal.length;
+  }
+  if (state.reason === "refusal") {
+    return copy.conversations.generation.terminal.refusal;
+  }
+  if (state.reason === "content_filter") {
+    return copy.conversations.generation.terminal.contentFilter;
+  }
+  return undefined;
+}
+
+function remoteResponseOutcome(
+  state: ResponseState | undefined,
+): RemoteResponseOutcome | undefined {
+  if (!state || state.status === "active") {
+    return undefined;
+  }
+  if (state.status === "cancelled") {
+    return "cancelled";
+  }
+  if (state.status === "incomplete") {
+    return "incomplete";
+  }
+  if (state.status === "failed") {
+    return "failed";
+  }
+  if (state.reason === "length") {
+    return "length";
+  }
+  if (state.reason === "refusal") {
+    return "refusal";
+  }
+  if (state.reason === "content_filter") {
+    return "content-filter";
+  }
+  return "completed";
+}
+
+interface PaginationScrollAnchor {
+  readonly conversationId: string;
+  readonly height: number;
+  readonly pageCount: number;
+  readonly top: number;
+}
+
+interface ComposerFocusIntent {
+  readonly conversationId: string;
+  readonly request: number;
+}
+
 export function ConversationPage() {
   const { conversationId = "" } = useParams();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const focusComposerOnArrival =
+    typeof location.state === "object" &&
+    location.state !== null &&
+    "focusComposer" in location.state &&
+    location.state.focusComposer === true;
   const queryClient = useQueryClient();
   const draftMemory = useDraftMemory();
+  const runtime = useOptionalChatRuntime();
+  const runtimeSnapshot = useOptionalConversationRuntime(conversationId);
   const queryScope = draftMemory.queryScope;
   const requestLifetime = useConversationRequestLifetime(`conversation:${conversationId}`);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const alertRef = useRef<HTMLParagraphElement>(null);
   const messageScrollRef = useRef<HTMLDivElement>(null);
-  const previousScrollRef = useRef<{ height: number; top: number } | undefined>(undefined);
+  const previousScrollRef = useRef<PaginationScrollAnchor | undefined>(undefined);
   const initializedScrollRef = useRef(false);
+  const positionedCanonicalRequestRef = useRef(0);
   const scrollConversationIdRef = useRef(conversationId);
+  const positionedSentUserIdRef = useRef<string | undefined>(undefined);
   const focusedConversationRef = useRef<string | undefined>(undefined);
   const [mutationError, setMutationError] = useState<string>();
   const [canonicalRecoveryFailed, setCanonicalRecoveryFailed] = useState(false);
   const [canonicalRecoveryPending, setCanonicalRecoveryPending] = useState(false);
+  const [canonicalPositionRequest, setCanonicalPositionRequest] = useState(0);
+  const [composerFocusIntent, setComposerFocusIntent] = useState<ComposerFocusIntent>({
+    conversationId,
+    request: 0,
+  });
+  const [lifecycleRefreshPending, setLifecycleRefreshPending] = useState(false);
   const detail = useInfiniteQuery({
     queryKey: conversationQueryKeys.detail(queryScope, conversationId),
     queryFn: ({ pageParam, signal }) => fetchConversation(conversationId, pageParam, signal),
@@ -82,6 +166,79 @@ export function ConversationPage() {
   const firstPage = detail.data?.pages[0];
   const conversation = firstPage?.conversation;
   const messages = orderedBranchMessages(detail.data?.pages ?? []);
+  const pageCount = detail.data?.pages.length ?? 0;
+  const canonicalMessageIds = new Set(messages.map((message) => message.id));
+  const runtimeUserId = runtimeSnapshot?.userMessageId;
+  const presentsRuntimeUser = Boolean(
+    runtimeUserId &&
+      runtimeSnapshot?.committedUserText !== undefined &&
+      !canonicalMessageIds.has(runtimeUserId),
+  );
+  const presentsRuntimeAssistant = Boolean(
+    runtimeSnapshot?.messageId &&
+      !canonicalMessageIds.has(runtimeSnapshot.messageId) &&
+      runtimeUserId &&
+      (canonicalMessageIds.has(runtimeUserId) || presentsRuntimeUser),
+  );
+  const presentedRuntimeUserId =
+    runtimeUserId && (canonicalMessageIds.has(runtimeUserId) || presentsRuntimeUser)
+      ? runtimeUserId
+      : undefined;
+  const presentedMessageCount =
+    messages.length + Number(presentsRuntimeUser) + Number(presentsRuntimeAssistant);
+  const assistantMessageIdPages = useMemo(() => {
+    const pages =
+      detail.data?.pages
+        .map((page) =>
+          page.messages
+            .filter((message) => message.role === "assistant")
+            .map((message) => message.id),
+        )
+        .filter((messageIds) => messageIds.length > 0) ?? [];
+    const runtimeMessageId = runtimeSnapshot?.messageId;
+    if (runtimeMessageId && !pages.some((messageIds) => messageIds.includes(runtimeMessageId))) {
+      pages.push([runtimeMessageId]);
+    }
+    return pages;
+  }, [detail.data?.pages, runtimeSnapshot?.messageId]);
+  const responseStates = useConversationResponseStates(conversationId, assistantMessageIdPages);
+  const remoteActive = [...responseStates.byMessageId.values()].find(
+    (state) => state.status === "active",
+  );
+  const runtimeActive =
+    runtimeSnapshot?.phase === "starting" ||
+    runtimeSnapshot?.phase === "generating" ||
+    runtimeSnapshot?.phase === "compacting" ||
+    runtimeSnapshot?.phase === "stopping";
+  const runtimeNeedsReconciliation = Boolean(
+    runtimeSnapshot?.awaitingCanonical || (runtimeSnapshot?.messageId && !runtimeActive),
+  );
+  const generationActive = runtimeActive || Boolean(remoteActive);
+  const generationError =
+    runtimeSnapshot?.phase === "interrupted"
+      ? copy.conversations.generation.status.interrupted
+      : runtimeSnapshot?.phase === "protocol-failure"
+        ? copy.conversations.generation.status.protocolFailure
+        : runtimeSnapshot?.phase === "failed"
+          ? runtimeSnapshot.messageId
+            ? copy.conversations.generation.errors.committed
+            : generationErrorCodeCopy(runtimeSnapshot.errorCode)
+          : responseStates.isError && !runtimeActive
+            ? copy.conversations.generation.errors.responseState
+            : undefined;
+  const hasPresentedMessages = presentedMessageCount > 0;
+  const responseRevisionMismatch =
+    Boolean(conversation) &&
+    responseStates.revisions.some((revision) => revision !== conversation?.revision);
+  const composerIncoherent =
+    responseRevisionMismatch ||
+    responseStates.isPending ||
+    responseStates.isError ||
+    runtimeNeedsReconciliation;
+  const selectedResponseState = firstPage?.selectedLeafId
+    ? responseStates.byMessageId.get(firstPage.selectedLeafId)
+    : undefined;
+  const selectedRemoteOutcome = remoteResponseOutcome(selectedResponseState);
   const branchCursorChanged =
     detail.isFetchNextPageError &&
     detail.error instanceof ConversationApiError &&
@@ -117,6 +274,7 @@ export function ConversationPage() {
         return false;
       }
       setCanonicalRecoveryFailed(false);
+      setCanonicalPositionRequest((current) => current + 1);
       setMutationError(copy.conversations.common.changed);
       return true;
     } catch {
@@ -134,38 +292,164 @@ export function ConversationPage() {
     }
   }, [conversationId, queryClient, queryScope, requestLifetime]);
 
+  const refreshGenerationState = useCallback(async () => {
+    const capture = requestLifetime.capture();
+    setLifecycleRefreshPending(true);
+    try {
+      if (runtime && runtimeNeedsReconciliation) {
+        await runtime.recoverConversation(conversationId);
+      } else {
+        await Promise.allSettled([
+          detail.refetch(),
+          queryClient.invalidateQueries({
+            queryKey: conversationQueryKeys.responseStates(queryScope),
+          }),
+        ]);
+      }
+    } finally {
+      if (capture.isCurrent()) {
+        setLifecycleRefreshPending(false);
+      }
+      capture.release();
+    }
+  }, [
+    conversationId,
+    detail.refetch,
+    queryClient,
+    queryScope,
+    requestLifetime,
+    runtime,
+    runtimeNeedsReconciliation,
+  ]);
+
   useLayoutEffect(() => {
     if (scrollConversationIdRef.current !== conversationId) {
       scrollConversationIdRef.current = conversationId;
       initializedScrollRef.current = false;
       previousScrollRef.current = undefined;
+      positionedSentUserIdRef.current = undefined;
       setCanonicalRecoveryFailed(false);
       setCanonicalRecoveryPending(false);
+      setComposerFocusIntent({ conversationId, request: 0 });
+      setLifecycleRefreshPending(false);
       setMutationError(undefined);
     }
   }, [conversationId]);
 
   useLayoutEffect(() => {
     const container = messageScrollRef.current;
-    if (!container || messages.length === 0) {
+    if (!container || presentedMessageCount === 0) {
       return;
     }
+    const canonicalPositionRequested =
+      positionedCanonicalRequestRef.current !== canonicalPositionRequest;
+    if (canonicalPositionRequested) {
+      positionedCanonicalRequestRef.current = canonicalPositionRequest;
+    }
+
+    if (presentedRuntimeUserId && positionedSentUserIdRef.current !== presentedRuntimeUserId) {
+      const sentUser = [...container.querySelectorAll<HTMLElement>("[data-message-id]")].find(
+        (element) => element.dataset.messageId === presentedRuntimeUserId,
+      );
+      if (sentUser) {
+        previousScrollRef.current = undefined;
+        sentUser.scrollIntoView?.({ behavior: "auto", block: "start" });
+        positionedSentUserIdRef.current = presentedRuntimeUserId;
+        initializedScrollRef.current = true;
+        return;
+      }
+    }
+
+    if (canonicalPositionRequested) {
+      previousScrollRef.current = undefined;
+      container.scrollTop = container.scrollHeight;
+      initializedScrollRef.current = true;
+      return;
+    }
+
     const previous = previousScrollRef.current;
-    if (previous) {
+    if (previous && previous.conversationId !== conversationId) {
+      previousScrollRef.current = undefined;
+    } else if (previous && pageCount > previous.pageCount) {
       container.scrollTop = container.scrollHeight - previous.height + previous.top;
+      previousScrollRef.current = undefined;
+      initializedScrollRef.current = true;
+    } else if (previous && !detail.isFetchingNextPage) {
       previousScrollRef.current = undefined;
     } else if (!initializedScrollRef.current) {
       container.scrollTop = container.scrollHeight;
       initializedScrollRef.current = true;
     }
-  }, [messages.length]);
+  }, [
+    conversationId,
+    canonicalPositionRequest,
+    detail.isFetchingNextPage,
+    pageCount,
+    presentedMessageCount,
+    presentedRuntimeUserId,
+  ]);
 
   useEffect(() => {
     if (conversation && focusedConversationRef.current !== conversation.id) {
       focusedConversationRef.current = conversation.id;
-      headingRef.current?.focus();
+      if (!focusComposerOnArrival) {
+        headingRef.current?.focus();
+      }
     }
-  }, [conversation]);
+  }, [conversation, focusComposerOnArrival]);
+
+  useEffect(() => {
+    if (!conversation || !focusComposerOnArrival) {
+      return;
+    }
+    navigate(location.pathname, { replace: true, state: null });
+  }, [conversation, focusComposerOnArrival, location.pathname, navigate]);
+
+  useEffect(() => {
+    if (
+      !conversation ||
+      !responseRevisionMismatch ||
+      runtimeNeedsReconciliation ||
+      runtimeSnapshot?.messageId
+    ) {
+      return;
+    }
+    void Promise.all([
+      detail.refetch(),
+      queryClient.invalidateQueries({
+        queryKey: conversationQueryKeys.responseStates(queryScope),
+      }),
+    ]);
+  }, [
+    conversation,
+    detail.refetch,
+    queryClient,
+    queryScope,
+    responseRevisionMismatch,
+    runtimeNeedsReconciliation,
+    runtimeSnapshot?.messageId,
+  ]);
+
+  useEffect(() => {
+    if (!runtime || !runtimeSnapshot?.messageId || !runtimeNeedsReconciliation) {
+      return;
+    }
+    const canonicalState = responseStates.byMessageId.get(runtimeSnapshot.messageId);
+    const detailReachedRuntimeRevision =
+      runtimeSnapshot.revision !== undefined &&
+      conversation?.revision !== undefined &&
+      conversation.revision >= runtimeSnapshot.revision;
+    if ((canonicalState && canonicalState.status !== "active") || detailReachedRuntimeRevision) {
+      void runtime.recoverConversation(conversationId);
+    }
+  }, [
+    conversation?.revision,
+    conversationId,
+    responseStates.byMessageId,
+    runtime,
+    runtimeNeedsReconciliation,
+    runtimeSnapshot,
+  ]);
 
   useEffect(() => {
     if (fatalDetailError) {
@@ -203,6 +487,7 @@ export function ConversationPage() {
     void Promise.all([
       queryClient.invalidateQueries({ queryKey: conversationQueryKeys.histories(queryScope) }),
       queryClient.invalidateQueries({ queryKey: conversationQueryKeys.searches(queryScope) }),
+      queryClient.invalidateQueries({ queryKey: conversationQueryKeys.responseStates(queryScope) }),
     ]);
     setCanonicalRecoveryFailed(false);
     setMutationError(undefined);
@@ -210,6 +495,40 @@ export function ConversationPage() {
 
   async function handleStale() {
     await recoverCanonical();
+  }
+
+  function continueResponse(messageId: string): void {
+    if (
+      !runtime ||
+      !conversation ||
+      generationActive ||
+      conversation.isArchived ||
+      composerIncoherent
+    ) {
+      return;
+    }
+    void runtime
+      .startResponse(
+        conversation.id,
+        {
+          source: "continue",
+          parentMessageId: messageId,
+          modelTier: "balanced",
+          observedRevision: conversation.revision,
+        },
+        {
+          onStarted: () => {
+            if (scrollConversationIdRef.current !== conversation.id) {
+              return;
+            }
+            setComposerFocusIntent((current) => ({
+              conversationId: conversation.id,
+              request: current.conversationId === conversation.id ? current.request + 1 : 1,
+            }));
+          },
+        },
+      )
+      .catch(() => undefined);
   }
 
   if (detail.isPending) {
@@ -258,100 +577,208 @@ export function ConversationPage() {
           onStale={handleStale}
         />
       </header>
-      {mutationError ? (
-        <p className="inline-alert conversation-alert" ref={alertRef} role="alert" tabIndex={-1}>
-          <span>{mutationError}</span>
-          {canonicalRecoveryFailed ? (
-            <button
-              className="text-button"
-              type="button"
-              disabled={canonicalRecoveryPending}
-              onClick={() => void recoverCanonical()}
-            >
-              {copy.conversations.common.retry}
-            </button>
+      {mutationError || generationError || runtimeNeedsReconciliation ? (
+        <div className="conversation-alert">
+          {mutationError ? (
+            <p className="inline-alert" ref={alertRef} role="alert" tabIndex={-1}>
+              <span>{mutationError}</span>
+              {canonicalRecoveryFailed ? (
+                <button
+                  className="text-button"
+                  type="button"
+                  disabled={canonicalRecoveryPending}
+                  onClick={() => void recoverCanonical()}
+                >
+                  {copy.conversations.common.retry}
+                </button>
+              ) : null}
+            </p>
           ) : null}
-        </p>
+          {generationError ? (
+            <p className="inline-alert" role="alert">
+              <span>{generationError}</span>
+              {runtimeNeedsReconciliation || responseStates.isError ? (
+                <button
+                  className="text-button"
+                  type="button"
+                  disabled={lifecycleRefreshPending}
+                  onClick={() => void refreshGenerationState()}
+                >
+                  {copy.conversations.common.retry}
+                </button>
+              ) : null}
+            </p>
+          ) : null}
+          {!generationError && runtimeNeedsReconciliation ? (
+            <p className="inline-alert" role="status">
+              <span>{copy.conversations.generation.status.refreshing}</span>
+              <button
+                className="text-button"
+                type="button"
+                disabled={lifecycleRefreshPending}
+                onClick={() => void refreshGenerationState()}
+              >
+                {copy.conversations.common.retry}
+              </button>
+            </p>
+          ) : null}
+        </div>
       ) : null}
-      {messages.length === 0 ? (
+      {!hasPresentedMessages ? (
         <div className="empty-conversation">
           <h2>{copy.conversations.newChat.title}</h2>
           <p>{copy.conversations.conversation.empty}</p>
-          <DraftEditor
-            key={conversationId}
-            scope={{ kind: "conversation", conversationId }}
-            autoFocus
-          />
         </div>
       ) : (
-        <>
-          <div
-            className="message-scroll"
-            ref={messageScrollRef}
-            onScroll={(event) => {
-              if (
-                event.currentTarget.scrollTop < 80 &&
-                detail.hasNextPage &&
-                !detail.isFetchingNextPage &&
-                !detail.isFetchNextPageError
-              ) {
-                previousScrollRef.current = {
-                  height: event.currentTarget.scrollHeight,
-                  top: event.currentTarget.scrollTop,
-                };
+        <div
+          className="message-scroll"
+          ref={messageScrollRef}
+          onScroll={(event) => {
+            if (
+              event.currentTarget.scrollTop < 80 &&
+              detail.hasNextPage &&
+              !detail.isFetchingNextPage &&
+              !detail.isFetchNextPageError
+            ) {
+              previousScrollRef.current = {
+                conversationId,
+                height: event.currentTarget.scrollHeight,
+                pageCount,
+                top: event.currentTarget.scrollTop,
+              };
+              void detail.fetchNextPage();
+            }
+          }}
+        >
+          {detail.isFetchNextPageError && !branchCursorChanged ? (
+            <p className="inline-alert" role="alert">
+              {copy.conversations.common.genericError}
+            </p>
+          ) : null}
+          {detail.hasNextPage ? (
+            <button
+              className="message-more text-button"
+              type="button"
+              disabled={detail.isFetchingNextPage}
+              onClick={() => {
+                const container = messageScrollRef.current;
+                if (container) {
+                  previousScrollRef.current = {
+                    conversationId,
+                    height: container.scrollHeight,
+                    pageCount,
+                    top: container.scrollTop,
+                  };
+                }
                 void detail.fetchNextPage();
-              }
-            }}
-          >
-            {detail.isFetchNextPageError && !branchCursorChanged ? (
-              <p className="inline-alert" role="alert">
-                {copy.conversations.common.genericError}
-              </p>
-            ) : null}
-            {detail.hasNextPage ? (
-              <button
-                className="message-more text-button"
-                type="button"
-                disabled={detail.isFetchingNextPage}
-                onClick={() => {
-                  const container = messageScrollRef.current;
-                  if (container) {
-                    previousScrollRef.current = {
-                      height: container.scrollHeight,
-                      top: container.scrollTop,
-                    };
-                  }
-                  void detail.fetchNextPage();
-                }}
-              >
-                {detail.isFetchingNextPage
-                  ? copy.conversations.common.loadingMore
-                  : copy.conversations.conversation.older}
-              </button>
-            ) : null}
-            <ol className="message-list">
-              {messages.map((message) => (
-                <li className={`message message-${message.role}`} key={message.id}>
+              }}
+            >
+              {detail.isFetchingNextPage
+                ? copy.conversations.common.loadingMore
+                : copy.conversations.conversation.older}
+            </button>
+          ) : null}
+          <ol className="message-list">
+            {messages.map((message) => {
+              const state = responseStates.byMessageId.get(message.id);
+              const runtimeMatches = runtimeSnapshot?.messageId === message.id;
+              const terminalLabel =
+                responseTerminalLabel(state) ??
+                (runtimeMatches && runtimeSnapshot.phase === "output-limit"
+                  ? copy.conversations.generation.terminal.length
+                  : runtimeMatches && runtimeSnapshot.phase === "cancelled"
+                    ? copy.conversations.generation.terminal.cancelled
+                    : runtimeMatches && runtimeSnapshot.phase === "interrupted"
+                      ? copy.conversations.generation.terminal.incomplete
+                      : undefined);
+              const canContinue =
+                message.id === firstPage?.selectedLeafId &&
+                state?.status === "completed" &&
+                state.reason === "length";
+              return (
+                <li
+                  className={`message message-${message.role}`}
+                  data-message-id={message.id}
+                  key={message.id}
+                >
                   <p className="message-role">
                     {message.role === "user"
                       ? copy.conversations.conversation.userLabel
                       : copy.conversations.conversation.assistantLabel}
                   </p>
-                  <div className="message-content">{message.content[0]?.text}</div>
+                  <div className="message-content">
+                    {runtimeMatches && runtimeSnapshot.text.length > 0
+                      ? runtimeSnapshot.text
+                      : message.content[0]?.text}
+                  </div>
+                  {terminalLabel ? <p className="response-outcome">{terminalLabel}</p> : null}
+                  {canContinue ? (
+                    <button
+                      className="secondary-button compact-button response-continue"
+                      type="button"
+                      disabled={generationActive || conversation.isArchived || composerIncoherent}
+                      onClick={() => continueResponse(message.id)}
+                    >
+                      {copy.conversations.generation.actions.continue}
+                    </button>
+                  ) : null}
                   {message.siblingCount > 0 ? (
                     <p className="message-alternatives">
                       {copy.conversations.conversation.alternatives(message.siblingCount)}
                     </p>
                   ) : null}
                 </li>
-              ))}
-            </ol>
-          </div>
-          <div className="conversation-draft-dock">
-            <DraftEditor key={conversationId} scope={{ kind: "conversation", conversationId }} />
-          </div>
-        </>
+              );
+            })}
+            {presentsRuntimeUser && runtimeUserId ? (
+              <li
+                className="message message-user"
+                data-message-id={runtimeUserId}
+                key={runtimeUserId}
+              >
+                <p className="message-role">{copy.conversations.conversation.userLabel}</p>
+                <div className="message-content">{runtimeSnapshot?.committedUserText}</div>
+              </li>
+            ) : null}
+            {presentsRuntimeAssistant && runtimeSnapshot?.messageId ? (
+              <li
+                className="message message-assistant"
+                data-message-id={runtimeSnapshot.messageId}
+                key={runtimeSnapshot.messageId}
+              >
+                <p className="message-role">{copy.conversations.conversation.assistantLabel}</p>
+                <div className="message-content">{runtimeSnapshot.text}</div>
+              </li>
+            ) : null}
+          </ol>
+        </div>
       )}
+      <div className="conversation-draft-dock" data-empty={!hasPresentedMessages}>
+        <DraftEditor
+          scope={{ kind: "conversation", conversationId }}
+          composer={{
+            kind: "conversation",
+            conversationId,
+            isCoherent: !composerIncoherent,
+            isArchived: conversation.isArchived,
+            observedRevision: conversation.revision,
+            parentMessageId: firstPage?.selectedLeafId ?? null,
+            ...(selectedRemoteOutcome ? { remoteOutcome: selectedRemoteOutcome } : {}),
+            ...(remoteActive
+              ? {
+                  remoteGeneration: {
+                    generationId: remoteActive.generationId,
+                    messageId: remoteActive.messageId,
+                  },
+                }
+              : {}),
+          }}
+          autoFocus={focusComposerOnArrival || !hasPresentedMessages}
+          focusRequest={
+            composerFocusIntent.conversationId === conversationId ? composerFocusIntent.request : 0
+          }
+        />
+      </div>
     </article>
   );
 }
@@ -371,6 +798,7 @@ function ConversationActions({
 }: ConversationActionsProps) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const chatRuntime = useOptionalChatRuntime();
   const draftMemory = useDraftMemory();
   const captureGeneration = draftMemory.capture;
   const isGenerationCurrent = draftMemory.isCurrent;
@@ -514,6 +942,7 @@ function ConversationActions({
       if (!capture || !isGenerationCurrent(capture)) {
         return;
       }
+      chatRuntime?.discardConversation(conversation.id);
       queryClient.removeQueries({
         queryKey: conversationQueryKeys.detail(queryScope, conversation.id),
       });

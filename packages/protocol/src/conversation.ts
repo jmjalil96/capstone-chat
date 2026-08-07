@@ -7,6 +7,7 @@ export const CONVERSATION_TITLE_MAX_CODE_POINTS = 120;
 export const CONVERSATION_SEARCH_QUERY_MAX_UTF8_BYTES = 256;
 export const CONVERSATION_SEARCH_SNIPPET_MAX_CODE_POINTS = 162;
 export const CONVERSATION_DRAFT_MAX_UTF8_BYTES = 32_768;
+export const USER_MESSAGE_MAX_UTF8_BYTES = CONVERSATION_DRAFT_MAX_UTF8_BYTES;
 export const CONVERSATION_REVISION_MAX = 2_147_483_647;
 
 function hasUnsupportedControlCharacter(value: string): boolean {
@@ -64,6 +65,26 @@ function draftFitsLimit(value: string): boolean {
   return (
     hasUnsupportedControlCharacter(normalized) ||
     utf8Length(normalized) <= CONVERSATION_DRAFT_MAX_UTF8_BYTES
+  );
+}
+
+function userMessageContentIsValid(value: string): boolean {
+  if (!value.isWellFormed()) {
+    return true;
+  }
+  const normalized = value.replace(/\r\n?/gu, "\n");
+  return /\S/u.test(normalized) && !hasUnsupportedControlCharacter(normalized);
+}
+
+function userMessageFitsLimit(value: string): boolean {
+  if (!value.isWellFormed()) {
+    return true;
+  }
+  const normalized = value.replace(/\r\n?/gu, "\n");
+  return (
+    !/\S/u.test(normalized) ||
+    hasUnsupportedControlCharacter(normalized) ||
+    utf8Length(normalized) <= USER_MESSAGE_MAX_UTF8_BYTES
   );
 }
 
@@ -144,6 +165,27 @@ export const MessageContentSchema = Type.Array(TextContentBlockSchema, {
 });
 export type MessageContent = Type.Static<typeof MessageContentSchema>;
 
+const UserMessageTextSchema = Type.Refine(
+  Type.Refine(
+    Type.Refine(Type.String({ minLength: 1 }), isValidUnicode),
+    userMessageContentIsValid,
+  ),
+  userMessageFitsLimit,
+  () => "MESSAGE_TOO_LARGE",
+);
+
+export const UserMessageContentSchema = Type.Array(
+  Type.Object(
+    {
+      type: Type.Literal("text"),
+      text: UserMessageTextSchema,
+    },
+    { additionalProperties: false },
+  ),
+  { minItems: 1, maxItems: 1 },
+);
+export type UserMessageContent = Type.Static<typeof UserMessageContentSchema>;
+
 export const ConversationSummarySchema = Type.Object(
   {
     id: ConversationIdSchema,
@@ -196,7 +238,12 @@ export const ConversationListResponseSchema = Type.Object(
 );
 export type ConversationListResponse = Type.Static<typeof ConversationListResponseSchema>;
 
-export const CreateConversationRequestSchema = Type.Object({}, { additionalProperties: false });
+export const CreateConversationRequestSchema = Type.Object(
+  {
+    adoptNewDraftRevision: Type.Optional(ConversationRevisionSchema),
+  },
+  { additionalProperties: false },
+);
 export type CreateConversationRequest = Type.Static<typeof CreateConversationRequestSchema>;
 
 export const CreateConversationResponseSchema = ConversationSummarySchema;

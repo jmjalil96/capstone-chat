@@ -1,16 +1,34 @@
+import type { MessageContent } from "@capstone/protocol";
 import { ApplicationError } from "../errors.js";
 import { conversationCoreTuning } from "./settings.js";
 
 const contentCopy = {
   draftInvalid: "El borrador contiene caracteres no admitidos.",
   draftTooLarge: "El borrador supera el tamaño permitido.",
+  invalidStoredContent: "El contenido almacenado de la conversación no es válido.",
   searchInvalid: "Escribe una búsqueda válida.",
   searchTooLarge: "La búsqueda supera el tamaño permitido.",
   titleInvalid: "Escribe un título válido en una sola línea.",
   titleTooLong: "El título supera la longitud permitida.",
 } as const;
 
-function hasUnsupportedControlCharacter(value: string): boolean {
+export function parseMessageContent(value: unknown): MessageContent {
+  if (
+    !Array.isArray(value) ||
+    value.length !== 1 ||
+    value[0] === null ||
+    typeof value[0] !== "object" ||
+    Array.isArray(value[0]) ||
+    (value[0] as Record<string, unknown>).type !== "text" ||
+    typeof (value[0] as Record<string, unknown>).text !== "string" ||
+    Object.keys(value[0] as Record<string, unknown>).some((key) => key !== "type" && key !== "text")
+  ) {
+    throw new Error(contentCopy.invalidStoredContent);
+  }
+  return [{ type: "text", text: (value[0] as { text: string }).text }];
+}
+
+export function hasUnsupportedControlCharacter(value: string): boolean {
   for (const character of value) {
     const codePoint = character.codePointAt(0);
     if (

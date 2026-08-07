@@ -13,6 +13,7 @@ import type {
 import { and, desc, eq, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
 import { conversations, drafts, messages } from "../database/conversation-schema.js";
 import type { AppDatabase } from "../database/database.js";
+import { generations } from "../database/generation-schema.js";
 import { ApplicationError } from "../errors.js";
 import type { RequestActor } from "../identity/authorization.js";
 import {
@@ -21,6 +22,7 @@ import {
   normalizeManualTitle,
   normalizeSearchQuery,
   normalizeStoredText,
+  parseMessageContent,
 } from "./content.js";
 import { type CursorCodec, cursorInteger, cursorString } from "./cursor.js";
 import { conversationCoreTuning } from "./settings.js";
@@ -28,6 +30,7 @@ import { conversationCoreTuning } from "./settings.js";
 const conversationCopy = {
   changed: "La conversación cambió. Actualiza la información e inténtalo de nuevo.",
   draftChanged: "El borrador cambió en otra pestaña o dispositivo.",
+  generationActive: "Detén la respuesta en curso antes de cambiar de rama.",
   invalidContent: "El contenido almacenado de la conversación no es válido.",
   notFound: "No se encontró la conversación solicitada.",
 } as const;
@@ -90,22 +93,6 @@ function toSummary(row: ConversationRow): ConversationSummary {
 
 function toDate(value: Date | string): Date {
   return value instanceof Date ? value : new Date(value);
-}
-
-function parseMessageContent(value: unknown): MessageContent {
-  if (
-    !Array.isArray(value) ||
-    value.length !== 1 ||
-    value[0] === null ||
-    typeof value[0] !== "object" ||
-    Array.isArray(value[0]) ||
-    (value[0] as Record<string, unknown>).type !== "text" ||
-    typeof (value[0] as Record<string, unknown>).text !== "string" ||
-    Object.keys(value[0] as Record<string, unknown>).some((key) => key !== "type" && key !== "text")
-  ) {
-    throw new Error(conversationCopy.invalidContent);
-  }
-  return [{ type: "text", text: (value[0] as { text: string }).text }];
 }
 
 function toMessage(row: BranchRow): ConversationMessage {
@@ -207,16 +194,61 @@ export function createConversationService(database: AppDatabase, cursorCodec: Cu
     };
   }
 
-  async function create(actor: RequestActor): Promise<ConversationSummary> {
-    const inserted = await database
-      .insert(conversations)
-      .values({ userId: actor.employee.id, workspaceId: actor.workspace.id })
-      .returning();
-    const row = inserted[0];
-    if (row === undefined) {
-      throw new Error("Conversation creation returned no row");
+  async function create(
+    actor: RequestActor,
+    adoptNewDraftRevision?: number,
+  ): Promise<ConversationSummary> {
+    if (adoptNewDraftRevision === undefined) {
+      const inserted = await database
+        .insert(conversations)
+        .values({ userId: actor.employee.id, workspaceId: actor.workspace.id })
+        .returning();
+      const row = inserted[0];
+      if (row === undefined) {
+        throw new Error("Conversation creation returned no row");
+      }
+      return toSummary(row);
     }
-    return toSummary(row);
+
+    return database.transaction(async (transaction) => {
+      const draftRows = await transaction
+        .select()
+        .from(drafts)
+        .where(
+          and(
+            eq(drafts.workspaceId, actor.workspace.id),
+            eq(drafts.userId, actor.employee.id),
+            isNull(drafts.conversationId),
+          ),
+        )
+        .limit(1)
+        .for("update");
+      const draft = draftRows[0];
+      if (draft === undefined || draft.revision !== adoptNewDraftRevision) {
+        return draftChanged();
+      }
+      if (!/\S/u.test(draft.content)) {
+        throw new ApplicationError(400, "BAD_REQUEST", "Escribe un mensaje antes de enviarlo.");
+      }
+
+      const inserted = await transaction
+        .insert(conversations)
+        .values({ userId: actor.employee.id, workspaceId: actor.workspace.id })
+        .returning();
+      const conversation = inserted[0];
+      if (conversation === undefined) {
+        throw new Error("Conversation creation returned no row");
+      }
+      const adopted = await transaction
+        .update(drafts)
+        .set({ conversationId: conversation.id })
+        .where(and(eq(drafts.id, draft.id), eq(drafts.revision, adoptNewDraftRevision)))
+        .returning({ id: drafts.id });
+      if (adopted.length !== 1) {
+        return draftChanged();
+      }
+      return toSummary(conversation);
+    });
   }
 
   async function insertImmutableMessage(
@@ -473,6 +505,16 @@ export function createConversationService(database: AppDatabase, cursorCodec: Cu
       if (conversation.selectedLeafMessageId === leafMessageId) {
         return { conversation: toSummary(conversation), selectedLeafId: leafMessageId };
       }
+      const activeGenerations = await transaction
+        .select({ id: generations.id })
+        .from(generations)
+        .where(
+          and(eq(generations.conversationId, conversationId), eq(generations.status, "active")),
+        )
+        .limit(1);
+      if (activeGenerations.length !== 0) {
+        throw new ApplicationError(409, "GENERATION_ACTIVE", conversationCopy.generationActive);
+      }
       if (conversation.revision !== observedRevision) {
         return changed();
       }
@@ -560,40 +602,6 @@ export function createConversationService(database: AppDatabase, cursorCodec: Cu
         )
         .returning();
       return updated[0] === undefined ? changed() : toSummary(updated[0]);
-    });
-  }
-
-  async function remove(
-    actor: RequestActor,
-    conversationId: string,
-    observedRevision: number,
-  ): Promise<void> {
-    await database.transaction(async (transaction) => {
-      const rows = await transaction
-        .select({ revision: conversations.revision })
-        .from(conversations)
-        .where(ownedConversationWhere(actor, conversationId))
-        .limit(1)
-        .for("update");
-      const conversation = rows[0];
-      if (conversation === undefined) {
-        return notFound();
-      }
-      if (conversation.revision !== observedRevision) {
-        return changed();
-      }
-      const deleted = await transaction
-        .delete(conversations)
-        .where(
-          and(
-            ownedConversationWhere(actor, conversationId),
-            eq(conversations.revision, observedRevision),
-          ),
-        )
-        .returning({ id: conversations.id });
-      if (deleted.length !== 1) {
-        return changed();
-      }
     });
   }
 
@@ -1008,7 +1016,6 @@ export function createConversationService(database: AppDatabase, cursorCodec: Cu
     getDraft,
     insertImmutableMessage,
     list,
-    remove,
     rename,
     saveDraft,
     search,

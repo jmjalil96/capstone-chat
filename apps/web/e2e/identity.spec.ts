@@ -320,17 +320,31 @@ test("resets selected-branch scrolling when the conversation route parameter cha
       });
       return;
     }
-    if (url.pathname.endsWith("/title") && route.request().method() === "PATCH") {
-      const body = route.request().postDataJSON() as { title: string };
-      submittedTitle = body.title;
+    if (url.pathname.endsWith("/response-states")) {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
         body: JSON.stringify({
-          ...conversation,
-          title: body.title.normalize("NFC").replace(/\s+/gu, " ").trim(),
-          revision: conversation.revision + 1,
+          conversationId,
+          revision: conversation.revision,
+          responses: [],
         }),
+      });
+      return;
+    }
+    if (url.pathname.endsWith("/title") && route.request().method() === "PATCH") {
+      const body = route.request().postDataJSON() as { title: string };
+      submittedTitle = body.title;
+      const canonical = {
+        ...conversation,
+        title: body.title.normalize("NFC").replace(/\s+/gu, " ").trim(),
+        revision: conversation.revision + 1,
+      };
+      Object.assign(conversation, canonical);
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(canonical),
       });
       return;
     }
@@ -410,11 +424,21 @@ test("resets selected-branch scrolling when the conversation route parameter cha
   await expect(page.getByRole("heading", { level: 1, name: "Conversación dos" })).toBeVisible();
   await expect(page).toHaveTitle(/Conversación dos/u);
   await expect(page.getByRole("alert")).toContainText(copy.conversations.common.genericError);
-  await olderButton.evaluate((element) => (element as HTMLButtonElement).click());
+  await olderButton.evaluate((element) => {
+    const container = element.closest<HTMLElement>(".message-scroll");
+    if (!container) {
+      throw new Error("The pagination control has no message scroll container");
+    }
+    container.scrollTop = 0;
+    (element as HTMLButtonElement).click();
+  });
+  await expect.poll(() => scroll.evaluate((element) => element.scrollTop)).toBe(0);
+  await expect.poll(() => secondInitialRequests).toBeGreaterThanOrEqual(2);
   await expect(page.getByRole("alert")).toContainText(copy.conversations.common.genericError);
   await page.getByRole("button", { name: copy.conversations.common.retry }).click();
   await expect(page.getByRole("alert")).toContainText(copy.conversations.common.changed);
   await expect.poll(() => secondInitialRequests).toBeGreaterThanOrEqual(3);
+  await expect.poll(() => scroll.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
 
   await page.getByRole("button", { name: copy.conversations.conversation.rename }).click();
   const renameDialog = page.getByRole("dialog", {

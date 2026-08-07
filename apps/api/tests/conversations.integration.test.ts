@@ -17,6 +17,7 @@ import { type AppDatabase, createDatabase } from "../src/database/database.js";
 import { workspaces } from "../src/database/identity-schema.js";
 import { migrateDatabase } from "../src/database/migrate.js";
 import { ApplicationError } from "../src/errors.js";
+import { createGenerationService, type GenerationService } from "../src/generations/service.js";
 import type { RequestActor } from "../src/identity/authorization.js";
 import type { IdentityService } from "../src/identity/service.js";
 
@@ -75,6 +76,7 @@ describe.sequential("conversation core integration", () => {
   let databaseUrl: string;
   let pool: Pool;
   let database: AppDatabase;
+  let generationService: GenerationService;
   let service: ConversationService;
   let primary: RequestActor;
   let otherEmployee: RequestActor;
@@ -136,6 +138,7 @@ describe.sequential("conversation core integration", () => {
       database,
       createCursorCodec("conversation-integration-secret-longer-than-thirty-two-characters"),
     );
+    generationService = createGenerationService(database);
   });
 
   afterEach(async () => {
@@ -388,7 +391,11 @@ describe.sequential("conversation core integration", () => {
 
     const detailPromise = instrumentedService.get(primary, conversation.id);
     await branchQueryReached;
-    const removePromise = service.remove(primary, conversation.id, selected.conversation.revision);
+    const removePromise = generationService.removeConversation(
+      primary,
+      conversation.id,
+      selected.conversation.revision,
+    );
     try {
       await waitForCondition(async () => {
         const waiting = await pool.query<{ waiting: boolean }>(`
@@ -449,11 +456,14 @@ describe.sequential("conversation core integration", () => {
       0,
     );
     expect((await service.search(primary, "contenido borrar")).results).toHaveLength(1);
-    await expectApplicationError(service.remove(primary, conversation.id, 3), {
-      code: "CONVERSATION_CHANGED",
-      statusCode: 409,
-    });
-    await service.remove(primary, conversation.id, 4);
+    await expectApplicationError(
+      generationService.removeConversation(primary, conversation.id, 3),
+      {
+        code: "CONVERSATION_CHANGED",
+        statusCode: 409,
+      },
+    );
+    await generationService.removeConversation(primary, conversation.id, 4);
     expect(
       await database.select().from(messages).where(eq(messages.conversationId, conversation.id)),
     ).toEqual([]);

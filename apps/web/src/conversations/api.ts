@@ -1,4 +1,5 @@
 import {
+  type ApiErrorCode,
   ApiErrorSchema,
   type ArchiveConversationRequest,
   ArchiveConversationResponseSchema,
@@ -13,6 +14,9 @@ import {
   ConversationSelectionResponseSchema,
   type ConversationSummary,
   type ConversationView,
+  type CreateConversationRequest,
+  CreateConversationResponseSchema,
+  type CreateResponseRequest,
   type DeleteConversationRequest,
   type DraftScope,
   type DraftState,
@@ -20,6 +24,9 @@ import {
   type OpaqueCursor,
   type RenameConversationRequest,
   RenameConversationResponseSchema,
+  type ResponseStateRequest,
+  type ResponseStateResponse,
+  ResponseStateResponseSchema,
   type SaveDraftRequest,
   type SelectConversationLeafRequest,
   type SessionResponse,
@@ -30,14 +37,23 @@ import type { TSchema } from "typebox";
 import Value from "typebox/value";
 
 export class ConversationApiError extends Error {
-  readonly code: string;
+  readonly code: ApiErrorCode;
   readonly status: number;
 
-  constructor(status: number, code: string) {
+  constructor(status: number, code: ApiErrorCode) {
     super("The conversation request was rejected.");
     this.name = "ConversationApiError";
     this.code = code;
     this.status = status;
+  }
+}
+
+export class ConversationStreamProtocolError extends Error {
+  readonly code = "STREAM_PROTOCOL_ERROR";
+
+  constructor() {
+    super("The response stream did not match the protocol.");
+    this.name = "ConversationStreamProtocolError";
   }
 }
 
@@ -91,6 +107,24 @@ function jsonRequest(method: string, body: unknown, signal?: AbortSignal): Reque
   };
 }
 
+function streamRequest(
+  body: CreateResponseRequest,
+  idempotencyKey: string,
+  signal: AbortSignal,
+): RequestInit {
+  return {
+    body: JSON.stringify(body),
+    credentials: "same-origin",
+    headers: {
+      accept: "application/x-ndjson",
+      "content-type": "application/json",
+      "idempotency-key": idempotencyKey,
+    },
+    method: "POST",
+    signal,
+  };
+}
+
 function draftEndpoint(scope: DraftScope): string {
   return scope.kind === "new"
     ? "/api/drafts/new"
@@ -133,7 +167,27 @@ export const conversationQueryKeys = {
     [...conversationQueryKeys.all(queryScope), "search"] as const,
   search: (queryScope: ConversationQueryScope, query: string) =>
     [...conversationQueryKeys.searches(queryScope), query] as const,
+  responseStates: (queryScope: ConversationQueryScope) =>
+    [...conversationQueryKeys.all(queryScope), "response-state"] as const,
+  responseState: (
+    queryScope: ConversationQueryScope,
+    conversationId: string,
+    messageIds: readonly string[],
+  ) =>
+    [
+      ...conversationQueryKeys.responseStates(queryScope),
+      conversationId,
+      [...messageIds].sort(),
+    ] as const,
 };
+
+export async function createConversation(
+  input: CreateConversationRequest,
+  signal?: AbortSignal,
+): Promise<ConversationSummary> {
+  const response = await fetch("/api/conversations", jsonRequest("POST", input, signal));
+  return validatedResponse(response, CreateConversationResponseSchema);
+}
 
 export async function fetchConversationHistory(
   view: ConversationView,
@@ -293,4 +347,74 @@ export async function searchConversations(
 ): Promise<ConversationSearchResponse> {
   const response = await fetch("/api/conversations/search", jsonRequest("POST", input, signal));
   return validatedResponse(response, ConversationSearchResponseSchema);
+}
+
+export async function openConversationResponse(
+  conversationId: string,
+  input: CreateResponseRequest,
+  idempotencyKey: string,
+  signal: AbortSignal,
+): Promise<ReadableStream<Uint8Array>> {
+  const response = await fetch(
+    `/api/conversations/${encodeURIComponent(conversationId)}/responses`,
+    streamRequest(input, idempotencyKey, signal),
+  );
+
+  if (!response.ok) {
+    const payload = await responsePayload(response);
+    if (Value.Check(ApiErrorSchema, payload)) {
+      throw new ConversationApiError(response.status, payload.code);
+    }
+    throw new Error("The response stream error did not match the protocol.");
+  }
+
+  const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim();
+  if (contentType !== "application/x-ndjson" || !response.body) {
+    throw new ConversationStreamProtocolError();
+  }
+  return response.body;
+}
+
+export async function cancelGeneration(
+  conversationId: string,
+  generationId: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const response = await fetch(
+    `/api/conversations/${encodeURIComponent(conversationId)}/responses/${encodeURIComponent(generationId)}/cancel`,
+    jsonRequest("POST", {}, signal),
+  );
+  if (response.status === 204) {
+    return;
+  }
+  const payload = await responsePayload(response);
+  if (Value.Check(ApiErrorSchema, payload)) {
+    throw new ConversationApiError(response.status, payload.code);
+  }
+  throw new Error("The cancellation response did not match the protocol.");
+}
+
+export async function fetchResponseStates(
+  conversationId: string,
+  input: ResponseStateRequest,
+  signal?: AbortSignal,
+): Promise<ResponseStateResponse> {
+  const response = await fetch(
+    `/api/conversations/${encodeURIComponent(conversationId)}/response-states`,
+    jsonRequest("POST", input, signal),
+  );
+  const state = await validatedResponse<ResponseStateResponse>(
+    response,
+    ResponseStateResponseSchema,
+  );
+  assertConversationId(conversationId, state.conversationId);
+  const requestedIds = new Set(input.messageIds);
+  const receivedIds = new Set<string>();
+  for (const responseState of state.responses) {
+    if (!requestedIds.has(responseState.messageId) || receivedIds.has(responseState.messageId)) {
+      throw new Error("The response state did not match the requested messages.");
+    }
+    receivedIds.add(responseState.messageId);
+  }
+  return state;
 }

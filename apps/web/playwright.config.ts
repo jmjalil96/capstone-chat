@@ -29,5 +29,15 @@ export default defineConfig({
       name: "chromium",
       use: devices["Desktop Chrome"],
     },
+    {
+      name: "firefox-critical-streams",
+      grep: /@critical-stream/u,
+      use: devices["Desktop Firefox"],
+    },
+    {
+      name: "webkit-critical-streams",
+      grep: /@critical-stream/u,
+      use: devices["Desktop Safari"],
+    },
   ],
 });

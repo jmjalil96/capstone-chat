@@ -4,6 +4,7 @@ import type { FastifyError, FastifyInstance, FastifyReply, FastifyRequest } from
 const errorCopy = {
   badRequest: "La solicitud no es válida.",
   internal: "Ocurrió un error interno.",
+  messageTooLarge: "El mensaje supera el tamaño permitido.",
   notFound: "No se encontró el recurso solicitado.",
   payloadTooLarge: "El contenido supera el tamaño permitido.",
 } as const;
@@ -47,31 +48,39 @@ export function registerErrorHandling(fastify: FastifyInstance): void {
       return;
     }
 
+    const messageTooLarge = error.validation?.some(
+      (issue) => issue.keyword === "~refine" && issue.params.message === "MESSAGE_TOO_LARGE",
+    );
     const payloadTooLarge =
       error.statusCode === 413 ||
       error.validation?.some(
         (issue) => issue.keyword === "~refine" && issue.params.message === "PAYLOAD_TOO_LARGE",
       );
-    const statusCode = payloadTooLarge
-      ? 413
-      : error.validation === undefined
-        ? (error.statusCode ?? 500)
-        : 400;
+    const statusCode =
+      messageTooLarge || payloadTooLarge
+        ? 413
+        : error.validation === undefined
+          ? (error.statusCode ?? 500)
+          : 400;
     const isClientError = statusCode >= 400 && statusCode < 500;
 
     logError(request, error, statusCode, isClientError);
 
     sendErrorEnvelope(reply, statusCode, {
-      code: payloadTooLarge
-        ? "PAYLOAD_TOO_LARGE"
-        : isClientError
-          ? "BAD_REQUEST"
-          : "INTERNAL_ERROR",
-      message: payloadTooLarge
-        ? errorCopy.payloadTooLarge
-        : isClientError
-          ? errorCopy.badRequest
-          : errorCopy.internal,
+      code: messageTooLarge
+        ? "MESSAGE_TOO_LARGE"
+        : payloadTooLarge
+          ? "PAYLOAD_TOO_LARGE"
+          : isClientError
+            ? "BAD_REQUEST"
+            : "INTERNAL_ERROR",
+      message: messageTooLarge
+        ? errorCopy.messageTooLarge
+        : payloadTooLarge
+          ? errorCopy.payloadTooLarge
+          : isClientError
+            ? errorCopy.badRequest
+            : errorCopy.internal,
       requestId: request.id,
     });
   });

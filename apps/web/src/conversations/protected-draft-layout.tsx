@@ -3,7 +3,8 @@ import { useCallback, useEffect, useMemo } from "react";
 import { Outlet, useBlocker, useOutletContext } from "react-router";
 
 import { copy } from "../copy";
-import { conversationActorScope, conversationQueryScope } from "./api";
+import type { ConversationActorScope, ConversationQueryScope } from "./api";
+import { ChatRuntimeProvider } from "./chat-runtime-provider";
 import { DraftMemoryProvider, useDraftMemory } from "./draft-memory";
 
 function ProtectedDraftOutlet({ session }: { readonly session: SessionResponse }) {
@@ -51,12 +52,20 @@ function ProtectedDraftOutlet({ session }: { readonly session: SessionResponse }
 
 export function ProtectedDraftLayout() {
   const session = useOutletContext<SessionResponse>();
-  const actorScope = useMemo(() => conversationActorScope(session), [session]);
-  const queryScope = useMemo(() => conversationQueryScope(session), [session]);
+  const actorScope = useMemo<ConversationActorScope>(
+    () => [session.workspace.id, session.employee.id],
+    [session.workspace.id, session.employee.id],
+  );
+  const queryScope = useMemo<ConversationQueryScope>(
+    () => [...actorScope, session.session.createdAt],
+    [actorScope, session.session.createdAt],
+  );
 
   return (
     <DraftMemoryProvider key={JSON.stringify(actorScope)} queryScope={queryScope}>
-      <ProtectedDraftOutlet session={session} />
+      <ChatRuntimeProvider>
+        <ProtectedDraftOutlet session={session} />
+      </ChatRuntimeProvider>
     </DraftMemoryProvider>
   );
 }

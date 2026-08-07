@@ -85,7 +85,7 @@ jobs:
           '
 
   playwright:
-    name: Playwright identity and conversation suite
+    name: Playwright identity, conversation, and streaming suite
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -112,10 +112,10 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Install Chromium
-        run: pnpm --filter @capstone/web exec playwright install --with-deps chromium
+      - name: Install supported browsers
+        run: pnpm --filter @capstone/web exec playwright install --with-deps chromium firefox webkit
 
-      - name: Run identity and conversation browser tests
+      - name: Run identity, conversation, and streaming browser tests
         run: pnpm test:e2e
 
       - name: Retain Playwright artifacts

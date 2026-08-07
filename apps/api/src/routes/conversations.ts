@@ -12,8 +12,6 @@ import {
   ConversationSelectionResponseSchema,
   CreateConversationRequestSchema,
   CreateConversationResponseSchema,
-  DeleteConversationRequestSchema,
-  DeleteConversationResponseSchema,
   DraftStateSchema,
   RenameConversationRequestSchema,
   RenameConversationResponseSchema,
@@ -23,15 +21,11 @@ import {
   UnarchiveConversationResponseSchema,
 } from "@capstone/protocol";
 import type { TypeBoxTypeProvider } from "@fastify/type-provider-typebox";
-import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { createTrustedAuthHeaders, forwardAuthenticationCookies } from "../auth/request-headers.js";
+import type { FastifyInstance } from "fastify";
 import type { ConversationService } from "../conversations/service.js";
 import { conversationCoreTuning } from "../conversations/settings.js";
-import {
-  type ActorResolver,
-  type RequestActor,
-  requireMemberActor,
-} from "../identity/authorization.js";
+import type { ActorResolver } from "../identity/authorization.js";
+import { resolveMember } from "./member.js";
 
 const ordinaryErrorResponses = {
   400: ApiErrorSchema,
@@ -43,17 +37,6 @@ const ordinaryErrorResponses = {
   415: ApiErrorSchema,
   500: ApiErrorSchema,
 } as const;
-
-async function resolveMember(
-  request: FastifyRequest,
-  reply: FastifyReply,
-  resolveActor: ActorResolver,
-): Promise<RequestActor> {
-  void reply.header("cache-control", "no-store");
-  const resolution = await resolveActor(createTrustedAuthHeaders(request));
-  forwardAuthenticationCookies(resolution.authenticationHeaders, reply);
-  return requireMemberActor(resolution.actor);
-}
 
 export function registerConversationRoutes(
   fastify: FastifyInstance,
@@ -93,7 +76,9 @@ export function registerConversationRoutes(
     },
     async (request, reply) => {
       const actor = await resolveMember(request, reply, dependencies.resolveActor);
-      return reply.code(201).send(await dependencies.conversations.create(actor));
+      return reply
+        .code(201)
+        .send(await dependencies.conversations.create(actor, request.body.adoptNewDraftRevision));
     },
   );
 
@@ -271,27 +256,6 @@ export function registerConversationRoutes(
             request.body.observedRevision,
           ),
         );
-    },
-  );
-
-  server.delete(
-    "/api/conversations/:conversationId",
-    {
-      bodyLimit: 1_024,
-      schema: {
-        body: DeleteConversationRequestSchema,
-        params: ConversationParamsSchema,
-        response: { 204: DeleteConversationResponseSchema, ...ordinaryErrorResponses },
-      },
-    },
-    async (request, reply) => {
-      const actor = await resolveMember(request, reply, dependencies.resolveActor);
-      await dependencies.conversations.remove(
-        actor,
-        request.params.conversationId,
-        request.body.observedRevision,
-      );
-      return reply.code(204).send(null);
     },
   );
 

@@ -174,6 +174,53 @@ export const copy = {
       replaceServer: "Conservar este borrador",
       pendingNotice: "Hay cambios de borrador que todavía no se han guardado.",
     },
+    generation: {
+      actions: {
+        send: "Enviar",
+        sending: "Enviando…",
+        stop: "Detener",
+        stopping: "Deteniendo…",
+        continue: "Continuar",
+      },
+      status: {
+        starting: "Enviando mensaje…",
+        generating: "Generando respuesta…",
+        compacting: "Preparando el contexto…",
+        stopping: "Deteniendo respuesta…",
+        completed: "Respuesta completada",
+        cancelled: "Respuesta detenida",
+        interrupted: "La respuesta se interrumpió",
+        protocolFailure: "La respuesta se interrumpió por un problema de conexión",
+        failed: "No pudimos generar la respuesta",
+        outputLimit: "La respuesta alcanzó su límite",
+        archived: "Desarchiva la conversación para enviar un mensaje.",
+        refreshing: "Actualizando la conversación…",
+      },
+      terminal: {
+        cancelled: "Respuesta detenida",
+        incomplete: "Respuesta interrumpida",
+        failed: "Respuesta no generada",
+        length: "La respuesta alcanzó su límite",
+        refusal: "El asistente no pudo responder a esta solicitud",
+        contentFilter: "La respuesta fue limitada por seguridad",
+      },
+      errors: {
+        generic: "No pudimos iniciar la respuesta. Tu borrador sigue guardado.",
+        ambiguous:
+          "No pudimos confirmar si la respuesta comenzó. Revisa la conversación antes de volver a enviar.",
+        conversationAmbiguous:
+          "No pudimos confirmar si se creó la conversación. Revisa Recientes antes de volver a intentar.",
+        committed: "No pudimos completar la respuesta.",
+        archived: "Desarchiva la conversación antes de enviar el mensaje.",
+        conversationChanged:
+          "La conversación cambió. Actualiza la información y vuelve a intentarlo.",
+        draftChanged: "El borrador cambió. Revisa la versión guardada antes de enviarlo.",
+        active: "Ya hay una respuesta activa en esta conversación.",
+        tooLarge: "El mensaje es demasiado largo. Redúcelo antes de enviarlo.",
+        draftSave: "No pudimos confirmar el borrador. Tu texto permanece en el editor.",
+        responseState: "No pudimos actualizar el estado de algunas respuestas.",
+      },
+    },
     conversation: {
       loading: "Cargando conversación",
       notFoundTitle: "No encontramos esta conversación",

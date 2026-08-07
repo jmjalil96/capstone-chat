@@ -790,12 +790,16 @@ select:focus-visible,
   gap: var(--capstone-space-2);
 }
 
+.composer-control {
+  position: relative;
+}
+
 .draft-editor textarea {
   width: 100%;
   min-height: 8rem;
   max-height: 16rem;
-  resize: vertical;
-  padding: var(--capstone-space-4) var(--capstone-space-5);
+  resize: none;
+  padding: var(--capstone-space-4) var(--capstone-space-5) 4.5rem;
   overflow-y: auto;
   background: var(--app-panel);
   border: 1px solid var(--app-control-border);
@@ -803,6 +807,18 @@ select:focus-visible,
   color: var(--app-text);
   line-height: 1.55;
   box-shadow: 0 0.4rem 1.5rem color-mix(in srgb, var(--app-text) 8%, transparent);
+}
+
+.composer-action {
+  position: absolute;
+  right: var(--capstone-space-3);
+  bottom: var(--capstone-space-3);
+  min-height: 2.5rem;
+  padding: var(--capstone-space-2) var(--capstone-space-4);
+}
+
+.composer-alert {
+  margin: 0;
 }
 
 .draft-status-row {
@@ -813,7 +829,14 @@ select:focus-visible,
   gap: var(--capstone-space-2);
 }
 
-.draft-save-status {
+.draft-status-row > div {
+  display: grid;
+  justify-items: end;
+  gap: 0.1rem;
+}
+
+.draft-save-status,
+.generation-status {
   margin: 0;
   color: var(--app-text-muted);
   font-family: var(--capstone-font-data);
@@ -1050,7 +1073,13 @@ select:focus-visible,
 
 .conversation-alert {
   grid-area: alert;
+  display: grid;
+  gap: var(--capstone-space-2);
   margin: var(--capstone-space-3) var(--capstone-gutter-medium) 0;
+}
+
+.conversation-alert .inline-alert {
+  margin: 0;
 }
 
 .message-scroll {
@@ -1104,6 +1133,22 @@ select:focus-visible,
 
 .message-alternatives {
   margin: var(--capstone-space-3) 0 0;
+}
+
+.response-outcome {
+  width: fit-content;
+  margin: var(--capstone-space-3) 0 0;
+  padding: var(--capstone-space-1) var(--capstone-space-3);
+  background: var(--app-panel-soft);
+  border-radius: 999px;
+  color: var(--app-text-muted);
+  font-family: var(--capstone-font-data);
+  font-size: var(--capstone-type-label);
+  font-weight: var(--capstone-weight-medium);
+}
+
+.response-continue {
+  margin-block-start: var(--capstone-space-3);
 }
 
 .conversation-draft-dock {

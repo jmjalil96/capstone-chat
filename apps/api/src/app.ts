@@ -9,6 +9,15 @@ import { type ConversationService, createConversationService } from "./conversat
 import { type AppDatabase, createDatabase } from "./database/database.js";
 import { createDatabasePool, type DatabasePool } from "./database/pool.js";
 import { registerErrorHandling } from "./errors.js";
+import { ActiveStreamRegistry } from "./generations/active-streams.js";
+import { FakeModelGateway } from "./generations/fake-model-gateway.js";
+import type { ModelGateway } from "./generations/model-gateway.js";
+import {
+  createResponseStreamCoordinator,
+  type ResponseStreamCoordinator,
+} from "./generations/response-stream.js";
+import { createGenerationService, type GenerationService } from "./generations/service.js";
+import { generationTuning } from "./generations/settings.js";
 import { createActorResolver } from "./identity/authorization.js";
 import { createEmailSender, type EmailSender, FakeEmailSender } from "./identity/email.js";
 import { createIdentityService, type IdentityService } from "./identity/service.js";
@@ -17,6 +26,7 @@ import { registerAuthRoutes } from "./routes/auth.js";
 import { registerConversationRoutes } from "./routes/conversations.js";
 import { registerDevelopmentMailboxRoute } from "./routes/development-mailbox.js";
 import { registerHealthRoutes } from "./routes/health.js";
+import { registerResponseRoutes } from "./routes/responses.js";
 import { registerSessionRoute } from "./routes/session.js";
 import { applySecurityHeaders, enforceCapstoneMutationBoundary } from "./security/http.js";
 
@@ -25,14 +35,22 @@ export interface ApplicationDependencies {
   readonly conversations?: ConversationService;
   readonly database?: AppDatabase;
   readonly emailSender?: EmailSender;
+  readonly generations?: GenerationService;
   readonly identity?: IdentityService;
   readonly loggerStream?: { write(message: string): void };
+  readonly modelGateway?: ModelGateway;
   readonly pool?: DatabasePool;
   readonly requestIdFactory?: () => string;
+  readonly responseStreams?: ResponseStreamCoordinator;
+  readonly streamRegistry?: ActiveStreamRegistry;
 }
 
 export function createApplication(config: ApiConfig, dependencies: ApplicationDependencies = {}) {
   const requestIdFactory = dependencies.requestIdFactory ?? randomUUID;
+  const modelGateway = dependencies.modelGateway ?? new FakeModelGateway();
+  if (config.nodeEnv === "production" && modelGateway instanceof FakeModelGateway) {
+    throw new Error("FakeModelGateway is prohibited in production");
+  }
   const server = Fastify({
     bodyLimit: 64 * 1024,
     genReqId: () => requestIdFactory(),
@@ -79,6 +97,15 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
   const conversations =
     dependencies.conversations ??
     createConversationService(database, createCursorCodec(config.authSecret));
+  const generations = dependencies.generations ?? createGenerationService(database);
+  const streamRegistry = dependencies.streamRegistry ?? new ActiveStreamRegistry();
+  const responseStreams =
+    dependencies.responseStreams ??
+    createResponseStreamCoordinator({
+      gateway: modelGateway,
+      generations,
+      registry: streamRegistry,
+    });
 
   server.addHook("preValidation", (request, _reply, done) => {
     try {
@@ -116,6 +143,12 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
   registerAuthRoutes(server, { authentication, config });
   registerSessionRoute(server, resolveActor);
   registerConversationRoutes(server, { conversations, resolveActor });
+  registerResponseRoutes(server, {
+    generations,
+    registry: streamRegistry,
+    resolveActor,
+    streams: responseStreams,
+  });
   if (emailSender instanceof FakeEmailSender) {
     registerDevelopmentMailboxRoute(server, config, emailSender);
   }
@@ -125,13 +158,17 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
   function shutdown(): Promise<void> {
     shutdownPromise ??= (async () => {
       lifecycle.beginDraining();
+      streamRegistry.beginDraining();
       let closeError: unknown;
-
-      try {
-        await server.close();
-      } catch (error: unknown) {
+      const closePromise = server.close().catch((error: unknown) => {
         closeError = error;
+      });
+
+      if (!(await streamRegistry.waitForIdle(generationTuning.gracefulDrainMilliseconds))) {
+        streamRegistry.abortAll("shutdown");
+        await streamRegistry.waitForIdle(generationTuning.backpressureTimeoutMilliseconds);
       }
+      await closePromise;
 
       try {
         await pool.end();
@@ -158,11 +195,15 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
     conversations,
     database,
     emailSender,
+    generations,
     identity,
     lifecycle,
+    modelGateway,
     pool,
+    responseStreams,
     server,
     shutdown,
+    streamRegistry,
   } as const;
 }
 
