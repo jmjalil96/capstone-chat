@@ -2,10 +2,15 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createBrowserRouter, Navigate, type RouteObject } from "react-router";
 import { RouterProvider } from "react-router/dom";
 
+import { ArchivedPage } from "./conversations/archived-page";
+import { ConversationPage } from "./conversations/conversation-page";
+import { ConversationShell } from "./conversations/conversation-shell";
+import { NewChatPage } from "./conversations/new-chat-page";
+import { ProtectedDraftLayout } from "./conversations/protected-draft-layout";
+import { SearchPage } from "./conversations/search-page";
 import { AccountSecurityPage } from "./identity/account-security-page";
-import { CheckpointPage } from "./identity/checkpoint-page";
 import { ForgotPasswordPage } from "./identity/forgot-password-page";
-import { IdentityLayout } from "./identity/identity-layout";
+import { IdentityFrame, IdentityLayout } from "./identity/identity-layout";
 import { RequireSession } from "./identity/require-session";
 import { ResetPasswordPage } from "./identity/reset-password-page";
 import { SignInPage } from "./identity/sign-in-page";
@@ -30,16 +35,36 @@ export const appRoutes = [
       { path: "/verify-email", Component: VerifyEmailPage },
       { path: "/forgot-password", Component: ForgotPasswordPage },
       { path: "/reset-password", Component: ResetPasswordPage },
-      {
-        Component: RequireSession,
-        children: [
-          { index: true, Component: CheckpointPage },
-          { path: "/account/security", Component: AccountSecurityPage },
-        ],
-      },
-      { path: "*", element: <Navigate to="/" replace /> },
     ],
   },
+  {
+    element: <RequireSession standalone />,
+    children: [
+      {
+        Component: ProtectedDraftLayout,
+        children: [
+          {
+            Component: ConversationShell,
+            children: [
+              { index: true, Component: NewChatPage },
+              { path: "/c/:conversationId", Component: ConversationPage },
+              { path: "/search", Component: SearchPage },
+              { path: "/archived", Component: ArchivedPage },
+            ],
+          },
+          {
+            path: "/account/security",
+            element: (
+              <IdentityFrame>
+                <AccountSecurityPage />
+              </IdentityFrame>
+            ),
+          },
+        ],
+      },
+    ],
+  },
+  { path: "*", element: <Navigate to="/" replace /> },
 ] satisfies RouteObject[];
 
 const router = createBrowserRouter(appRoutes);

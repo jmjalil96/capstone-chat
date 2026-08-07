@@ -8,6 +8,13 @@
       "when": 1786061111713,
       "tag": "0000_bumpy_living_lightning",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1786071863036,
+      "tag": "0001_conscious_giant_man",
+      "breakpoints": true
     }
   ]
 }

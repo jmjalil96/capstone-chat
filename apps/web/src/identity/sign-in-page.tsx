@@ -2,7 +2,6 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link, useNavigate } from "react-router";
 
-import { sessionQueryKey } from "../api/session";
 import { copy } from "../copy";
 import { signIn } from "./auth-actions";
 import { FieldError, FormMessage, useFeedbackAttempt } from "./form-feedback";
@@ -22,7 +21,8 @@ export function SignInPage() {
   const mutation = useMutation({
     mutationFn: signIn,
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: sessionQueryKey });
+      await queryClient.cancelQueries();
+      queryClient.clear();
       navigate("/", { replace: true });
     },
   });

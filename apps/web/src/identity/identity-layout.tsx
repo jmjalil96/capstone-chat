@@ -1,10 +1,11 @@
 import capstoneLogo from "@capstone/brand/assets/logos/capstone-primary.svg";
+import type { ReactNode } from "react";
 import { Link, Outlet } from "react-router";
 
 import { copy } from "../copy";
 import { ReadinessIndicator } from "../readiness-indicator";
 
-export function IdentityLayout() {
+export function IdentityFrame({ children }: { readonly children: ReactNode }) {
   return (
     <div className="app-shell">
       <header className="site-header">
@@ -14,8 +15,16 @@ export function IdentityLayout() {
         <ReadinessIndicator />
       </header>
       <main className="identity-main" id="main-content">
-        <Outlet />
+        {children}
       </main>
     </div>
+  );
+}
+
+export function IdentityLayout() {
+  return (
+    <IdentityFrame>
+      <Outlet />
+    </IdentityFrame>
   );
 }

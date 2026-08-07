@@ -1,12 +1,14 @@
 # Capstone Chat
 
-Capstone Chat is an internal AI chat product. The repository currently implements the Phase 2
-identity checkpoint: an approved employee can create and verify an account, sign in with a
-database-backed session, and reach a minimal workspace-scoped protected page. Operators manage the
-first workspace, employee approvals, and deactivation through explicit commands.
+Capstone Chat is an internal AI chat product. The repository currently implements the Phase 3
+conversation core: an approved employee can create and verify an account, sign in with a
+database-backed session, keep server-side drafts, browse and search owned conversation history,
+and rename, archive, unarchive, or permanently delete a conversation. Operators manage the first
+workspace, employee approvals, and deactivation through explicit commands.
 
-Conversations, model access, budgets, web administration, and production deployment remain outside
-this milestone.
+Phase 3 intentionally has no Send action and cannot generate an answer. Model access, streaming,
+conversation controls such as edit and retry, budgets, web administration, and production
+deployment remain outside this milestone.
 
 ## Prerequisites
 
@@ -41,7 +43,7 @@ Apply the complete committed migration history explicitly:
 pnpm db:migrate
 ```
 
-Bootstrap the one Phase 2 workspace and its pending administrator approval. This command creates no
+Bootstrap the one workspace and its pending administrator approval. This command creates no
 password or default credential:
 
 ```sh
@@ -93,8 +95,8 @@ Deactivate an employee and revoke their database sessions:
 pnpm identity:deactivate --workspace capstone --email employee@example.test
 ```
 
-Deactivation blocks authorization before session cleanup and is safe to retry. There is no Phase 2
-web administration surface.
+Deactivation blocks authorization before session cleanup and is safe to retry. Phase 3 has no web
+administration surface.
 
 ## Identity and recovery flow
 
@@ -105,10 +107,45 @@ web administration surface.
   mailbox.
 - `/reset-password` consumes the delivered reset link and revokes all existing sessions.
 - `/account/security` changes the password, preserves the current session, and revokes the others.
-- `/` is a protected identity checkpoint showing only the employee, workspace, role, and sign-out.
+- `/` is the protected new-chat draft inside the responsive application shell.
+- `/c/:conversationId` opens the selected immutable branch of an owned conversation.
+- `/search` searches owned active and archived titles and message text without putting the query in
+  the browser URL.
+- `/archived` pages through archived conversations.
 
 Verification and reset tokens are removed from the visible browser URL and are never intended for
 logs or browser storage.
+
+## Conversation core
+
+PostgreSQL is authoritative for conversation trees, selected branches, revisions, archive state,
+search indexes, and drafts. Conversation and draft reads are always scoped to both the active
+workspace and employee; an administrator has no exception for reading another employee's content.
+
+- Recent and archived history use opaque keyset cursors with 20 conversations per page.
+- Conversation detail returns the selected branch in pages of 40 whole plain-text messages.
+- Search returns 20 results per page, is case- and accent-insensitive, and prefix-matches only the
+  final term. It covers preserved alternative branches and clearly labels archived results.
+- New-chat and conversation drafts autosave 600 ms after typing pauses. Drafts allow 32,768 UTF-8
+  bytes and use independent compare-and-swap revisions so concurrent tabs cannot silently
+  overwrite one another.
+- Manual titles allow 120 Unicode code points. The initial-title helper reserved for first-send in
+  Phase 4 collapses whitespace and limits its result to 72 Unicode code points.
+- Rename, branch selection, archive, unarchive, and permanent deletion use the observed structural
+  revision. A stale change is rejected instead of overwriting newer state.
+- Permanent deletion removes the conversation, its messages, and its conversation-scoped draft
+  immediately. The confirmation explains that inaccessible encrypted backups may retain content
+  until their finite retention period expires.
+
+Draft conflicts present two explicit choices: adopt the newest server draft, or deliberately
+replace it using the newest observed revision. A failed or conflicted save never moves draft text to
+localStorage or IndexedDB. Reloading or closing a tab can therefore lose text that never reached
+Fastify. The only persisted browser preference is the desktop sidebar's collapsed state.
+
+The conversation tables and PostgreSQL `unaccent` search extension are added by the committed Phase
+3 migration. Apply migrations explicitly with `pnpm db:migrate`; API replicas never migrate during
+startup. If conversation routes fail after upgrading a checkout, confirm the complete migration
+history ran against the selected `DATABASE_URL`.
 
 ## Health and troubleshooting
 
@@ -147,7 +184,7 @@ report that the service is unavailable. Restart it with `docker compose start po
 | `pnpm check` | Run Biome formatting, linting, and import checks |
 | `pnpm typecheck` | Run strict TypeScript checks in each executable TypeScript workspace |
 | `pnpm test` | Run protocol, API unit/PostgreSQL integration, and deterministic web tests |
-| `pnpm test:e2e` | Run the separate Playwright identity browser suite |
+| `pnpm test:e2e` | Run the separate Playwright identity and conversation browser suite |
 | `pnpm build` | Build the protocol, production API JavaScript, and static web assets |
 | `pnpm run ci` | Run `check`, `typecheck`, `test`, and `build` in order |
 | `pnpm db:migrate` | Apply every committed Drizzle migration to `DATABASE_URL` |
@@ -168,8 +205,9 @@ pnpm --filter @capstone/web exec playwright install chromium
 pnpm test:e2e
 ```
 
-The Playwright command starts its own migrated PostgreSQL container, fake-email API harness, and
-Vite server. It does not use the local development database or a real email provider.
+The Playwright command starts its own migrated PostgreSQL container, seeds synthetic conversation
+trees before the API listens, and starts the fake-email API harness and Vite server. It does not use
+the local development database, expose a test-only application route, or use a real email provider.
 
 GitHub Actions exposes formatting/linting, type checking, clean migrations, unit and PostgreSQL
 integration tests, production builds, the non-root API image, and Playwright as separate gates. CI

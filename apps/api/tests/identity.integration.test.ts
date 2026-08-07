@@ -361,6 +361,7 @@ describe.sequential("identity integration", () => {
       remoteAddress: "127.0.0.14",
     });
     expect(oversized.statusCode).toBe(413);
+    expect(oversized.json()).toMatchObject({ code: "PAYLOAD_TOO_LARGE" });
     expect(
       (
         await app.server.inject({

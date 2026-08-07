@@ -47,7 +47,7 @@ async function signIn(page: Page, password: string): Promise<void> {
   await expect(
     page.getByRole("heading", {
       level: 1,
-      name: copy.identity.checkpoint.title(administrator.name),
+      name: copy.conversations.newChat.title,
     }),
   ).toBeVisible();
 }
@@ -80,17 +80,20 @@ test("completes the real approved identity lifecycle through the browser", async
   ).toBeVisible();
 
   await signIn(page, originalPassword);
-  await expect(page.getByText("Capstone Ecuador")).toBeVisible();
-  await expect(page.getByText(copy.identity.roles.admin, { exact: true })).toBeVisible();
+  const desktopSidebar = page.locator(".desktop-sidebar");
+  await expect(desktopSidebar.getByText("Capstone Ecuador")).toBeVisible();
+  await desktopSidebar.getByText(administrator.name, { exact: true }).click();
+  await expect(desktopSidebar.getByText(copy.identity.roles.admin, { exact: true })).toBeVisible();
   await page.reload();
   await expect(
     page.getByRole("heading", {
       level: 1,
-      name: copy.identity.checkpoint.title(administrator.name),
+      name: copy.conversations.newChat.title,
     }),
   ).toBeVisible();
 
-  await page.getByRole("link", { name: copy.identity.checkpoint.securityLink }).click();
+  await desktopSidebar.getByText(administrator.name, { exact: true }).click();
+  await desktopSidebar.getByRole("link", { name: copy.conversations.navigation.security }).click();
   await page.getByLabel(copy.identity.common.currentPasswordLabel).fill(originalPassword);
   await page.getByLabel(copy.identity.common.newPasswordLabel).fill(changedPassword);
   await page.getByLabel(copy.identity.common.confirmPasswordLabel).fill(changedPassword);
@@ -102,11 +105,12 @@ test("completes the real approved identity lifecycle through the browser", async
   await expect(
     page.getByRole("heading", {
       level: 1,
-      name: copy.identity.checkpoint.title(administrator.name),
+      name: copy.conversations.newChat.title,
     }),
   ).toBeVisible();
 
-  await page.getByRole("button", { name: copy.identity.checkpoint.signOut }).click();
+  await desktopSidebar.getByText(administrator.name, { exact: true }).click();
+  await desktopSidebar.getByRole("button", { name: copy.conversations.navigation.signOut }).click();
   await expect(
     page.getByRole("heading", { level: 1, name: copy.identity.signIn.title }),
   ).toBeVisible();
@@ -131,7 +135,8 @@ test("completes the real approved identity lifecycle through the browser", async
   ).toBeVisible();
 
   await signIn(page, resetPassword);
-  await page.getByRole("button", { name: copy.identity.checkpoint.signOut }).click();
+  await desktopSidebar.getByText(administrator.name, { exact: true }).click();
+  await desktopSidebar.getByRole("button", { name: copy.conversations.navigation.signOut }).click();
   await expect(
     page.getByRole("heading", { level: 1, name: copy.identity.signIn.title }),
   ).toBeVisible();

@@ -2,7 +2,6 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLayoutEffect, useState } from "react";
 import { Link } from "react-router";
 
-import { type SessionQueryResult, sessionQueryKey } from "../api/session";
 import { copy } from "../copy";
 import { resetPassword } from "./auth-actions";
 import { FieldError, FormMessage, useFeedbackAttempt } from "./form-feedback";
@@ -36,8 +35,8 @@ export function ResetPasswordPage() {
   const mutation = useMutation({
     mutationFn: resetPassword,
     onSuccess: async () => {
-      await queryClient.cancelQueries({ queryKey: sessionQueryKey });
-      queryClient.setQueryData<SessionQueryResult>(sessionQueryKey, { status: "anonymous" });
+      await queryClient.cancelQueries();
+      queryClient.clear();
     },
   });
 

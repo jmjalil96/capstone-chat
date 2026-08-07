@@ -4,6 +4,8 @@ import Fastify, { LogController } from "fastify";
 import type { Pool } from "pg";
 import { type Authentication, createAuthentication } from "./auth/authentication.js";
 import type { ApiConfig } from "./config.js";
+import { createCursorCodec } from "./conversations/cursor.js";
+import { type ConversationService, createConversationService } from "./conversations/service.js";
 import { type AppDatabase, createDatabase } from "./database/database.js";
 import { createDatabasePool, type DatabasePool } from "./database/pool.js";
 import { registerErrorHandling } from "./errors.js";
@@ -12,6 +14,7 @@ import { createEmailSender, type EmailSender, FakeEmailSender } from "./identity
 import { createIdentityService, type IdentityService } from "./identity/service.js";
 import { createApplicationLifecycle } from "./lifecycle.js";
 import { registerAuthRoutes } from "./routes/auth.js";
+import { registerConversationRoutes } from "./routes/conversations.js";
 import { registerDevelopmentMailboxRoute } from "./routes/development-mailbox.js";
 import { registerHealthRoutes } from "./routes/health.js";
 import { registerSessionRoute } from "./routes/session.js";
@@ -19,6 +22,7 @@ import { applySecurityHeaders, enforceCapstoneMutationBoundary } from "./securit
 
 export interface ApplicationDependencies {
   readonly authentication?: Authentication;
+  readonly conversations?: ConversationService;
   readonly database?: AppDatabase;
   readonly emailSender?: EmailSender;
   readonly identity?: IdentityService;
@@ -72,6 +76,9 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
       identity,
     });
   const resolveActor = createActorResolver(authentication, identity);
+  const conversations =
+    dependencies.conversations ??
+    createConversationService(database, createCursorCodec(config.authSecret));
 
   server.addHook("preValidation", (request, _reply, done) => {
     try {
@@ -84,6 +91,9 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
 
   server.addHook("onSend", (request, reply, payload, done) => {
     void reply.header("x-request-id", request.id);
+    if (request.url.startsWith("/api/conversations") || request.url.startsWith("/api/drafts")) {
+      void reply.header("cache-control", "no-store");
+    }
     applySecurityHeaders(reply);
     done(null, payload);
   });
@@ -105,6 +115,7 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
   registerHealthRoutes(server, lifecycle);
   registerAuthRoutes(server, { authentication, config });
   registerSessionRoute(server, resolveActor);
+  registerConversationRoutes(server, { conversations, resolveActor });
   if (emailSender instanceof FakeEmailSender) {
     registerDevelopmentMailboxRoute(server, config, emailSender);
   }
@@ -144,6 +155,7 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
 
   return {
     authentication,
+    conversations,
     database,
     emailSender,
     identity,

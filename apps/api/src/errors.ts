@@ -1,17 +1,18 @@
-import { type ApiError, ApiErrorSchema } from "@capstone/protocol";
+import { type ApiError, type ApiErrorCode, ApiErrorSchema } from "@capstone/protocol";
 import type { FastifyError, FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
 const errorCopy = {
   badRequest: "La solicitud no es válida.",
   internal: "Ocurrió un error interno.",
   notFound: "No se encontró el recurso solicitado.",
+  payloadTooLarge: "El contenido supera el tamaño permitido.",
 } as const;
 
 export class ApplicationError extends Error {
-  readonly code: string;
+  readonly code: ApiErrorCode;
   readonly statusCode: number;
 
-  constructor(statusCode: number, code: string, message: string) {
+  constructor(statusCode: number, code: ApiErrorCode, message: string) {
     super(message);
     this.name = "ApplicationError";
     this.code = code;
@@ -46,14 +47,31 @@ export function registerErrorHandling(fastify: FastifyInstance): void {
       return;
     }
 
-    const statusCode = error.validation === undefined ? (error.statusCode ?? 500) : 400;
+    const payloadTooLarge =
+      error.statusCode === 413 ||
+      error.validation?.some(
+        (issue) => issue.keyword === "~refine" && issue.params.message === "PAYLOAD_TOO_LARGE",
+      );
+    const statusCode = payloadTooLarge
+      ? 413
+      : error.validation === undefined
+        ? (error.statusCode ?? 500)
+        : 400;
     const isClientError = statusCode >= 400 && statusCode < 500;
 
     logError(request, error, statusCode, isClientError);
 
     sendErrorEnvelope(reply, statusCode, {
-      code: isClientError ? "BAD_REQUEST" : "INTERNAL_ERROR",
-      message: isClientError ? errorCopy.badRequest : errorCopy.internal,
+      code: payloadTooLarge
+        ? "PAYLOAD_TOO_LARGE"
+        : isClientError
+          ? "BAD_REQUEST"
+          : "INTERNAL_ERROR",
+      message: payloadTooLarge
+        ? errorCopy.payloadTooLarge
+        : isClientError
+          ? errorCopy.badRequest
+          : errorCopy.internal,
       requestId: request.id,
     });
   });

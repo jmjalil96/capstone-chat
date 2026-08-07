@@ -1,12 +1,15 @@
+import type { SessionResponse } from "@capstone/protocol";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { StrictMode } from "react";
 import { createMemoryRouter } from "react-router";
 import { RouterProvider } from "react-router/dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { sessionQueryKey } from "../api/session";
 import { appRoutes } from "../app";
+import { conversationQueryKeys, conversationQueryScope } from "../conversations/api";
 import { copy } from "../copy";
 
 const authMocks = vi.hoisted(() => ({
@@ -37,13 +40,14 @@ const validSession = {
     createdAt: "2026-08-06T12:00:00.000Z",
     expiresAt: "2026-08-13T12:00:00.000Z",
   },
-};
+} satisfies SessionResponse;
 
 type SessionFixture = "authenticated" | "anonymous" | "denied" | "malformed";
 
 function response(payload: unknown, status: number): Response {
   return {
     json: vi.fn().mockResolvedValue(payload),
+    ok: status >= 200 && status < 300,
     status,
   } as unknown as Response;
 }
@@ -80,22 +84,59 @@ function sessionResponse(fixture: SessionFixture): Response {
 
 function renderRoute(path: string, sessionFixture: SessionFixture = "authenticated") {
   window.history.replaceState(null, "", path);
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async (input: string | URL | Request) => {
-      const url = typeof input === "string" ? input : input.toString();
+  let draftWritesFail = false;
+  const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input.toString();
+    const method = init?.method ?? (input instanceof Request ? input.method : "GET");
 
-      if (url.includes("/api/health/ready")) {
-        return response({ status: "ready", database: "up" }, 200);
+    if (url.includes("/api/health/ready")) {
+      return response({ status: "ready", database: "up" }, 200);
+    }
+
+    if (url.includes("/api/session")) {
+      return sessionResponse(sessionFixture);
+    }
+
+    if (url.includes("/api/conversations?")) {
+      return response({ conversations: [], nextCursor: null }, 200);
+    }
+
+    if (url.includes("/api/drafts/new")) {
+      if (method === "PUT") {
+        if (draftWritesFail) {
+          return response(
+            { code: "INTERNAL_ERROR", message: "Unavailable", requestId: "request-draft" },
+            503,
+          );
+        }
+        const body = JSON.parse(String(init?.body)) as {
+          content: string;
+          observedRevision: number;
+        };
+        return response(
+          {
+            scope: { kind: "new" },
+            content: body.content,
+            revision: body.observedRevision + 1,
+            updatedAt: "2026-08-06T12:00:00.000Z",
+          },
+          200,
+        );
       }
+      return response(
+        {
+          scope: { kind: "new" },
+          content: "",
+          revision: 0,
+          updatedAt: null,
+        },
+        200,
+      );
+    }
 
-      if (url.includes("/api/session")) {
-        return sessionResponse(sessionFixture);
-      }
-
-      throw new Error(`Unexpected request: ${url}`);
-    }),
-  );
+    throw new Error(`Unexpected request: ${url}`);
+  });
+  vi.stubGlobal("fetch", fetchMock);
 
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -109,13 +150,22 @@ function renderRoute(path: string, sessionFixture: SessionFixture = "authenticat
     </QueryClientProvider>,
   );
 
-  return { queryClient, router, user };
+  return {
+    fetchMock,
+    queryClient,
+    router,
+    setDraftWritesFailing: (failing: boolean) => {
+      draftWritesFail = failing;
+    },
+    user,
+  };
 }
 
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
   vi.unstubAllGlobals();
+  window.localStorage.clear();
   window.history.replaceState(null, "", "/");
 });
 
@@ -128,18 +178,74 @@ describe("identity routes", () => {
     ).toBeVisible();
   });
 
-  it("renders the protected checkpoint from the canonical Capstone session", async () => {
+  it("renders the protected conversation shell from the canonical Capstone session", async () => {
     renderRoute("/");
 
     expect(
       await screen.findByRole("heading", {
         level: 1,
-        name: copy.identity.checkpoint.title(validSession.employee.name),
+        name: copy.conversations.newChat.title,
       }),
     ).toBeVisible();
-    expect(screen.getByText(validSession.workspace.name)).toBeVisible();
-    expect(screen.getByText(copy.identity.roles.admin)).toBeVisible();
-    expect(screen.getByRole("link", { name: copy.identity.checkpoint.securityLink })).toBeVisible();
+    await waitFor(() =>
+      expect(screen.getByRole("textbox", { name: copy.conversations.draft.label })).toHaveFocus(),
+    );
+    expect(screen.getByRole("link", { name: copy.conversations.common.newChat })).toBeVisible();
+    expect(screen.getByRole("link", { name: copy.conversations.navigation.search })).toBeVisible();
+  });
+
+  it("persists only the approved desktop sidebar preference", async () => {
+    const { fetchMock, user } = renderRoute("/");
+    await screen.findByRole("heading", { name: copy.conversations.newChat.title });
+    const editor = screen.getByRole("textbox", { name: copy.conversations.draft.label });
+    await waitFor(() => expect(editor).toBeEnabled());
+    await user.type(editor, "Texto pendiente");
+    expect(screen.queryByText(copy.conversations.draft.pendingNotice)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: copy.conversations.navigation.collapse }));
+    expect(Object.keys(window.localStorage)).toEqual(["capstone-chat.sidebar-collapsed.v1"]);
+    expect(window.localStorage.getItem("capstone-chat.sidebar-collapsed.v1")).toBe("true");
+
+    await user.click(screen.getByRole("button", { name: copy.conversations.navigation.expand }));
+    expect(window.localStorage).toHaveLength(0);
+
+    await user.click(screen.getAllByText(validSession.employee.name)[0] as HTMLElement);
+    await user.click(screen.getByRole("link", { name: copy.conversations.navigation.security }));
+    expect(
+      await screen.findByRole("heading", { level: 1, name: copy.identity.security.title }),
+    ).toBeVisible();
+    expect(screen.queryByText(copy.conversations.draft.pendingNotice)).not.toBeInTheDocument();
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "PUT")).toHaveLength(1);
+  });
+
+  it("keeps a dirty editor mounted when a POP navigation final-save fails", async () => {
+    const { router, setDraftWritesFailing, user } = renderRoute("/");
+    await screen.findByRole("heading", { name: copy.conversations.newChat.title });
+    await router.navigate("/search");
+    await screen.findByRole("heading", { name: copy.conversations.search.title });
+    await router.navigate("/");
+    const editor = await screen.findByRole("textbox", { name: copy.conversations.draft.label });
+    await waitFor(() => expect(editor).toBeEnabled());
+
+    setDraftWritesFailing(true);
+    await user.type(editor, "Texto que debe permanecer");
+    void router.navigate(-1);
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(copy.conversations.draft.unsaved, { selector: ".draft-save-status" }),
+      ).toBeVisible(),
+    );
+    expect(router.state.location.pathname).toBe("/");
+    expect(editor).toBeVisible();
+    expect(editor).toHaveValue("Texto que debe permanecer");
+
+    setDraftWritesFailing(false);
+    void router.navigate(-1);
+    expect(
+      await screen.findByRole("heading", { level: 1, name: copy.conversations.search.title }),
+    ).toBeVisible();
+    expect(router.state.location.pathname).toBe("/search");
   });
 
   it("distinguishes denied access from a transport failure", async () => {
@@ -200,16 +306,223 @@ describe("identity routes", () => {
     authMocks.signOut.mockResolvedValue(undefined);
     const { queryClient, user } = renderRoute("/");
     await screen.findByRole("heading", {
-      name: copy.identity.checkpoint.title(validSession.employee.name),
+      name: copy.conversations.newChat.title,
     });
+    const protectedKey = conversationQueryKeys.detail(
+      conversationQueryScope(validSession),
+      "private-fixture",
+    );
+    queryClient.setQueryData(protectedKey, { content: "must-not-survive-sign-out" });
 
-    await user.click(screen.getByRole("button", { name: copy.identity.checkpoint.signOut }));
+    await user.click(screen.getAllByText(validSession.employee.name)[0] as HTMLElement);
+    await user.click(screen.getByRole("button", { name: copy.conversations.navigation.signOut }));
 
     expect(
       await screen.findByRole("heading", { level: 1, name: copy.identity.signIn.title }),
     ).toBeVisible();
-    expect(queryClient.getQueryData(sessionQueryKey)).toBeUndefined();
+    expect(queryClient.getQueryData(sessionQueryKey)).toEqual({ status: "anonymous" });
+    expect(queryClient.getQueryData(protectedKey)).toBeUndefined();
     expect(screen.queryByText(validSession.employee.email)).not.toBeInTheDocument();
+  });
+
+  it("locks draft editing while sign-out is awaiting the server", async () => {
+    let finishSignOut: (() => void) | undefined;
+    authMocks.signOut.mockReturnValue(
+      new Promise<void>((resolve) => {
+        finishSignOut = resolve;
+      }),
+    );
+    const { user } = renderRoute("/");
+    const editor = await screen.findByRole("textbox", { name: copy.conversations.draft.label });
+    await waitFor(() => expect(editor).toBeEnabled());
+
+    await user.click(screen.getAllByText(validSession.employee.name)[0] as HTMLElement);
+    await user.click(screen.getByRole("button", { name: copy.conversations.navigation.signOut }));
+    await waitFor(() => expect(authMocks.signOut).toHaveBeenCalledOnce());
+    expect(editor).toBeDisabled();
+    await user.type(editor, "No debe perderse");
+    expect(editor).toHaveValue("");
+
+    finishSignOut?.();
+    expect(
+      await screen.findByRole("heading", { level: 1, name: copy.identity.signIn.title }),
+    ).toBeVisible();
+  });
+
+  it("fences a delayed employee draft save across a direct authenticated session change", async () => {
+    const replacementSession = {
+      employee: {
+        id: "employee-2",
+        name: "Beatriz Mora",
+        email: "beatriz@example.test",
+      },
+      workspace: {
+        id: "workspace-1",
+        identity: "capstone",
+        name: "Capstone",
+        role: "member",
+      },
+      session: {
+        createdAt: "2026-08-07T14:00:00.000Z",
+        expiresAt: "2026-08-14T14:00:00.000Z",
+      },
+    } satisfies SessionResponse;
+    let activeSession: SessionResponse = validSession;
+    let finishEmployeeASave: ((response: Response) => void) | undefined;
+    let employeeASaveSignal: AbortSignal | null | undefined;
+    const draftWrites: Array<{ content: string; observedRevision: number }> = [];
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+
+      if (url.includes("/api/health/ready")) {
+        return response({ status: "ready", database: "up" }, 200);
+      }
+      if (url.includes("/api/session")) {
+        return response(activeSession, 200);
+      }
+      if (url.includes("/api/conversations?")) {
+        return response({ conversations: [], nextCursor: null }, 200);
+      }
+      if (url.includes("/api/drafts/new") && method === "PUT") {
+        const body = JSON.parse(String(init?.body)) as {
+          content: string;
+          observedRevision: number;
+        };
+        draftWrites.push(body);
+        if (activeSession.employee.id !== validSession.employee.id) {
+          return response(
+            {
+              scope: { kind: "new" },
+              content: body.content,
+              revision: body.observedRevision + 1,
+              updatedAt: "2026-08-07T14:00:01.000Z",
+            },
+            200,
+          );
+        }
+        employeeASaveSignal = init?.signal;
+        return new Promise<Response>((resolve) => {
+          finishEmployeeASave = resolve;
+        });
+      }
+      if (url.includes("/api/drafts/new")) {
+        return activeSession.employee.id === validSession.employee.id
+          ? response(
+              {
+                scope: { kind: "new" },
+                content: "Base de Ana",
+                revision: 8,
+                updatedAt: "2026-08-06T12:00:00.000Z",
+              },
+              200,
+            )
+          : response(
+              {
+                scope: { kind: "new" },
+                content: "Borrador canónico de Beatriz",
+                revision: 0,
+                updatedAt: null,
+              },
+              200,
+            );
+      }
+      throw new Error(`Unexpected request: ${method} ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const router = createMemoryRouter(appRoutes, { initialEntries: ["/"] });
+    const user = userEvent.setup();
+
+    render(
+      <StrictMode>
+        <QueryClientProvider client={queryClient}>
+          <RouterProvider router={router} />
+        </QueryClientProvider>
+      </StrictMode>,
+    );
+
+    const employeeAEditor = await screen.findByRole("textbox", {
+      name: copy.conversations.draft.label,
+    });
+    await waitFor(() => expect(employeeAEditor).toHaveValue("Base de Ana"));
+    await user.clear(employeeAEditor);
+    await user.type(employeeAEditor, "Secreto de Ana");
+    await waitFor(() => expect(finishEmployeeASave).toBeTypeOf("function"), { timeout: 1_500 });
+    expect(draftWrites).toEqual([{ content: "Secreto de Ana", observedRevision: 8 }]);
+
+    await user.type(employeeAEditor, " con una edición posterior");
+    await user.click(screen.getByRole("link", { name: copy.conversations.navigation.search }));
+
+    activeSession = replacementSession;
+    await act(async () => {
+      queryClient.setQueryData(sessionQueryKey, {
+        status: "authenticated",
+        session: replacementSession,
+      });
+    });
+
+    await waitFor(() =>
+      expect(screen.getAllByText(replacementSession.employee.name)[0]).toBeVisible(),
+    );
+    const employeeBEditor = screen.getByRole("textbox", {
+      name: copy.conversations.draft.label,
+    });
+    expect(employeeBEditor).not.toBe(employeeAEditor);
+    await waitFor(() => expect(employeeBEditor).toHaveValue("Borrador canónico de Beatriz"));
+    await waitFor(() => expect(employeeASaveSignal?.aborted).toBe(true));
+
+    await act(async () => {
+      finishEmployeeASave?.(
+        response(
+          {
+            scope: { kind: "new" },
+            content: "Secreto de Ana",
+            revision: 9,
+            updatedAt: "2026-08-06T12:00:01.000Z",
+          },
+          200,
+        ),
+      );
+      await Promise.resolve();
+    });
+
+    const employeeAKey = conversationQueryKeys.draft(conversationQueryScope(validSession), {
+      kind: "new",
+    });
+    const employeeBKey = conversationQueryKeys.draft(conversationQueryScope(replacementSession), {
+      kind: "new",
+    });
+    await waitFor(() => expect(queryClient.getQueryData(employeeAKey)).toBeUndefined());
+    expect(queryClient.getQueryData(employeeBKey)).toMatchObject({
+      content: "Borrador canónico de Beatriz",
+      revision: 0,
+    });
+    expect(employeeBEditor).toHaveValue("Borrador canónico de Beatriz");
+    expect(router.state.location.pathname).toBe("/");
+    expect(draftWrites).toHaveLength(1);
+
+    await user.clear(employeeBEditor);
+    await user.type(employeeBEditor, "Edición de Beatriz");
+    await waitFor(() => expect(draftWrites).toHaveLength(2), { timeout: 1_500 });
+    expect(draftWrites[1]).toEqual({
+      content: "Edición de Beatriz",
+      observedRevision: 0,
+    });
+    await waitFor(() =>
+      expect(
+        screen.getByText(copy.conversations.draft.saved, { selector: ".draft-save-status" }),
+      ).toBeVisible(),
+    );
+    expect(queryClient.getQueryData(employeeAKey)).toBeUndefined();
+    expect(queryClient.getQueryData(employeeBKey)).toMatchObject({
+      content: "Edición de Beatriz",
+      revision: 1,
+    });
+    expect(employeeBEditor).toHaveValue("Edición de Beatriz");
+    expect(router.state.location.pathname).toBe("/");
   });
 
   it("submits sign-up data and shows the same generic public outcome", async () => {

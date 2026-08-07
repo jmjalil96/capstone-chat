@@ -1,8 +1,100 @@
 # Phase 3 — Conversation Core Implementation Plan
 
-Status: proposed for approval
+Status: implemented; verification complete; pending user acceptance
 
-Code authorization: not granted
+Code authorization: granted by the user on 2026-08-06
+
+## Implementation record
+
+- Accepted Phase 2 baseline: commit `bcc739c` (`Add Phase 2 identity`). The Phase 3 plan is commit
+  `1c983b2` (`Add Phase 3 conversation core plan`).
+- Preflight verification passed all 142 Phase 2 protocol, API, PostgreSQL integration, and web unit
+  tests, strict type checking, production builds, and all five Chromium browser tests. The literal
+  `pnpm run ci` wrapper remains affected only by the globally ignored local
+  `.claude/settings.local.json`; the repository-scoped Biome check passed all 93 source files, and
+  the unrelated local file remains untouched.
+- Server-owned page sizes are 20 recent or archived conversations, 40 selected-branch messages,
+  and 20 search results.
+- Manual titles are limited to 120 Unicode code points. Deterministic initial titles use at most 72
+  Unicode code points.
+- Search text is limited to 256 UTF-8 bytes and drafts to 32,768 UTF-8 bytes. Draft autosave waits
+  600 ms after typing pauses; search waits 250 ms. The only local preference key is
+  `capstone-chat.sidebar-collapsed.v1`.
+- Search lexemes are derived through a plain-text parser before final-term prefix construction.
+  Employee input is never passed directly to `to_tsquery`; quotes, operators, punctuation-only
+  input, Unicode accents, and empty-after-tokenization cases are required regression coverage.
+- Browser fixtures are seeded by the isolated API/Testcontainers harness after migration and before
+  it begins listening. Playwright receives no database credential and the application exposes no
+  test-only HTTP route.
+- Plan approval accepts that selecting a different branch from a search result is a structural
+  mutation: it increments the conversation revision and updates recent-history ordering. Selecting
+  the already selected leaf remains a no-op.
+- The Phase 3 cascade contains content only. Phase 6 usage and cost-accounting records must survive
+  conversation deletion and therefore must not depend on this content cascade when that schema is
+  designed.
+- PostgreSQL remains authoritative for both search matching and snippet normalization. The final
+  whitespace-delimited lexical term applies prefix matching to every lexeme PostgreSQL derives
+  from that term, including overlapping hyphenated-word and URL lexemes; earlier terms remain
+  exact. Typed plain-text snippet spans are mapped from batched PostgreSQL code-point folds, with
+  no HTML or second transliteration table.
+- Final verification passed 258 unit and PostgreSQL integration tests: 107 protocol, 107 API, and
+  44 web. Strict type checking, production builds, `git diff --check`, and the repository-scoped
+  Biome check over all 128 repository files passed. `pnpm test:e2e` passed all eight Chromium
+  identity and conversation scenarios.
+- The complete migration history passed clean-database and exact Phase 2 upgrade tests. The
+  production API image built from the final source, runs as non-root `node` (UID 1000), and contains
+  both repository SQL migrations and the compiled runtime.
+- Manual browser acceptance used the isolated migrated fixture server. Desktop conversation and
+  search views, the 320-pixel modal drawer and focus restoration, and the 844-by-320 new-chat and
+  conversation draft layouts had no horizontal overflow or current console error. Temporary test
+  servers and browser tabs were closed afterward.
+- The literal local `pnpm check` remains blocked only by the globally ignored
+  `.claude/settings.local.json`, which is outside the versioned repository and was left untouched.
+  Running Biome against every repository file passed; `typecheck`, `test`, `build`, Playwright,
+  container, and diff gates all passed independently.
+- Post-implementation isolation review found that actor-neutral TanStack Query keys and untracked
+  draft promises could outlive an authenticated employee transition. Conversation cache keys now
+  include workspace, employee, and session creation time. Workspace or employee changes remount the
+  protected conversation tree; a same-employee session rotation replaces the internal generation
+  without remounting the account-security page, so password-change confirmation remains visible.
+  Ending either lifetime immediately fences stale continuations, aborts direct requests, and removes
+  only the ended session's query scope.
+- The isolation regression runs under React Strict Mode and directly replaces employee A with
+  employee B in the same workspace while A has a delayed draft save and a newer forced save queued.
+  It resolves A's response despite cancellation and verifies that A's cache stays absent, no second
+  A request or stale navigation occurs, B keeps canonical revision `0`, and B's next save observes
+  revision `0` before advancing normally. A companion regression rotates the same employee's
+  session while a request is delayed and verifies that the old request is aborted without blocking
+  the new generation's save.
+- Post-fix verification passed all 261 tests: 107 protocol, 107 API and PostgreSQL integration, and
+  47 web. Full strict type checking, production builds, `git diff --check`, the repository-scoped
+  Biome check over all 128 repository files, and all eight Chromium scenarios passed. The existing
+  Vite chunk-size advisory and the literal `pnpm check` exception above remain unchanged.
+- A second read-only review found that direct search opening and canonical recovery were fenced by
+  the authenticated session but not by the route or component that started them. A delayed result
+  could therefore navigate after `/search` had unmounted, and recovery for one conversation could
+  publish presentation state after the route changed to another conversation. Direct page requests
+  now use one scoped lifetime that combines the authenticated generation with a local abort signal;
+  cleanup or a conversation-identifier change aborts the request and makes every continuation
+  ineligible. Rename and archive actions use the same lifecycle rule.
+- Focused regressions cover both component unmount under React Strict Mode and a conversation route
+  replacement while canonical recovery remains delayed. That remediation's verification passed all
+  263 tests: 107 protocol, 107 API and PostgreSQL integration, and 49 web. Full strict type checking,
+  production builds, `git diff --check`, the repository-scoped Biome check over all 130 repository
+  files, and all eight Chromium scenarios passed. The existing Vite chunk-size advisory and literal
+  `pnpm check` exception remain unchanged.
+- A final pre-commit review found that search detail prefetch used the destination's shared TanStack
+  Query key with a search-lifetime abort signal. Opening the same conversation manually while that
+  prefetch was pending could therefore join the doomed request and inherit its `AbortError`. Search
+  now performs the scoped canonical read directly and publishes complete infinite-query data only
+  after the lifetime remains current, preserving warm navigation without sharing the in-flight
+  request with the destination route.
+- The regression opens the destination while that scoped read remains pending and requires a
+  separate successful canonical read after search cleanup aborts its request. Final verification
+  passed all 264 tests: 107 protocol, 107 API and PostgreSQL integration, and 50 web. Full strict
+  type checking, production builds, `git diff --check`, the repository-scoped Biome check over all
+  130 repository files, and all eight Chromium scenarios passed. No API, protocol, schema, or Phase
+  4 behavior changed.
 
 ## Objective
 
