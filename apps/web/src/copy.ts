@@ -218,6 +218,7 @@ export const copy = {
         active: "Ya hay una respuesta activa en esta conversación.",
         tooLarge: "El mensaje es demasiado largo. Redúcelo antes de enviarlo.",
         draftSave: "No pudimos confirmar el borrador. Tu texto permanece en el editor.",
+        recovery: "No pudimos actualizar la conversación.",
         responseState: "No pudimos actualizar el estado de algunas respuestas.",
       },
     },

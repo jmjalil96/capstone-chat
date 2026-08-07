@@ -69,6 +69,7 @@ describe("conversation recovery lifecycle", () => {
       messageId: undefined,
       phase: "interrupted",
       reason: undefined,
+      recoveryRequired: false,
       revision: undefined,
       text: "",
       userMessageId: undefined,
@@ -164,5 +165,145 @@ describe("conversation recovery lifecycle", () => {
       await secondRecovery.promise;
     });
     await waitFor(() => expect(retry).toBeEnabled());
+  });
+
+  it("shows recovery only after terminal reconciliation fails", async () => {
+    const assistantMessageId = "33333333-3333-4333-8333-333333333333";
+    const userMessageId = "44444444-4444-4444-8444-444444444444";
+    const terminalSnapshot = {
+      awaitingCanonical: false,
+      committedUserText: undefined,
+      conversationId: firstConversationId,
+      consumesDraft: false,
+      errorCode: undefined,
+      generationId: "55555555-5555-4555-8555-555555555555",
+      locallyOwned: true,
+      messageId: assistantMessageId,
+      phase: "completed",
+      reason: "stop",
+      recoveryRequired: false,
+      revision: 2,
+      text: "Respuesta final",
+      userMessageId,
+    };
+    chatMocks.snapshots.set(firstConversationId, terminalSnapshot);
+    chatMocks.recoverConversation.mockResolvedValue(undefined);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url.endsWith("/draft")) {
+          return json({
+            scope: { kind: "conversation", conversationId: firstConversationId },
+            content: "",
+            revision: 0,
+            updatedAt: null,
+          });
+        }
+        if (url.endsWith(`/api/conversations/${firstConversationId}`)) {
+          return json({
+            conversation: {
+              id: firstConversationId,
+              title: "Conversación terminada",
+              isArchived: false,
+              revision: 2,
+              createdAt: "2026-08-07T12:00:00.000Z",
+              updatedAt: "2026-08-07T12:00:01.000Z",
+            },
+            selectedLeafId: assistantMessageId,
+            messages: [
+              {
+                id: userMessageId,
+                parentMessageId: null,
+                role: "user",
+                content: [{ type: "text", text: "Pregunta" }],
+                createdAt: "2026-08-07T12:00:00.000Z",
+                siblingCount: 0,
+              },
+              {
+                id: assistantMessageId,
+                parentMessageId: userMessageId,
+                role: "assistant",
+                content: [{ type: "text", text: "Respuesta final" }],
+                createdAt: "2026-08-07T12:00:01.000Z",
+                siblingCount: 0,
+              },
+            ],
+            nextCursor: null,
+          });
+        }
+        if (url.endsWith(`/api/conversations/${firstConversationId}/response-states`)) {
+          return json({
+            conversationId: firstConversationId,
+            revision: 2,
+            responses: [
+              {
+                generationId: terminalSnapshot.generationId,
+                messageId: assistantMessageId,
+                status: "completed",
+                reason: "stop",
+                errorCode: null,
+              },
+            ],
+          });
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      }),
+    );
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const router = createMemoryRouter(
+      [
+        {
+          Component: TestLayout,
+          children: [{ path: "/c/:conversationId", Component: ConversationPage }],
+        },
+      ],
+      { initialEntries: [`/c/${firstConversationId}`] },
+    );
+    const user = userEvent.setup();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>,
+    );
+
+    await screen.findByRole("heading", { level: 1, name: "Conversación terminada" });
+    await waitFor(() => expect(chatMocks.recoverConversation).toHaveBeenCalled());
+    expect(document.querySelector(".conversation-alert")).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: copy.conversations.common.retry }),
+    ).not.toBeInTheDocument();
+    expect(document.querySelector(".generation-status")).toHaveTextContent(
+      copy.conversations.generation.status.refreshing,
+    );
+    expect(screen.getByText("Respuesta final", { exact: true })).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: copy.conversations.generation.actions.send }),
+    ).toBeDisabled();
+
+    const pendingRecoveryCalls = chatMocks.recoverConversation.mock.calls.length;
+    chatMocks.snapshots.set(firstConversationId, {
+      ...terminalSnapshot,
+      recoveryRequired: true,
+    });
+    await act(async () => {
+      await router.navigate(`/c/${firstConversationId}`, {
+        replace: true,
+        state: { testRender: "recovery-required" },
+      });
+    });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      copy.conversations.generation.errors.recovery,
+    );
+    expect(document.querySelector(".generation-status")).toBeNull();
+    const retry = screen.getByRole("button", { name: copy.conversations.common.retry });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(chatMocks.recoverConversation).toHaveBeenCalledTimes(pendingRecoveryCalls);
+
+    await user.click(retry);
+    expect(chatMocks.recoverConversation).toHaveBeenCalledTimes(pendingRecoveryCalls + 1);
   });
 });

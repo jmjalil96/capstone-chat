@@ -56,11 +56,17 @@ Code authorization: granted by the user on 2026-08-07
   without following later deltas. Pagination and canonical-recovery anchors are route-scoped and
   retryable, authenticated runtimes remain stable across expiry-only session refreshes, and
   recovery is single-flight within each conversation. Continuous smart autoscroll remains Phase 5.
-- Final verification passed 393 protocol, API/PostgreSQL, and web tests: 131 protocol, 151 API, and
-  111 web. Coverage includes clean-schema migration and exact accepted-Phase-3 upgrade paths,
+- The terminal presentation now distinguishes expected canonical reconciliation from failed
+  recovery. While the normal reconciliation is pending, the composer remains fenced with one
+  compact polite status and no transient danger banner; only an actual failed reconciliation shows
+  the alert and explicit Retry action. Failed recovery cannot start an automatic retry loop or
+  publish after authenticated runtime disposal.
+- Final verification passed 395 protocol, API/PostgreSQL, and web tests: 131 protocol, 151 API, and
+  113 web. Coverage includes clean-schema migration and exact accepted-Phase-3 upgrade paths,
   transactional and cross-replica races, same-replica sub-threshold Stop persistence, every approved
   terminal outcome, real HTTP backpressure and forced shutdown, privacy/logging, ambiguous recovery,
-  failed-Stop/terminal reconciliation, route isolation, and authentication-generation fencing.
+  failed-Stop/terminal reconciliation, quiet terminal reconciliation, actionable recovery failure,
+  route isolation, and authentication-generation fencing.
 - Strict TypeScript, production builds, `git diff --check`, and the repository-scoped Biome check
   over all 159 applicable files passed. The build retained only the existing Vite chunk-size
   advisory. The literal `pnpm check` checked 160 files and reported only the pre-existing globally

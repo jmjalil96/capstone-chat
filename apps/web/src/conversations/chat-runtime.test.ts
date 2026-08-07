@@ -344,6 +344,7 @@ describe("ChatRuntime", () => {
     expect(runtime.getSnapshot(conversationId)).toMatchObject({
       phase: "completed",
       reason: "stop",
+      recoveryRequired: true,
     });
     runtime.dispose();
   });
@@ -792,6 +793,10 @@ describe("ChatRuntime", () => {
     source.controller.enqueue(line(completedEvent()));
     source.controller.close();
     await vi.waitFor(() => expect(fetchResponseStates).toHaveBeenCalledOnce());
+    expect(runtime.getSnapshot(conversationId)).toMatchObject({
+      phase: "completed",
+      recoveryRequired: false,
+    });
 
     const concurrentRecovery = runtime.recoverConversation(conversationId);
     await Promise.resolve();
@@ -838,7 +843,10 @@ describe("ChatRuntime", () => {
     expect(fetchResponseStates).toHaveBeenCalledOnce();
     rejectFirstResponseState(new TypeError("temporary failure"));
     await joinedFailure;
-    expect(runtime.getSnapshot(conversationId)).toBeDefined();
+    expect(runtime.getSnapshot(conversationId)).toMatchObject({
+      phase: "completed",
+      recoveryRequired: true,
+    });
 
     await expect(runtime.startResponse(conversationId, request)).rejects.toMatchObject({
       code: "GENERATION_ACTIVE",
@@ -926,5 +934,36 @@ describe("ChatRuntime", () => {
 
     await expect(pending).rejects.toMatchObject({ name: "AbortError" });
     expect(runtime.getSnapshot(conversationId)).toBeUndefined();
+  });
+
+  it("does not publish a late reconciliation failure after auth disposal", async () => {
+    const source = controlledStream();
+    let rejectResponseState!: (error: unknown) => void;
+    const responseStatePending = new Promise<ResponseStateResponse>((_resolve, reject) => {
+      rejectResponseState = reject;
+    });
+    const fetchResponseStates = vi.fn(() => responseStatePending);
+    const { runtime } = createRuntime({
+      fetchConversation: vi.fn(async () => canonical()),
+      fetchResponseStates,
+      openResponse: vi.fn(async () => source.stream),
+    });
+    const listener = vi.fn();
+    runtime.subscribe(listener);
+    const startPromise = runtime.startResponse(conversationId, request);
+    source.controller.enqueue(line(started()));
+    await startPromise;
+    source.controller.enqueue(line(completedEvent()));
+    source.controller.close();
+    await vi.waitFor(() => expect(fetchResponseStates).toHaveBeenCalledOnce());
+    const recovery = runtime.recoverConversation(conversationId);
+
+    runtime.dispose();
+    listener.mockClear();
+    rejectResponseState(new TypeError("late response-state failure"));
+    await recovery;
+
+    expect(runtime.getSnapshot(conversationId)).toBeUndefined();
+    expect(listener).not.toHaveBeenCalled();
   });
 });

@@ -59,6 +59,7 @@ function renderComposer(overrides: Partial<Omit<ConversationComposer, "kind">> =
                 conversationId,
                 isArchived: false,
                 isCoherent: true,
+                isRefreshing: false,
                 observedRevision: 0,
                 parentMessageId: null,
                 ...overrides,
@@ -371,7 +372,7 @@ describe("streaming composer", () => {
     expect(screen.getByText(copy.conversations.draft.unsaved)).toHaveAttribute("role", "status");
   });
 
-  it("keeps failed next-draft persistence visible during a remote generation", async () => {
+  it("keeps remote generation status and failed next-draft persistence visible", async () => {
     const fetchMock = vi.fn(async (url: string, options?: RequestInit) => {
       if (url.endsWith("/draft") && options?.method === "PUT") {
         return json(
@@ -385,7 +386,11 @@ describe("streaming composer", () => {
       throw new Error(`Unexpected request: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
-    renderComposer({ remoteGeneration: { generationId, messageId } });
+    renderComposer({
+      isCoherent: false,
+      isRefreshing: false,
+      remoteGeneration: { generationId, messageId },
+    });
 
     const editor = await screen.findByRole("textbox", { name: copy.conversations.draft.label });
     await waitFor(() => expect(editor).toBeEnabled());

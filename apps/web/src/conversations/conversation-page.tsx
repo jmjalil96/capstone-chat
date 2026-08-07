@@ -213,6 +213,9 @@ export function ConversationPage() {
   const runtimeNeedsReconciliation = Boolean(
     runtimeSnapshot?.awaitingCanonical || (runtimeSnapshot?.messageId && !runtimeActive),
   );
+  const runtimeRecoveryActionRequired = Boolean(
+    runtimeSnapshot?.awaitingCanonical || runtimeSnapshot?.recoveryRequired,
+  );
   const generationActive = runtimeActive || Boolean(remoteActive);
   const generationError =
     runtimeSnapshot?.phase === "interrupted"
@@ -235,6 +238,10 @@ export function ConversationPage() {
     responseStates.isPending ||
     responseStates.isError ||
     runtimeNeedsReconciliation;
+  const composerRefreshing =
+    !runtimeRecoveryActionRequired &&
+    !responseStates.isError &&
+    (responseRevisionMismatch || responseStates.isPending || runtimeNeedsReconciliation);
   const selectedResponseState = firstPage?.selectedLeafId
     ? responseStates.byMessageId.get(firstPage.selectedLeafId)
     : undefined;
@@ -431,7 +438,12 @@ export function ConversationPage() {
   ]);
 
   useEffect(() => {
-    if (!runtime || !runtimeSnapshot?.messageId || !runtimeNeedsReconciliation) {
+    if (
+      !runtime ||
+      !runtimeSnapshot?.messageId ||
+      !runtimeNeedsReconciliation ||
+      runtimeSnapshot.recoveryRequired
+    ) {
       return;
     }
     const canonicalState = responseStates.byMessageId.get(runtimeSnapshot.messageId);
@@ -577,7 +589,7 @@ export function ConversationPage() {
           onStale={handleStale}
         />
       </header>
-      {mutationError || generationError || runtimeNeedsReconciliation ? (
+      {mutationError || generationError || runtimeRecoveryActionRequired ? (
         <div className="conversation-alert">
           {mutationError ? (
             <p className="inline-alert" ref={alertRef} role="alert" tabIndex={-1}>
@@ -597,7 +609,7 @@ export function ConversationPage() {
           {generationError ? (
             <p className="inline-alert" role="alert">
               <span>{generationError}</span>
-              {runtimeNeedsReconciliation || responseStates.isError ? (
+              {runtimeRecoveryActionRequired || responseStates.isError ? (
                 <button
                   className="text-button"
                   type="button"
@@ -609,9 +621,9 @@ export function ConversationPage() {
               ) : null}
             </p>
           ) : null}
-          {!generationError && runtimeNeedsReconciliation ? (
-            <p className="inline-alert" role="status">
-              <span>{copy.conversations.generation.status.refreshing}</span>
+          {!generationError && runtimeRecoveryActionRequired ? (
+            <p className="inline-alert" role="alert">
+              <span>{copy.conversations.generation.errors.recovery}</span>
               <button
                 className="text-button"
                 type="button"
@@ -760,6 +772,7 @@ export function ConversationPage() {
             kind: "conversation",
             conversationId,
             isCoherent: !composerIncoherent,
+            isRefreshing: composerRefreshing,
             isArchived: conversation.isArchived,
             observedRevision: conversation.revision,
             parentMessageId: firstPage?.selectedLeafId ?? null,

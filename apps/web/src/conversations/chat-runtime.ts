@@ -42,6 +42,7 @@ export interface ChatRuntimeSnapshot {
   readonly messageId: string | undefined;
   readonly phase: ChatRuntimePhase;
   readonly reason: string | undefined;
+  readonly recoveryRequired: boolean;
   readonly revision: number | undefined;
   readonly text: string;
   readonly userMessageId: string | undefined;
@@ -69,6 +70,7 @@ interface ChatRuntimeEntry {
   phase: ChatRuntimePhase;
   reason: string | undefined;
   reconciliation: Promise<boolean> | undefined;
+  recoveryRequired: boolean;
   recoveryController: AbortController | undefined;
   revision: number | undefined;
   started: boolean;
@@ -209,6 +211,7 @@ export class ChatRuntime {
       phase: "starting",
       reason: undefined,
       reconciliation: undefined,
+      recoveryRequired: false,
       recoveryController: undefined,
       request,
       revision: undefined,
@@ -709,11 +712,19 @@ export class ChatRuntime {
       return entry.reconciliation;
     }
 
-    const reconciliation = this.runReconciliation(entry, messageId).finally(() => {
-      if (entry.reconciliation === reconciliation) {
-        entry.reconciliation = undefined;
-      }
-    });
+    const reconciliation = this.runReconciliation(entry, messageId)
+      .then((reconciled) => {
+        if (!reconciled && this.entryIsCurrent(entry)) {
+          entry.recoveryRequired = true;
+          this.publish(entry);
+        }
+        return reconciled;
+      })
+      .finally(() => {
+        if (entry.reconciliation === reconciliation) {
+          entry.reconciliation = undefined;
+        }
+      });
     entry.reconciliation = reconciliation;
     return reconciliation;
   }
@@ -866,6 +877,7 @@ export class ChatRuntime {
       phase: "generating",
       reason: undefined,
       reconciliation: undefined,
+      recoveryRequired: false,
       recoveryController: undefined,
       request: undefined,
       revision: undefined,
@@ -919,6 +931,7 @@ export class ChatRuntime {
       messageId: entry.messageId,
       phase: entry.phase,
       reason: entry.reason,
+      recoveryRequired: entry.recoveryRequired,
       revision: entry.revision,
       text: entry.text,
       userMessageId: entry.userMessageId,

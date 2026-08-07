@@ -26,6 +26,7 @@ export type DraftEditorComposer =
       readonly kind: "conversation";
       readonly conversationId: string;
       readonly isCoherent: boolean;
+      readonly isRefreshing: boolean;
       readonly isArchived: boolean;
       readonly observedRevision: number;
       readonly parentMessageId: string | null;
@@ -355,6 +356,11 @@ export function DraftEditor({
   const generationStatus = runtimeStatus(runtimeSnapshot?.phase);
   const remoteStatus =
     composer?.kind === "conversation" ? remoteOutcomeStatus(composer.remoteOutcome) : undefined;
+  const activeLifecycleStatus = localActive
+    ? generationStatus
+    : remoteGeneration
+      ? copy.conversations.generation.status.generating
+      : undefined;
   const saveStatus = draft.isLoading
     ? copy.conversations.draft.loading
     : draft.status === "conflict"
@@ -363,10 +369,13 @@ export function DraftEditor({
   const lifecycleStatus =
     composer?.kind === "conversation" && composer.isArchived
       ? copy.conversations.generation.status.archived
-      : composer?.kind === "conversation" && !composer.isCoherent
-        ? copy.conversations.generation.status.refreshing
-        : (generationStatus ??
-          (remoteGeneration ? copy.conversations.generation.status.generating : remoteStatus));
+      : activeLifecycleStatus
+        ? activeLifecycleStatus
+        : composer?.kind === "conversation" && !composer.isCoherent
+          ? composer.isRefreshing
+            ? copy.conversations.generation.status.refreshing
+            : undefined
+          : (generationStatus ?? remoteStatus);
   const sendDisabled =
     !runtime ||
     submitting ||
