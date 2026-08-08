@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 import { copy } from "../src/copy";
+import { availableModelTierPolicy } from "../src/test/model-tier-fixture";
 
 const session = {
   employee: {
@@ -26,6 +27,13 @@ test.beforeEach(async ({ page }) => {
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({ status: "ready", database: "up" }),
+    });
+  });
+  await page.route("**/api/model-tiers", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(availableModelTierPolicy),
     });
   });
 });
@@ -305,6 +313,14 @@ test("resets selected-branch scrolling when the conversation route parameter cha
     const conversation = summaries.find((item) => item.id === conversationId);
     if (!conversation) {
       await route.fulfill({ status: 404, contentType: "application/json", body: "{}" });
+      return;
+    }
+    if (url.pathname.endsWith("/preferred-tier")) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ conversationId, modelTier: "balanced" }),
+      });
       return;
     }
     if (url.pathname.endsWith("/draft")) {

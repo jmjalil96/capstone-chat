@@ -7,16 +7,37 @@ import type {
 import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   createInitialTitle,
+  hasUnsupportedControlCharacter,
   normalizeStoredText,
   parseMessageContent,
 } from "../conversations/content.js";
 import { conversations, drafts, messages } from "../database/conversation-schema.js";
 import type { AppDatabase } from "../database/database.js";
 import { generations } from "../database/generation-schema.js";
+import { isPostgresError } from "../database/postgres-error.js";
 import { ApplicationError } from "../errors.js";
 import type { RequestActor } from "../identity/authorization.js";
+import {
+  type AuthoritativeGenerationUsage,
+  type BudgetService,
+  ContextBudgetExceededError,
+  createBudgetService,
+  EmployeeGenerationLimitError,
+  WorkspaceBudgetExceededError,
+} from "../model-policy/budget-service.js";
+import { unitPricePerMillion } from "../model-policy/money.js";
+import {
+  createModelPolicyService,
+  type ModelPolicyMode,
+  type ModelPolicyService,
+  ModelPolicyUnavailableError,
+} from "../model-policy/service.js";
+import { conservativeTokenEstimate } from "../model-policy/settings.js";
 import type {
+  GatewayAccounting,
   GatewayCompletionReason,
+  GatewayProviderMetadata,
+  GatewayUsage,
   GenerationContextMessage,
   GenerationRequest,
 } from "./model-gateway.js";
@@ -29,9 +50,13 @@ const generationCopy = {
   archived: "Desarchiva la conversación antes de generar una respuesta.",
   changed: "La conversación cambió. Actualiza la información e inténtalo de nuevo.",
   draftChanged: "El borrador cambió en otra pestaña o dispositivo.",
+  employeeGenerationLimit:
+    "Ya alcanzaste el límite de respuestas activas. Detén o espera una respuesta antes de continuar.",
   invalidMessage: "El mensaje no es válido para esta conversación.",
   messageTooLarge: "El mensaje supera el tamaño permitido.",
   notFound: "No se encontró la conversación solicitada.",
+  tierUnavailable: "Este nivel no está disponible en este momento.",
+  workspaceBudget: "El espacio de trabajo alcanzó su presupuesto mensual.",
 } as const;
 
 type TerminalStatus = "cancelled" | "completed" | "failed" | "incomplete";
@@ -109,17 +134,6 @@ function generationAlreadyExists(): never {
   throw new ApplicationError(409, "GENERATION_ALREADY_EXISTS", generationCopy.alreadyExists);
 }
 
-function isUniqueViolation(error: unknown, constraintName: string): boolean {
-  return (
-    error !== null &&
-    typeof error === "object" &&
-    "code" in error &&
-    (error as { code?: unknown }).code === "23505" &&
-    "constraint" in error &&
-    (error as { constraint?: unknown }).constraint === constraintName
-  );
-}
-
 function textFromStoredContent(content: unknown): string {
   const parsed = parseMessageContent(content);
   const block = parsed[0];
@@ -147,6 +161,37 @@ function toStoredContent(text: string) {
   return [{ type: "text" as const, text }];
 }
 
+function authoritativeUsage(
+  usage: GatewayUsage,
+  accounting: GatewayAccounting,
+): AuthoritativeGenerationUsage {
+  return {
+    cachedTokens: accounting.cachedTokens,
+    completionTokens: usage.outputTokens,
+    costUsd: accounting.costUsd,
+    openRouterGenerationId: accounting.metadata.providerGenerationId,
+    promptTokens: usage.inputTokens,
+    provider: accounting.metadata.provider,
+    reasoningTokens: accounting.reasoningTokens,
+  };
+}
+
+function safeProviderMetadataValue(value: string | undefined): string | undefined {
+  if (
+    value === undefined ||
+    value.length === 0 ||
+    value.length > 512 ||
+    !value.isWellFormed() ||
+    hasUnsupportedControlCharacter(value) ||
+    value.includes("\t") ||
+    value.includes("\n") ||
+    !/\S/u.test(value)
+  ) {
+    return undefined;
+  }
+  return value;
+}
+
 function toDurableState(row: {
   assistantMessageId: string | null;
   conversationId: string | null;
@@ -165,7 +210,19 @@ function toDurableState(row: {
   };
 }
 
-export function createGenerationService(database: AppDatabase) {
+export interface GenerationServiceOptions {
+  readonly budget?: BudgetService;
+  readonly mode?: ModelPolicyMode;
+  readonly modelPolicy?: ModelPolicyService;
+}
+
+export function createGenerationService(
+  database: AppDatabase,
+  options: GenerationServiceOptions = {},
+) {
+  const budget = options.budget ?? createBudgetService(database);
+  const mode = options.mode ?? "simulated";
+  const modelPolicy = options.modelPolicy ?? createModelPolicyService(database);
   async function assertEmptyConversation(
     transaction: DatabaseTransaction,
     conversationId: string,
@@ -307,18 +364,30 @@ export function createGenerationService(database: AppDatabase) {
       }
     }
 
+    const existingIdempotency = await database
+      .select({ id: generations.id })
+      .from(generations)
+      .where(
+        and(
+          eq(generations.workspaceId, actor.workspace.id),
+          eq(generations.userId, actor.employee.id),
+          eq(generations.idempotencyKey, idempotencyKey),
+        ),
+      )
+      .limit(1);
+    if (existingIdempotency.length !== 0) {
+      return generationAlreadyExists();
+    }
+
     try {
       return await database.transaction(async (transaction) => {
-        const conversationRows = await transaction
-          .select()
-          .from(conversations)
-          .where(ownedConversationWhere(actor, conversationId))
-          .limit(1)
-          .for("update");
-        const conversation = conversationRows[0];
-        if (conversation === undefined) {
-          return notFound();
-        }
+        const startedAt = new Date();
+        const admission = await budget.lockAdmission(
+          transaction,
+          actor.workspace.id,
+          actor.employee.id,
+          startedAt,
+        );
 
         const idempotentRows = await transaction
           .select({ id: generations.id })
@@ -334,6 +403,18 @@ export function createGenerationService(database: AppDatabase) {
         if (idempotentRows.length !== 0) {
           return generationAlreadyExists();
         }
+
+        const conversationRows = await transaction
+          .select()
+          .from(conversations)
+          .where(ownedConversationWhere(actor, conversationId))
+          .limit(1)
+          .for("update");
+        const conversation = conversationRows[0];
+        if (conversation === undefined) {
+          return notFound();
+        }
+
         const activeRows = await transaction
           .select({ id: generations.id })
           .from(generations)
@@ -492,6 +573,24 @@ export function createGenerationService(database: AppDatabase) {
 
         assertContextFits(history, messageText);
 
+        const resolvedTier = await modelPolicy.resolveTier(
+          transaction,
+          actor.workspace.id,
+          input.modelTier,
+          mode,
+        );
+        const estimatedInputTokens = conservativeTokenEstimate([
+          systemPrompt.text,
+          ...history.map(({ text }) => text),
+          messageText,
+        ]);
+        const reservation = budget.reserveResolvedTier(
+          admission,
+          resolvedTier,
+          estimatedInputTokens,
+          startedAt,
+        );
+
         if (insertUserMessage) {
           const userRows = await transaction
             .insert(messages)
@@ -529,12 +628,53 @@ export function createGenerationService(database: AppDatabase) {
           .values({
             assistantMessageId: assistantMessage.id,
             conversationId,
-            effectiveParameters: {},
+            createdAt: startedAt,
+            effectiveParameters:
+              mode === "openrouter"
+                ? {
+                    maximumOutputTokens: resolvedTier.maximumOutputTokens,
+                    priceCeiling: {
+                      completionUsdPerMillion: unitPricePerMillion(
+                        resolvedTier.completionPriceCeilingPerToken,
+                      ),
+                      promptUsdPerMillion: unitPricePerMillion(
+                        resolvedTier.promptPriceCeilingPerToken,
+                      ),
+                      requestUsd: resolvedTier.requestPriceCeilingUsd,
+                    },
+                    provider: {
+                      dataCollection: "deny",
+                      requireParameters: true,
+                      zeroDataRetention: true,
+                    },
+                    reasoning: { exclude: true },
+                  }
+                : {},
             idempotencyKey,
-            requestedTier: "balanced",
+            requestedTier: input.modelTier,
+            ...(mode === "openrouter"
+              ? {
+                  accountingStatus: reservation.accountingStatus,
+                  budgetPeriodEnd: reservation.budgetPeriodEnd,
+                  budgetPeriodStart: reservation.budgetPeriodStart,
+                  completionPriceCeilingPerToken: reservation.completionPriceCeilingPerToken,
+                  estimatedInputTokens: reservation.estimatedInputTokens,
+                  maximumOutputTokens: reservation.maximumOutputTokens,
+                  purpose: "chat",
+                  requestPriceCeilingUsd: reservation.requestPriceCeilingUsd,
+                  requestedModel: resolvedTier.resolvedModel,
+                  reservationExpiresAt: reservation.reservationExpiresAt,
+                  reservationMarginBasisPoints: reservation.reservationMarginBasisPoints,
+                  reservedCostUsd: reservation.reservedCostUsd,
+                  resolvedModel: resolvedTier.resolvedModel,
+                  promptPriceCeilingPerToken: reservation.promptPriceCeilingPerToken,
+                }
+              : {}),
+            startedAt,
             status: "active",
             systemPromptVersion: systemPrompt.version,
             userId: actor.employee.id,
+            updatedAt: startedAt,
             workspaceId: actor.workspace.id,
           })
           .returning();
@@ -549,6 +689,7 @@ export function createGenerationService(database: AppDatabase) {
           .set({
             revision: conversation.revision + 1,
             selectedLeafMessageId: assistantMessage.id,
+            preferredTier: input.modelTier,
             title:
               input.source === "edit" || input.source === "retry"
                 ? conversation.title
@@ -583,7 +724,18 @@ export function createGenerationService(database: AppDatabase) {
           request: {
             history,
             message: { role: "user", text: messageText },
-            modelTier: "balanced",
+            modelTier: input.modelTier,
+            ...(mode === "openrouter"
+              ? {
+                  route: {
+                    completionPriceCeilingUsdPerToken: resolvedTier.completionPriceCeilingPerToken,
+                    maximumOutputTokens: resolvedTier.maximumOutputTokens,
+                    promptPriceCeilingUsdPerToken: resolvedTier.promptPriceCeilingPerToken,
+                    requestPriceCeilingUsd: resolvedTier.requestPriceCeilingUsd,
+                    requestedModel: resolvedTier.resolvedModel,
+                  },
+                }
+              : {}),
             systemPrompt,
           },
           revision: updated.revision,
@@ -591,11 +743,31 @@ export function createGenerationService(database: AppDatabase) {
         };
       });
     } catch (error: unknown) {
-      if (isUniqueViolation(error, "generations_scoped_idempotency_unique")) {
+      if (isPostgresError(error, "23505", "generations_scoped_idempotency_unique")) {
         return generationAlreadyExists();
       }
-      if (isUniqueViolation(error, "generations_active_conversation_unique")) {
+      if (isPostgresError(error, "23505", "generations_active_conversation_unique")) {
         return generationActive();
+      }
+      if (error instanceof ModelPolicyUnavailableError) {
+        throw new ApplicationError(409, "TIER_UNAVAILABLE", generationCopy.tierUnavailable);
+      }
+      if (error instanceof EmployeeGenerationLimitError) {
+        throw new ApplicationError(
+          409,
+          "EMPLOYEE_GENERATION_LIMIT_REACHED",
+          generationCopy.employeeGenerationLimit,
+        );
+      }
+      if (error instanceof WorkspaceBudgetExceededError) {
+        throw new ApplicationError(
+          409,
+          "WORKSPACE_BUDGET_EXCEEDED",
+          generationCopy.workspaceBudget,
+        );
+      }
+      if (error instanceof ContextBudgetExceededError) {
+        throw new ApplicationError(413, "MESSAGE_TOO_LARGE", generationCopy.messageTooLarge);
       }
       throw error;
     }
@@ -617,6 +789,45 @@ export function createGenerationService(database: AppDatabase) {
       .limit(1);
     const row = rows[0];
     return row === undefined ? null : toDurableState(row);
+  }
+
+  async function recordProviderMetadata(
+    generationId: string,
+    metadata: GatewayProviderMetadata,
+  ): Promise<boolean> {
+    const openRouterGenerationId = safeProviderMetadataValue(metadata.providerGenerationId);
+    const provider = safeProviderMetadataValue(metadata.provider);
+    const resolvedModel = safeProviderMetadataValue(metadata.resolvedModel);
+    if (
+      openRouterGenerationId === undefined &&
+      provider === undefined &&
+      resolvedModel === undefined
+    ) {
+      return false;
+    }
+    const updated = await database
+      .update(generations)
+      .set({
+        ...(openRouterGenerationId === undefined ? {} : { openRouterGenerationId }),
+        ...(provider === undefined ? {} : { provider }),
+        ...(resolvedModel === undefined ? {} : { resolvedModel }),
+        updatedAt: sql`GREATEST(${generations.updatedAt}, CURRENT_TIMESTAMP)`,
+      })
+      .where(and(eq(generations.id, generationId), eq(generations.accountingStatus, "reserved")))
+      .returning({ id: generations.id });
+    return updated.length === 1;
+  }
+
+  async function settleAccounting(
+    generationId: string,
+    usage: GatewayUsage,
+    accounting: GatewayAccounting,
+  ): Promise<boolean> {
+    return budget.settleAuthoritativeUsage(generationId, authoritativeUsage(usage, accounting));
+  }
+
+  async function settleDeterministicZero(generationId: string): Promise<boolean> {
+    return budget.settleDeterministicZero(generationId);
   }
 
   async function checkpoint(
@@ -675,10 +886,15 @@ export function createGenerationService(database: AppDatabase) {
   async function terminalize(
     generationId: string,
     input: {
+      readonly accounting?: {
+        readonly metadata: GatewayAccounting;
+        readonly usage: GatewayUsage;
+      };
       readonly content: string;
       readonly errorCode: StoredGenerationErrorCode | null;
       readonly firstTokenAt: Date | null;
       readonly reason: "cancelled" | GatewayCompletionReason | "error";
+      readonly settleDeterministicZero?: boolean;
       readonly status: TerminalStatus;
     },
   ): Promise<TerminalGenerationResult> {
@@ -759,6 +975,43 @@ export function createGenerationService(database: AppDatabase) {
         generation.createdAt,
         generation.updatedAt,
       );
+      if (
+        input.status === "completed" &&
+        generation.accountingStatus === "reserved" &&
+        input.accounting === undefined
+      ) {
+        throw new Error("Billable completion is missing authoritative accounting");
+      }
+      if (input.accounting !== undefined) {
+        const resolvedModel = safeProviderMetadataValue(
+          input.accounting.metadata.metadata.resolvedModel,
+        );
+        if (resolvedModel !== undefined) {
+          await transaction
+            .update(generations)
+            .set({ resolvedModel })
+            .where(eq(generations.id, generationId));
+        }
+        const settled = await budget.settleAuthoritativeUsageInTransaction(
+          transaction,
+          generationId,
+          authoritativeUsage(input.accounting.usage, input.accounting.metadata),
+          now,
+        );
+        if (generation.accountingStatus === "reserved" && !settled) {
+          throw new Error("Authoritative generation accounting could not be settled");
+        }
+      } else if (input.settleDeterministicZero && generation.accountingStatus === "reserved") {
+        const settled = await budget.settleAuthoritativeUsageInTransaction(
+          transaction,
+          generationId,
+          { completionTokens: 0, costUsd: "0", promptTokens: 0 },
+          now,
+        );
+        if (!settled) {
+          throw new Error("Deterministic zero-cost accounting could not be settled");
+        }
+      }
       await transaction
         .update(generations)
         .set({
@@ -1039,8 +1292,11 @@ export function createGenerationService(database: AppDatabase) {
     cancel,
     checkpoint,
     readState,
+    recordProviderMetadata,
     removeConversation,
     responseStates,
+    settleAccounting,
+    settleDeterministicZero,
     startResponse,
     terminalize,
   });

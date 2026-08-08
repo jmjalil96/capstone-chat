@@ -3,21 +3,31 @@ import type {
   ConversationDetailResponse,
   ConversationListResponse,
   ConversationMessage,
+  ConversationPreferredTierResponse,
   ConversationSearchResponse,
   ConversationSelectionResponse,
   ConversationSummary,
   ConversationView,
   DraftScope,
   DraftState,
+  GenerationModelTier,
   MessageContent,
 } from "@capstone/protocol";
 import { ALTERNATIVE_CONTEXT_MAX_MESSAGE_IDS } from "@capstone/protocol";
 import { and, desc, eq, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
+import type { ModelGatewayMode } from "../config.js";
 import { conversations, drafts, messages } from "../database/conversation-schema.js";
 import type { AppDatabase } from "../database/database.js";
 import { generations } from "../database/generation-schema.js";
+import { isPostgresError } from "../database/postgres-error.js";
 import { ApplicationError } from "../errors.js";
 import type { RequestActor } from "../identity/authorization.js";
+import {
+  createModelPolicyService,
+  ModelPolicyNotFoundError,
+  type ModelPolicyService,
+  ModelPolicyUnavailableError,
+} from "../model-policy/service.js";
 import {
   createPostgresSearchSnippet,
   normalizeDraftContent,
@@ -36,6 +46,7 @@ const conversationCopy = {
   invalidAlternativeContext: "Los mensajes solicitados no pertenecen a la rama seleccionada.",
   invalidContent: "El contenido almacenado de la conversación no es válido.",
   notFound: "No se encontró la conversación solicitada.",
+  tierUnavailable: "Este nivel no está disponible en este momento.",
   undoUnavailable: "No hay un turno anterior para deshacer.",
 } as const;
 
@@ -146,16 +157,19 @@ function assertCursorDate(value: string): Date {
   return date;
 }
 
-function isUniqueViolation(error: unknown): boolean {
-  return (
-    error !== null &&
-    typeof error === "object" &&
-    "code" in error &&
-    (error as { code?: unknown }).code === "23505"
-  );
-}
+export function createConversationService(
+  database: AppDatabase,
+  cursorCodec: CursorCodec,
+  modelGateway: ModelGatewayMode = "fake",
+  modelPolicy: ModelPolicyService = createModelPolicyService(database),
+) {
+  const modelPolicyMode = modelGateway === "openrouter" ? "openrouter" : "simulated";
 
-export function createConversationService(database: AppDatabase, cursorCodec: CursorCodec) {
+  async function workspaceDefaultTier(workspaceId: string): Promise<GenerationModelTier> {
+    const policy = await modelPolicy.readEmployeeTierPolicy(workspaceId, modelPolicyMode);
+    return policy.defaultTier;
+  }
+
   async function list(
     actor: RequestActor,
     view: ConversationView,
@@ -215,10 +229,11 @@ export function createConversationService(database: AppDatabase, cursorCodec: Cu
     actor: RequestActor,
     adoptNewDraftRevision?: number,
   ): Promise<ConversationSummary> {
+    const preferredTier = await workspaceDefaultTier(actor.workspace.id);
     if (adoptNewDraftRevision === undefined) {
       const inserted = await database
         .insert(conversations)
-        .values({ userId: actor.employee.id, workspaceId: actor.workspace.id })
+        .values({ preferredTier, userId: actor.employee.id, workspaceId: actor.workspace.id })
         .returning();
       const row = inserted[0];
       if (row === undefined) {
@@ -250,7 +265,7 @@ export function createConversationService(database: AppDatabase, cursorCodec: Cu
 
       const inserted = await transaction
         .insert(conversations)
-        .values({ userId: actor.employee.id, workspaceId: actor.workspace.id })
+        .values({ preferredTier, userId: actor.employee.id, workspaceId: actor.workspace.id })
         .returning();
       const conversation = inserted[0];
       if (conversation === undefined) {
@@ -266,6 +281,48 @@ export function createConversationService(database: AppDatabase, cursorCodec: Cu
       }
       return toSummary(conversation);
     });
+  }
+
+  async function getPreferredTier(
+    actor: RequestActor,
+    conversationId: string,
+  ): Promise<ConversationPreferredTierResponse> {
+    const modelTier = await modelPolicy.getPreferredTier({
+      conversationId,
+      userId: actor.employee.id,
+      workspaceId: actor.workspace.id,
+    });
+    if (modelTier === null) {
+      return notFound();
+    }
+    return { conversationId, modelTier };
+  }
+
+  async function setPreferredTier(
+    actor: RequestActor,
+    conversationId: string,
+    modelTier: GenerationModelTier,
+  ): Promise<ConversationPreferredTierResponse> {
+    try {
+      const updated = await modelPolicy.setPreferredTier(
+        {
+          conversationId,
+          userId: actor.employee.id,
+          workspaceId: actor.workspace.id,
+        },
+        modelTier,
+        modelPolicyMode,
+      );
+      return { conversationId, modelTier: updated };
+    } catch (error: unknown) {
+      if (error instanceof ModelPolicyNotFoundError) {
+        return notFound();
+      }
+      if (error instanceof ModelPolicyUnavailableError) {
+        throw new ApplicationError(409, "TIER_UNAVAILABLE", conversationCopy.tierUnavailable);
+      }
+      throw error;
+    }
   }
 
   async function insertImmutableMessage(
@@ -1043,7 +1100,10 @@ export function createConversationService(database: AppDatabase, cursorCodec: Cu
         };
       });
     } catch (error: unknown) {
-      if (isUniqueViolation(error)) {
+      if (
+        isPostgresError(error, "23505", "drafts_conversation_scope_unique") ||
+        isPostgresError(error, "23505", "drafts_new_chat_scope_unique")
+      ) {
         return draftChanged();
       }
       throw error;
@@ -1337,6 +1397,7 @@ export function createConversationService(database: AppDatabase, cursorCodec: Cu
     get,
     getAlternativeContexts,
     getDraft,
+    getPreferredTier,
     insertImmutableMessage,
     list,
     rename,
@@ -1344,6 +1405,7 @@ export function createConversationService(database: AppDatabase, cursorCodec: Cu
     search,
     selectLeaf,
     setArchived,
+    setPreferredTier,
     undo,
   });
 }

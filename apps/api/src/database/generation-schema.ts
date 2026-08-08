@@ -1,8 +1,12 @@
 import { sql } from "drizzle-orm";
 import {
+  bigint,
   check,
   foreignKey,
+  index,
+  integer,
   jsonb,
+  numeric,
   pgEnum,
   pgTable,
   text,
@@ -45,11 +49,49 @@ export const generations = pgTable(
     assistantMessageId: uuid("assistant_message_id"),
     idempotencyKey: uuid("idempotency_key").notNull(),
     requestedTier: text("requested_tier").notNull(),
+    purpose: text("purpose"),
+    requestedModel: text("requested_model"),
+    resolvedModel: text("resolved_model"),
+    provider: text("provider"),
+    openRouterGenerationId: text("openrouter_generation_id"),
     systemPromptVersion: text("system_prompt_version").notNull(),
     effectiveParameters: jsonb("effective_parameters").$type<Record<string, unknown>>().notNull(),
     status: generationStatus("status").notNull(),
     terminalReason: generationTerminalReason("terminal_reason"),
     errorCode: text("error_code"),
+    promptTokens: bigint("prompt_tokens", { mode: "bigint" }),
+    completionTokens: bigint("completion_tokens", { mode: "bigint" }),
+    reasoningTokens: bigint("reasoning_tokens", { mode: "bigint" }),
+    cachedTokens: bigint("cached_tokens", { mode: "bigint" }),
+    costUsd: numeric("cost_usd", { precision: 38, scale: 18 }),
+    costBasis: text("cost_basis"),
+    accountingStatus: text("accounting_status"),
+    estimatedInputTokens: bigint("estimated_input_tokens", { mode: "bigint" }),
+    maximumOutputTokens: integer("maximum_output_tokens"),
+    reservedCostUsd: numeric("reserved_cost_usd", { precision: 38, scale: 18 }),
+    promptPriceCeilingPerToken: numeric("prompt_price_ceiling_per_token", {
+      precision: 38,
+      scale: 24,
+    }),
+    completionPriceCeilingPerToken: numeric("completion_price_ceiling_per_token", {
+      precision: 38,
+      scale: 24,
+    }),
+    requestPriceCeilingUsd: numeric("request_price_ceiling_usd", {
+      precision: 38,
+      scale: 18,
+    }),
+    reservationMarginBasisPoints: integer("reservation_margin_basis_points"),
+    budgetPeriodStart: timestamp("budget_period_start", { precision: 3, withTimezone: true }),
+    budgetPeriodEnd: timestamp("budget_period_end", { precision: 3, withTimezone: true }),
+    reservationExpiresAt: timestamp("reservation_expires_at", {
+      precision: 3,
+      withTimezone: true,
+    }),
+    accountingSettledAt: timestamp("accounting_settled_at", {
+      precision: 3,
+      withTimezone: true,
+    }),
     startedAt: timestamp("started_at", { precision: 3, withTimezone: true }).defaultNow().notNull(),
     firstTokenAt: timestamp("first_token_at", { precision: 3, withTimezone: true }),
     completedAt: timestamp("completed_at", { precision: 3, withTimezone: true }),
@@ -78,20 +120,109 @@ export const generations = pgTable(
     uniqueIndex("generations_active_conversation_unique")
       .on(table.conversationId)
       .where(sql`${table.status} = 'active' AND ${table.conversationId} IS NOT NULL`),
+    uniqueIndex("generations_openrouter_generation_id_unique")
+      .on(table.openRouterGenerationId)
+      .where(sql`${table.openRouterGenerationId} IS NOT NULL`),
+    index("generations_workspace_budget_period_idx").on(
+      table.workspaceId,
+      table.budgetPeriodStart,
+      table.accountingStatus,
+    ),
+    index("generations_reserved_expiry_idx")
+      .on(table.reservationExpiresAt, table.id)
+      .where(sql`${table.accountingStatus} = 'reserved'`),
     check(
       "generations_content_references_check",
       sql`(${table.conversationId} IS NULL AND ${table.assistantMessageId} IS NULL)
         OR (${table.conversationId} IS NOT NULL AND ${table.assistantMessageId} IS NOT NULL)`,
     ),
-    check("generations_requested_tier_check", sql`${table.requestedTier} = 'balanced'`),
+    check(
+      "generations_requested_tier_check",
+      sql`${table.requestedTier} IN ('fast', 'balanced', 'pro')`,
+    ),
     check(
       "generations_system_prompt_version_check",
       sql`${table.systemPromptVersion} = 'capstone-chat-v1'`,
     ),
     check(
       "generations_effective_parameters_check",
-      sql`jsonb_typeof(${table.effectiveParameters}) = 'object'
-        AND ${table.effectiveParameters} = '{}'::jsonb`,
+      sql`jsonb_typeof(${table.effectiveParameters}) = 'object'`,
+    ),
+    check(
+      "generations_accounting_check",
+      sql`(
+          ${table.accountingStatus} IS NULL
+          AND ${table.purpose} IS NULL
+          AND ${table.requestedModel} IS NULL
+          AND ${table.resolvedModel} IS NULL
+          AND ${table.provider} IS NULL
+          AND ${table.openRouterGenerationId} IS NULL
+          AND ${table.promptTokens} IS NULL
+          AND ${table.completionTokens} IS NULL
+          AND ${table.reasoningTokens} IS NULL
+          AND ${table.cachedTokens} IS NULL
+          AND ${table.costUsd} IS NULL
+          AND ${table.costBasis} IS NULL
+          AND ${table.estimatedInputTokens} IS NULL
+          AND ${table.maximumOutputTokens} IS NULL
+          AND ${table.reservedCostUsd} IS NULL
+          AND ${table.promptPriceCeilingPerToken} IS NULL
+          AND ${table.completionPriceCeilingPerToken} IS NULL
+          AND ${table.requestPriceCeilingUsd} IS NULL
+          AND ${table.reservationMarginBasisPoints} IS NULL
+          AND ${table.budgetPeriodStart} IS NULL
+          AND ${table.budgetPeriodEnd} IS NULL
+          AND ${table.reservationExpiresAt} IS NULL
+          AND ${table.accountingSettledAt} IS NULL
+        ) OR (
+          ${table.accountingStatus} IS NOT NULL
+          AND ${table.accountingStatus} IN ('reserved', 'actual', 'estimated')
+          AND ${table.purpose} IS NOT NULL
+          AND ${table.purpose} IN ('chat', 'compaction')
+          AND ${table.requestedModel} IS NOT NULL
+          AND ${table.requestedModel} ~ '[^[:space:]]'
+          AND ${table.resolvedModel} IS NOT NULL
+          AND ${table.resolvedModel} ~ '[^[:space:]]'
+          AND ${table.estimatedInputTokens} IS NOT NULL
+          AND ${table.estimatedInputTokens} >= 0
+          AND ${table.maximumOutputTokens} IS NOT NULL
+          AND ${table.maximumOutputTokens} > 0
+          AND ${table.reservedCostUsd} IS NOT NULL
+          AND ${table.reservedCostUsd} >= 0
+          AND ${table.promptPriceCeilingPerToken} IS NOT NULL
+          AND ${table.promptPriceCeilingPerToken} >= 0
+          AND ${table.completionPriceCeilingPerToken} IS NOT NULL
+          AND ${table.completionPriceCeilingPerToken} >= 0
+          AND ${table.requestPriceCeilingUsd} IS NOT NULL
+          AND ${table.requestPriceCeilingUsd} >= 0
+          AND ${table.reservationMarginBasisPoints} IS NOT NULL
+          AND ${table.reservationMarginBasisPoints} >= 0
+          AND ${table.budgetPeriodStart} IS NOT NULL
+          AND ${table.budgetPeriodEnd} IS NOT NULL
+          AND ${table.budgetPeriodStart} < ${table.budgetPeriodEnd}
+          AND ${table.reservationExpiresAt} IS NOT NULL
+          AND ${table.reservationExpiresAt} > ${table.startedAt}
+          AND (
+            ${table.accountingStatus} = 'reserved'
+            AND ${table.costUsd} IS NULL
+            AND ${table.costBasis} IS NULL
+            AND ${table.accountingSettledAt} IS NULL
+          OR
+            ${table.accountingStatus} IN ('actual', 'estimated')
+            AND ${table.costUsd} IS NOT NULL
+            AND ${table.costUsd} >= 0
+            AND ${table.costBasis} IS NOT NULL
+            AND ${table.costBasis} = ${table.accountingStatus}
+            AND ${table.accountingSettledAt} IS NOT NULL
+          )
+        )`,
+    ),
+    check(
+      "generations_token_counts_check",
+      sql`(${table.promptTokens} IS NULL OR ${table.promptTokens} >= 0)
+        AND (${table.completionTokens} IS NULL OR ${table.completionTokens} >= 0)
+        AND (${table.reasoningTokens} IS NULL OR ${table.reasoningTokens} >= 0)
+        AND (${table.cachedTokens} IS NULL OR ${table.cachedTokens} >= 0)`,
     ),
     check(
       "generations_lifecycle_check",

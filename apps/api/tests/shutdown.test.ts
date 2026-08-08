@@ -11,6 +11,7 @@ import type {
   StartedResponse,
 } from "../src/generations/service.js";
 import { generationTuning } from "../src/generations/settings.js";
+import type { CostControlMaintenance } from "../src/model-policy/maintenance.js";
 
 const completingResponse: StartedResponse = {
   conversationId: "00000000-0000-4000-8000-000000000011",
@@ -56,12 +57,25 @@ async function streamEvents(response: Response): Promise<readonly Record<string,
 
 describe("graceful shutdown", () => {
   it("stops HTTP and closes the database pool once", async () => {
-    const end = vi.fn(async () => undefined);
+    let maintenanceStopped = false;
+    const maintenance: CostControlMaintenance = {
+      runOnce: vi.fn(async () => ({ catalogRefresh: null, reconciliation: null })),
+      start: vi.fn(),
+      stop: vi.fn(async () => {
+        maintenanceStopped = true;
+      }),
+    };
+    const end = vi.fn(async () => {
+      expect(maintenanceStopped).toBe(true);
+    });
     const pool: DatabasePool = {
       end,
       query: vi.fn(async () => ({ rows: [{ result: 1 }] })),
     };
-    const application = createApplication(loadConfig({ NODE_ENV: "test" }), { pool });
+    const application = createApplication(loadConfig({ NODE_ENV: "test" }), {
+      maintenance,
+      pool,
+    });
 
     await application.server.listen({ host: "127.0.0.1", port: 0 });
     await application.lifecycle.initialize();
@@ -71,6 +85,8 @@ describe("graceful shutdown", () => {
 
     expect(application.server.server.listening).toBe(false);
     expect(application.lifecycle.phase).toBe("stopped");
+    expect(maintenance.stop).toHaveBeenCalledTimes(1);
+    expect(maintenanceStopped).toBe(true);
     expect(end).toHaveBeenCalledTimes(1);
   });
 

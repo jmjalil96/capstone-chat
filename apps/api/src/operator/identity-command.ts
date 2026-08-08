@@ -9,42 +9,12 @@ import {
   IdentityConflictError,
   type WorkspaceRole,
 } from "../identity/service.js";
+import { parseOperatorArguments, requiredOperatorArgument } from "./arguments.js";
 
 type Command = "approve" | "bootstrap" | "deactivate";
 
-function parseArguments(values: readonly string[]): ReadonlyMap<string, string> {
-  const parsed = new Map<string, string>();
-
-  for (let index = 0; index < values.length; index += 2) {
-    const key = values[index];
-    const value = values[index + 1];
-    if (
-      key === undefined ||
-      !key.startsWith("--") ||
-      value === undefined ||
-      value.startsWith("--")
-    ) {
-      throw new Error("Arguments must use --name value pairs");
-    }
-    if (parsed.has(key)) {
-      throw new Error(`Argument ${key} may be provided only once`);
-    }
-    parsed.set(key, value);
-  }
-
-  return parsed;
-}
-
-function required(argumentsMap: ReadonlyMap<string, string>, name: string): string {
-  const value = argumentsMap.get(name)?.trim();
-  if (!value) {
-    throw new Error(`${name} is required`);
-  }
-  return value;
-}
-
 function workspaceIdentity(argumentsMap: ReadonlyMap<string, string>): string {
-  const identity = required(argumentsMap, "--workspace");
+  const identity = requiredOperatorArgument(argumentsMap, "--workspace");
   if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u.test(identity)) {
     throw new Error(
       "--workspace must be a lowercase identifier using letters, numbers, and hyphens",
@@ -54,7 +24,7 @@ function workspaceIdentity(argumentsMap: ReadonlyMap<string, string>): string {
 }
 
 function role(argumentsMap: ReadonlyMap<string, string>): WorkspaceRole {
-  const value = required(argumentsMap, "--role");
+  const value = requiredOperatorArgument(argumentsMap, "--role");
   if (value !== "admin" && value !== "member") {
     throw new Error("--role must be admin or member");
   }
@@ -76,7 +46,7 @@ async function run(): Promise<void> {
     throw new Error("Command must be bootstrap, approve, or deactivate");
   }
 
-  const argumentsMap = parseArguments(process.argv.slice(3));
+  const argumentsMap = parseOperatorArguments(process.argv.slice(3));
   const config = loadConfig();
   const pool = createDatabasePool(config.databaseUrl);
   const database = createDatabase(pool);
@@ -86,8 +56,8 @@ async function run(): Promise<void> {
   try {
     if (command === "bootstrap") {
       const result = await identity.bootstrap({
-        adminEmail: required(argumentsMap, "--email"),
-        displayName: required(argumentsMap, "--name"),
+        adminEmail: requiredOperatorArgument(argumentsMap, "--email"),
+        displayName: requiredOperatorArgument(argumentsMap, "--name"),
         workspaceIdentity: workspaceIdentity(argumentsMap),
       });
 
@@ -109,7 +79,7 @@ async function run(): Promise<void> {
 
     if (command === "approve") {
       const result = await identity.approve({
-        email: required(argumentsMap, "--email"),
+        email: requiredOperatorArgument(argumentsMap, "--email"),
         role: role(argumentsMap),
         workspaceIdentity: workspaceIdentity(argumentsMap),
       });
@@ -131,7 +101,7 @@ async function run(): Promise<void> {
     }
 
     const result = await identity.deactivate({
-      email: required(argumentsMap, "--email"),
+      email: requiredOperatorArgument(argumentsMap, "--email"),
       workspaceIdentity: workspaceIdentity(argumentsMap),
     });
 

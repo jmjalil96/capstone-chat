@@ -15,6 +15,7 @@ import {
   phaseFiveBrowserFixtures,
   responseGalleryAssistantMarkdown,
 } from "./conversation-e2e-fixtures.js";
+import { bootstrapSimulatedModelPolicy } from "./model-policy.js";
 
 const apiPort = 3011;
 const publicOrigin = "http://127.0.0.1:4173";
@@ -276,6 +277,10 @@ async function main(): Promise<void> {
     adminEmail: administratorEmail,
     displayName: "Capstone Ecuador",
     workspaceIdentity: "capstone-ecuador",
+  });
+  await bootstrapSimulatedModelPolicy(application.modelPolicy, "capstone-ecuador", {
+    employeeActiveGenerationLimit: 2,
+    monthlyBudgetUsd: "100",
   });
   const approval = await application.identity.approve({
     email: conversationBrowserEmployee.email,

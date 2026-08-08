@@ -12,6 +12,7 @@ import { RouterProvider } from "react-router/dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { copy } from "../copy";
+import { seedModelTierQueries } from "../test/model-tier-fixture";
 import { conversationQueryKeys, draftScopeKey } from "./api";
 import type { ChatRuntime } from "./chat-runtime";
 import { ChatRuntimeProvider, useChatRuntime } from "./chat-runtime-provider";
@@ -21,7 +22,14 @@ import { DraftMemoryProvider, useDraftMemory } from "./draft-memory";
 import { ProtectedDraftLayout } from "./protected-draft-layout";
 
 const conversationId = "11111111-1111-4111-8111-111111111111";
+const secondConversationId = "22222222-2222-4222-8222-222222222222";
 const queryScope = ["workspace-1", "employee-1", "2026-08-06T12:00:00.000Z"] as const;
+
+function createTestQueryClient(): QueryClient {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  seedModelTierQueries(queryClient, queryScope, [conversationId, secondConversationId]);
+  return queryClient;
+}
 
 function json(payload: unknown, status = 200): Response {
   return new Response(JSON.stringify(payload), {
@@ -122,7 +130,7 @@ describe("conversation page", () => {
           }),
       ),
     );
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const queryClient = createTestQueryClient();
     const router = createMemoryRouter([
       {
         Component: SessionHarness,
@@ -284,7 +292,7 @@ describe("conversation page", () => {
       throw new Error(`Unexpected request: ${method} ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const queryClient = createTestQueryClient();
     const router = createMemoryRouter(
       [{ path: "/c/:conversationId", Component: ConversationPage }],
       { initialEntries: [`/c/${conversationId}`] },
@@ -443,7 +451,7 @@ describe("conversation page", () => {
       throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const queryClient = createTestQueryClient();
     const router = createMemoryRouter(
       [{ path: "/c/:conversationId", Component: ConversationPage }],
       { initialEntries: [`/c/${conversationId}`] },
@@ -644,7 +652,7 @@ describe("conversation page", () => {
       throw new Error(`Unexpected request: ${method} ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const queryClient = createTestQueryClient();
     const router = createMemoryRouter(
       [{ path: "/c/:conversationId", Component: ConversationPage }],
       { initialEntries: [`/c/${conversationId}`] },
@@ -813,7 +821,7 @@ describe("conversation page", () => {
       throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const queryClient = createTestQueryClient();
     const router = createMemoryRouter(
       [
         {
@@ -878,7 +886,7 @@ describe("conversation page", () => {
       throw new Error(`Unexpected request: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const queryClient = createTestQueryClient();
     const router = createMemoryRouter(
       [
         {
@@ -1002,7 +1010,7 @@ describe("conversation page", () => {
       throw new Error(`Unexpected request: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const queryClient = createTestQueryClient();
     const router = createMemoryRouter(
       [
         {
@@ -1102,7 +1110,7 @@ describe("conversation page", () => {
       throw new Error(`Unexpected request: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const queryClient = createTestQueryClient();
     const router = createMemoryRouter(
       [
         {
@@ -1242,7 +1250,7 @@ describe("conversation page", () => {
       throw new Error(`Unexpected request: ${method} ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const queryClient = createTestQueryClient();
     const router = createMemoryRouter(
       [
         {
@@ -1280,7 +1288,6 @@ describe("conversation page", () => {
   });
 
   it("abandons canonical recovery when the conversation route changes", async () => {
-    const secondConversationId = "22222222-2222-4222-8222-222222222222";
     const messageId = "33333333-3333-4333-8333-333333333333";
     let firstInitialRead = true;
     let finishRecovery: ((response: Response) => void) | undefined;
@@ -1349,9 +1356,7 @@ describe("conversation page", () => {
       throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    });
+    const queryClient = createTestQueryClient();
     const router = createMemoryRouter(
       [
         {
@@ -1454,9 +1459,7 @@ describe("conversation page", () => {
       throw new Error(`Unexpected request: ${method} ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    });
+    const queryClient = createTestQueryClient();
     const router = createMemoryRouter(
       [
         {

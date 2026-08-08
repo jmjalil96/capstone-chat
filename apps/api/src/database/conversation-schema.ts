@@ -30,6 +30,7 @@ export const conversations = pgTable(
       .references(() => user.id, { onDelete: "cascade" }),
     title: text("title"),
     selectedLeafMessageId: uuid("selected_leaf_message_id"),
+    preferredTier: text("preferred_tier").default("balanced").notNull(),
     revision: integer("revision").default(0).notNull(),
     archivedAt: timestamp("archived_at", { precision: 3, withTimezone: true }),
     createdAt: timestamp("created_at", { precision: 3, withTimezone: true }).defaultNow().notNull(),
@@ -37,6 +38,10 @@ export const conversations = pgTable(
   },
   (table) => [
     check("conversations_revision_nonnegative_check", sql`${table.revision} >= 0`),
+    check(
+      "conversations_preferred_tier_check",
+      sql`${table.preferredTier} IN ('fast', 'balanced', 'pro')`,
+    ),
     check(
       "conversations_title_nonempty_check",
       sql`${table.title} IS NULL OR ${table.title} ~ '[^[:space:]]'`,

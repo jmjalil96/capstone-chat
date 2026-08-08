@@ -224,6 +224,35 @@ export const copy = {
         draftSave: "No pudimos confirmar el borrador. Tu texto permanece en el editor.",
         recovery: "No pudimos actualizar la conversación.",
         responseState: "No pudimos actualizar el estado de algunas respuestas.",
+        tierUnavailable:
+          "Este nivel no está disponible. Elige Fast, Balanced o Pro antes de volver a intentarlo.",
+        generationLimit:
+          "Ya alcanzaste el límite de respuestas activas. Detén o espera una respuesta antes de continuar.",
+        workspaceBudget:
+          "El espacio de trabajo alcanzó su presupuesto mensual. Tu borrador sigue guardado.",
+      },
+    },
+    modelTiers: {
+      label: "Nivel para la próxima respuesta",
+      loading: "Cargando niveles disponibles…",
+      loadError: "No pudimos cargar los niveles disponibles. Inténtalo de nuevo.",
+      saveError: "No pudimos cambiar el nivel. Inténtalo de nuevo.",
+      unavailable: "El nivel seleccionado ya no está disponible. Elige otro para continuar.",
+      noneAvailable: "No hay niveles disponibles en este momento.",
+      optionUnavailable: "No disponible",
+      tiers: {
+        fast: {
+          name: "Fast",
+          purpose: "Respuestas rápidas para preguntas cotidianas",
+        },
+        balanced: {
+          name: "Balanced",
+          purpose: "Mejor calidad para la mayoría del trabajo",
+        },
+        pro: {
+          name: "Pro",
+          purpose: "Análisis profundo para tareas difíciles",
+        },
       },
     },
     conversation: {

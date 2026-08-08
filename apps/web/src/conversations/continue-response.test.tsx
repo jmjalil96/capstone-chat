@@ -4,6 +4,7 @@ import { createMemoryRouter, RouterProvider } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { copy } from "../copy";
+import { seedModelTierQueries } from "../test/model-tier-fixture";
 import { ChatRuntimeProvider } from "./chat-runtime-provider";
 import { ConversationPage } from "./conversation-page";
 import { DraftMemoryProvider } from "./draft-memory";
@@ -159,6 +160,7 @@ describe("Continue response", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    seedModelTierQueries(queryClient, queryScope, [conversationId, secondConversationId]);
     const router = createMemoryRouter(
       [{ path: "/c/:conversationId", Component: ConversationPage }],
       { initialEntries: [`/c/${conversationId}`] },

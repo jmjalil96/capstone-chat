@@ -9,7 +9,11 @@ import {
 export const GenerationIdSchema = Type.String({ format: "uuid" });
 export type GenerationId = Type.Static<typeof GenerationIdSchema>;
 
-export const GenerationModelTierSchema = Type.Literal("balanced");
+export const GenerationModelTierSchema = Type.Union([
+  Type.Literal("fast"),
+  Type.Literal("balanced"),
+  Type.Literal("pro"),
+]);
 export type GenerationModelTier = Type.Static<typeof GenerationModelTierSchema>;
 
 export const GenerationStatusSchema = Type.Enum([

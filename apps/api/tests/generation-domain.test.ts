@@ -13,6 +13,7 @@ import {
 } from "../src/generations/response-stream.js";
 import type { GenerationService } from "../src/generations/service.js";
 import { generationTuning } from "../src/generations/settings.js";
+import { OpenRouterGateway } from "../src/openrouter/openrouter-gateway.js";
 
 describe("Phase 4 generation configuration", () => {
   it("locks the approved operational values and versioned backend copy", () => {
@@ -20,6 +21,7 @@ describe("Phase 4 generation configuration", () => {
       backpressureTimeoutMilliseconds: 5_000,
       checkpointBytes: 1_024,
       checkpointMilliseconds: 250,
+      durableStatePollMilliseconds: 250,
       fakeChunkDelayMilliseconds: 400,
       gracefulDrainMilliseconds: 10_000,
       maximumAssistantBytes: 1_048_576,
@@ -45,15 +47,19 @@ describe("Phase 4 generation configuration", () => {
     });
   });
 
-  it("prohibits the local fake gateway in production", () => {
+  it("selects OpenRouter and prohibits an injected local fake gateway in production", async () => {
     const production = loadConfig({
       BETTER_AUTH_SECRET: "production-auth-secret-longer-than-thirty-two-characters",
       DATABASE_URL: "postgresql://capstone:capstone@example.invalid/capstone",
       EMAIL_DELIVERY: "disabled",
+      MODEL_GATEWAY: "openrouter",
       NODE_ENV: "production",
+      OPENROUTER_API_KEY: "test-openrouter-key-never-sent",
       PUBLIC_ORIGIN: "https://chat.capstone.example",
     });
-    expect(() => createApplication(production)).toThrow("FakeModelGateway is prohibited");
+    const application = createApplication(production);
+    expect(application.modelGateway).toBeInstanceOf(OpenRouterGateway);
+    await application.shutdown();
     expect(() => createApplication(production, { modelGateway: new FakeModelGateway() })).toThrow(
       "FakeModelGateway is prohibited",
     );

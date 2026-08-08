@@ -3,6 +3,7 @@ import {
   ConfigurationError,
   loadConfig,
   loadDatabaseConfig,
+  loadOpenRouterOperatorConfig,
   publicConfigMetadata,
 } from "../src/config.js";
 
@@ -10,7 +11,9 @@ const productionEnvironment = {
   BETTER_AUTH_SECRET: "production-auth-secret-with-at-least-thirty-two-characters",
   DATABASE_URL: "postgresql://app:secret@database.internal:5432/capstone",
   EMAIL_DELIVERY: "disabled",
+  MODEL_GATEWAY: "openrouter",
   NODE_ENV: "production",
+  OPENROUTER_API_KEY: "test-openrouter-key-never-sent",
   PUBLIC_ORIGIN: "https://chat.capstone.example",
 } satisfies NodeJS.ProcessEnv;
 
@@ -24,7 +27,9 @@ describe("loadConfig", () => {
       emailDelivery: "fake",
       host: "127.0.0.1",
       logLevel: "info",
+      modelGateway: "fake",
       nodeEnv: "development",
+      openRouterApiKey: null,
       port: 3000,
       publicOrigin: "http://localhost:5173",
       trustProxy: false,
@@ -46,6 +51,7 @@ describe("loadConfig", () => {
       emailDelivery: "fake",
       host: "0.0.0.0",
       logLevel: "debug",
+      modelGateway: "fake",
       nodeEnv: "test",
       port: 4100,
       publicOrigin: "http://127.0.0.1:5173",
@@ -60,6 +66,13 @@ describe("loadConfig", () => {
 
     expect(config).toEqual({ databaseUrl: productionEnvironment.DATABASE_URL });
     expect(Object.isFrozen(config)).toBe(true);
+  });
+
+  it("loads the backend-only OpenRouter operator credential independently", () => {
+    expect(
+      loadOpenRouterOperatorConfig({ OPENROUTER_API_KEY: "test-openrouter-key-never-sent" }),
+    ).toEqual({ apiKey: "test-openrouter-key-never-sent" });
+    expect(() => loadOpenRouterOperatorConfig({})).toThrow("OPENROUTER_API_KEY");
   });
 
   it("identifies the invalid configuration field without exposing its value", () => {
@@ -93,6 +106,10 @@ describe("loadConfig", () => {
     [{ ...productionEnvironment, EMAIL_DELIVERY: "fake" }, "prohibited"],
     [{ ...productionEnvironment, EMAIL_DELIVERY: "provider" }, "fake or disabled"],
     [{ ...productionEnvironment, EMAIL_DELIVERY: undefined }, "EMAIL_DELIVERY"],
+    [{ ...productionEnvironment, MODEL_GATEWAY: "fake" }, "prohibited"],
+    [{ ...productionEnvironment, MODEL_GATEWAY: "other" }, "fake or openrouter"],
+    [{ ...productionEnvironment, MODEL_GATEWAY: undefined }, "MODEL_GATEWAY"],
+    [{ ...productionEnvironment, OPENROUTER_API_KEY: undefined }, "OPENROUTER_API_KEY"],
   ] satisfies [NodeJS.ProcessEnv, string][])(
     "rejects invalid production configuration %#",
     (environment, message) => {
@@ -105,6 +122,7 @@ describe("loadConfig", () => {
 
     expect(metadata).not.toHaveProperty("databaseUrl");
     expect(metadata).not.toHaveProperty("authSecret");
+    expect(metadata).not.toHaveProperty("openRouterApiKey");
     expect(JSON.stringify(metadata)).not.toContain("secret");
     expect(Object.isFrozen(metadata)).toBe(true);
   });

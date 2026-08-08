@@ -22,6 +22,13 @@
       "when": 1786119062299,
       "tag": "0002_great_serpent_society",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1786205271465,
+      "tag": "0003_openrouter_cost_control",
+      "breakpoints": true
     }
   ]
 }

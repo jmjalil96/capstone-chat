@@ -6,10 +6,13 @@ import {
   conversationQueryKeys,
   conversationQueryScope,
   fetchAlternativeContexts,
+  fetchConversationPreferredTier,
+  fetchModelTierPolicy,
   fetchResponseStates,
   openConversationResponse,
   searchConversations,
   undoConversation,
+  updateConversationPreferredTier,
 } from "./api";
 
 afterEach(() => {
@@ -71,6 +74,86 @@ describe("conversation browser requests", () => {
       }),
     );
     expect(fetchMock.mock.calls[0]?.[0]).not.toContain("póliza");
+  });
+
+  it("reads only the employee tier policy and validates its stable shape", async () => {
+    const policy = {
+      defaultTier: "balanced",
+      tiers: [
+        { tier: "fast", enabled: true, available: true },
+        { tier: "balanced", enabled: true, available: true },
+        { tier: "pro", enabled: true, available: false },
+      ],
+    } as const;
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(policy), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchModelTierPolicy()).resolves.toEqual(policy);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/model-tiers",
+      expect.objectContaining({
+        credentials: "same-origin",
+        headers: { accept: "application/json" },
+      }),
+    );
+  });
+
+  it("reads and updates a narrow conversation preference", async () => {
+    const conversationId = "33333333-3333-4333-8333-333333333333";
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ conversationId, modelTier: "balanced" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ conversationId, modelTier: "pro" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchConversationPreferredTier(conversationId)).resolves.toEqual({
+      conversationId,
+      modelTier: "balanced",
+    });
+    await expect(
+      updateConversationPreferredTier(conversationId, { modelTier: "pro" }),
+    ).resolves.toEqual({
+      conversationId,
+      modelTier: "pro",
+    });
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      `/api/conversations/${conversationId}/preferred-tier`,
+      expect.objectContaining({ body: JSON.stringify({ modelTier: "pro" }), method: "PUT" }),
+    );
+  });
+
+  it("rejects a preferred-tier response for another conversation", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            conversationId: "44444444-4444-4444-8444-444444444444",
+            modelTier: "fast",
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      ),
+    );
+
+    await expect(
+      fetchConversationPreferredTier("33333333-3333-4333-8333-333333333333"),
+    ).rejects.toThrow("requested resource");
   });
 
   it("rejects a malformed response at the browser boundary", async () => {

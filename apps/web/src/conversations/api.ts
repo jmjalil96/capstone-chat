@@ -10,6 +10,8 @@ import {
   ConversationDetailResponseSchema,
   type ConversationListResponse,
   ConversationListResponseSchema,
+  type ConversationPreferredTierResponse,
+  ConversationPreferredTierResponseSchema,
   type ConversationSearchRequest,
   type ConversationSearchResponse,
   ConversationSearchResponseSchema,
@@ -24,6 +26,8 @@ import {
   type DraftScope,
   type DraftState,
   DraftStateSchema,
+  type ModelTierPolicyResponse,
+  ModelTierPolicyResponseSchema,
   type OpaqueCursor,
   type RenameConversationRequest,
   RenameConversationResponseSchema,
@@ -38,6 +42,8 @@ import {
   type UndoConversationRequest,
   type UndoConversationResponse,
   UndoConversationResponseSchema,
+  type UpdateConversationPreferredTierRequest,
+  UpdateConversationPreferredTierResponseSchema,
 } from "@capstone/protocol";
 import type { TSchema } from "typebox";
 import Value from "typebox/value";
@@ -199,7 +205,57 @@ export const conversationQueryKeys = {
       revision,
       [...messageIds].sort(),
     ] as const,
+  modelTierPolicy: (queryScope: ConversationQueryScope) =>
+    [...conversationQueryKeys.all(queryScope), "model-tier-policy"] as const,
+  preferredTier: (queryScope: ConversationQueryScope, conversationId: string) =>
+    [...conversationQueryKeys.all(queryScope), "preferred-tier", conversationId] as const,
 };
+
+export async function fetchModelTierPolicy(signal?: AbortSignal): Promise<ModelTierPolicyResponse> {
+  const response = await fetch("/api/model-tiers", {
+    credentials: "same-origin",
+    headers: { accept: "application/json" },
+    signal: signal ?? null,
+  });
+  return validatedResponse(response, ModelTierPolicyResponseSchema);
+}
+
+export async function fetchConversationPreferredTier(
+  conversationId: string,
+  signal?: AbortSignal,
+): Promise<ConversationPreferredTierResponse> {
+  const response = await fetch(
+    `/api/conversations/${encodeURIComponent(conversationId)}/preferred-tier`,
+    {
+      credentials: "same-origin",
+      headers: { accept: "application/json" },
+      signal: signal ?? null,
+    },
+  );
+  const preference = await validatedResponse<ConversationPreferredTierResponse>(
+    response,
+    ConversationPreferredTierResponseSchema,
+  );
+  assertConversationId(conversationId, preference.conversationId);
+  return preference;
+}
+
+export async function updateConversationPreferredTier(
+  conversationId: string,
+  input: UpdateConversationPreferredTierRequest,
+  signal?: AbortSignal,
+): Promise<ConversationPreferredTierResponse> {
+  const response = await fetch(
+    `/api/conversations/${encodeURIComponent(conversationId)}/preferred-tier`,
+    jsonRequest("PUT", input, signal),
+  );
+  const preference = await validatedResponse<ConversationPreferredTierResponse>(
+    response,
+    UpdateConversationPreferredTierResponseSchema,
+  );
+  assertConversationId(conversationId, preference.conversationId);
+  return preference;
+}
 
 export async function createConversation(
   input: CreateConversationRequest,

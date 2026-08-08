@@ -15,13 +15,15 @@ import {
 import { user } from "../src/database/auth-schema.generated.js";
 import { conversations, drafts, messages } from "../src/database/conversation-schema.js";
 import { type AppDatabase, createDatabase } from "../src/database/database.js";
-import { workspaces } from "../src/database/identity-schema.js";
+import { workspaceMemberships, workspaces } from "../src/database/identity-schema.js";
 import { migrateDatabase } from "../src/database/migrate.js";
 import * as databaseSchema from "../src/database/schema.js";
 import { ApplicationError } from "../src/errors.js";
 import { createGenerationService, type GenerationService } from "../src/generations/service.js";
 import type { RequestActor } from "../src/identity/authorization.js";
 import type { IdentityService } from "../src/identity/service.js";
+import { createModelPolicyService } from "../src/model-policy/service.js";
+import { bootstrapSimulatedModelPolicy } from "./support/model-policy.js";
 
 const publicOrigin = "http://localhost:5173";
 
@@ -103,12 +105,14 @@ describe.sequential("conversation core integration", () => {
     );
     const primaryWorkspaceId = randomUUID();
     const secondaryWorkspaceId = randomUUID();
+    const primaryWorkspaceIdentity = `workspace-${randomUUID()}`;
+    const secondaryWorkspaceIdentity = `workspace-${randomUUID()}`;
     const primaryUserId = `user-${randomUUID()}`;
     const otherUserId = `user-${randomUUID()}`;
     const workspaceUserId = `user-${randomUUID()}`;
     await database.insert(workspaces).values([
-      { displayName: "Synthetic", id: primaryWorkspaceId, identity: `workspace-${randomUUID()}` },
-      { displayName: "Other", id: secondaryWorkspaceId, identity: `workspace-${randomUUID()}` },
+      { displayName: "Synthetic", id: primaryWorkspaceId, identity: primaryWorkspaceIdentity },
+      { displayName: "Other", id: secondaryWorkspaceId, identity: secondaryWorkspaceIdentity },
     ]);
     await database.insert(user).values([
       { email: "primary@example.test", emailVerified: true, id: primaryUserId, name: "Primary" },
@@ -120,6 +124,14 @@ describe.sequential("conversation core integration", () => {
         name: "Workspace",
       },
     ]);
+    await database.insert(workspaceMemberships).values([
+      { role: "member", userId: primaryUserId, workspaceId: primaryWorkspaceId },
+      { role: "admin", userId: otherUserId, workspaceId: primaryWorkspaceId },
+      { role: "member", userId: workspaceUserId, workspaceId: secondaryWorkspaceId },
+    ]);
+    const modelPolicy = createModelPolicyService(database);
+    await bootstrapSimulatedModelPolicy(modelPolicy, primaryWorkspaceIdentity);
+    await bootstrapSimulatedModelPolicy(modelPolicy, secondaryWorkspaceIdentity);
     primary = actor({
       email: "primary@example.test",
       userId: primaryUserId,
@@ -1400,6 +1412,20 @@ describe.sequential("conversation core integration", () => {
       url: "/api/drafts/new",
     });
     expect(sensitiveResponse.statusCode).toBe(200);
+    const tierPolicyResponse = await application.server.inject({
+      method: "GET",
+      url: "/api/model-tiers",
+    });
+    expect(tierPolicyResponse.statusCode).toBe(200);
+    expect(tierPolicyResponse.headers["cache-control"]).toBe("no-store");
+    expect(tierPolicyResponse.json()).toEqual({
+      defaultTier: "balanced",
+      tiers: [
+        { available: true, enabled: true, tier: "fast" },
+        { available: true, enabled: true, tier: "balanced" },
+        { available: true, enabled: true, tier: "pro" },
+      ],
+    });
     const loggedConversation = await application.conversations.create(primary);
     const loggedRenamed = await application.conversations.rename(
       primary,
@@ -1420,6 +1446,39 @@ describe.sequential("conversation core integration", () => {
       loggedRenamed.revision,
     );
     const routeConversation = await application.conversations.create(primary);
+    const routeConversationBeforePreference = (
+      await database
+        .select({ revision: conversations.revision, updatedAt: conversations.updatedAt })
+        .from(conversations)
+        .where(eq(conversations.id, routeConversation.id))
+    )[0];
+    const initialPreference = await application.server.inject({
+      method: "GET",
+      url: `/api/conversations/${routeConversation.id}/preferred-tier`,
+    });
+    expect(initialPreference.statusCode).toBe(200);
+    expect(initialPreference.json()).toEqual({
+      conversationId: routeConversation.id,
+      modelTier: "balanced",
+    });
+    const updatedPreference = await application.server.inject({
+      headers: { "content-type": "application/json", origin: publicOrigin },
+      method: "PUT",
+      payload: { modelTier: "pro" },
+      url: `/api/conversations/${routeConversation.id}/preferred-tier`,
+    });
+    expect(updatedPreference.statusCode).toBe(200);
+    expect(updatedPreference.json()).toEqual({
+      conversationId: routeConversation.id,
+      modelTier: "pro",
+    });
+    const routeConversationAfterPreference = (
+      await database
+        .select({ revision: conversations.revision, updatedAt: conversations.updatedAt })
+        .from(conversations)
+        .where(eq(conversations.id, routeConversation.id))
+    )[0];
+    expect(routeConversationAfterPreference).toEqual(routeConversationBeforePreference);
     const routeRoot = await application.conversations.insertImmutableMessage(primary, {
       content: text("route root"),
       conversationId: routeConversation.id,

@@ -77,6 +77,8 @@ function renderComposer(
                 parentMessageId: null,
                 ...overrides,
               }}
+              modelTier="balanced"
+              tierAvailable
               autoFocus
             />
           </ChatRuntimeProvider>

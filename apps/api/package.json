@@ -21,6 +21,9 @@
     "identity:bootstrap": "tsx src/operator/identity-command.ts bootstrap",
     "identity:deactivate": "tsx src/operator/identity-command.ts deactivate",
     "migrate:production": "node dist/database/migrate-command.js",
+    "model-catalog:refresh": "tsx src/operator/model-policy-command.ts refresh",
+    "model-policy:attest": "tsx src/operator/model-policy-command.ts attest",
+    "model-policy:bootstrap": "tsx src/operator/model-policy-command.ts bootstrap",
     "start": "node dist/server.js",
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json"
@@ -30,8 +33,10 @@
     "@capstone/protocol": "workspace:*",
     "@fastify/type-provider-typebox": "6.1.0",
     "better-auth": "1.6.26",
+    "decimal.js": "10.6.0",
     "dotenv": "17.4.2",
     "drizzle-orm": "0.45.2",
+    "eventsource-parser": "3.1.0",
     "fastify": "5.11.2",
     "pg": "8.22.0",
     "pino": "10.3.1"

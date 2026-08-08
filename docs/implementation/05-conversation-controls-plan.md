@@ -1,6 +1,6 @@
 # Phase 5 — Conversation Controls Implementation Plan
 
-Status: implemented; verification complete; pending user acceptance
+Status: implemented; verification complete; accepted baseline for Phase 6
 
 Code authorization: granted by the user on 2026-08-07
 
@@ -76,8 +76,8 @@ Code authorization: granted by the user on 2026-08-07
 - Synthetic browser fixtures are inserted through the isolated migrated database before the test
   API listens. Phase 5 uses a seeded signed Better Auth session cookie so parallel coverage does not
   consume the identity sign-in rate limit; no production or test-only HTTP route was added.
-- Final corrected automated verification passed 483 tests: 146 protocol, 165 API/PostgreSQL, and
-  172 web. Strict TypeScript and all production builds passed. The formerly flaky Chromium
+- Final corrected automated verification passed 488 tests: 146 protocol, 165 API/PostgreSQL, and
+  177 web. Strict TypeScript and all production builds passed. The formerly flaky Chromium
   selection scenario passed 20/20 repetitions with five workers in 40.1 seconds. The configured
   Playwright matrix then passed 25/25 in 26.8 seconds: 15 Chromium scenarios plus five critical
   scenarios each in Firefox and WebKit, including renderer security/overflow, copy/focus,
@@ -102,6 +102,8 @@ Code authorization: granted by the user on 2026-08-07
   cycle.
 - The corrected diff contains no OpenRouter/provider integration, tier policy, cost/budget,
   compaction, administration, telemetry, production platform, content logging, or test-only route.
+- The user accepted the final corrected Phase 5 baseline on 2026-08-08 by authorizing Phase 6
+  implementation against commit `fc67d41` (`Harden browser scroll race handling`).
 
 ## Objective
 

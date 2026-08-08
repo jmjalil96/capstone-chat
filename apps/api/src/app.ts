@@ -22,24 +22,37 @@ import { createActorResolver } from "./identity/authorization.js";
 import { createEmailSender, type EmailSender, FakeEmailSender } from "./identity/email.js";
 import { createIdentityService, type IdentityService } from "./identity/service.js";
 import { createApplicationLifecycle } from "./lifecycle.js";
+import { type BudgetService, createBudgetService } from "./model-policy/budget-service.js";
+import { refreshClaimedCatalog } from "./model-policy/catalog-refresh.js";
+import {
+  type CostControlMaintenance,
+  createCostControlMaintenance,
+} from "./model-policy/maintenance.js";
+import { createModelPolicyService, type ModelPolicyService } from "./model-policy/service.js";
+import { OpenRouterCatalogClient } from "./openrouter/catalog-client.js";
+import { OpenRouterGateway } from "./openrouter/openrouter-gateway.js";
 import { operationalErrorMetadata } from "./operator-error.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerConversationRoutes } from "./routes/conversations.js";
 import { registerDevelopmentMailboxRoute } from "./routes/development-mailbox.js";
 import { registerHealthRoutes } from "./routes/health.js";
+import { registerModelTierRoutes } from "./routes/model-tiers.js";
 import { registerResponseRoutes } from "./routes/responses.js";
 import { registerSessionRoute } from "./routes/session.js";
 import { applySecurityHeaders, enforceCapstoneMutationBoundary } from "./security/http.js";
 
 export interface ApplicationDependencies {
   readonly authentication?: Authentication;
+  readonly budget?: BudgetService;
   readonly conversations?: ConversationService;
   readonly database?: AppDatabase;
   readonly emailSender?: EmailSender;
   readonly generations?: GenerationService;
   readonly identity?: IdentityService;
   readonly loggerStream?: { write(message: string): void };
+  readonly maintenance?: CostControlMaintenance;
   readonly modelGateway?: ModelGateway;
+  readonly modelPolicy?: ModelPolicyService;
   readonly pool?: DatabasePool;
   readonly requestIdFactory?: () => string;
   readonly responseStreams?: ResponseStreamCoordinator;
@@ -48,7 +61,11 @@ export interface ApplicationDependencies {
 
 export function createApplication(config: ApiConfig, dependencies: ApplicationDependencies = {}) {
   const requestIdFactory = dependencies.requestIdFactory ?? randomUUID;
-  const modelGateway = dependencies.modelGateway ?? new FakeModelGateway();
+  const modelGateway =
+    dependencies.modelGateway ??
+    (config.modelGateway === "openrouter"
+      ? new OpenRouterGateway({ apiKey: config.openRouterApiKey ?? "" })
+      : new FakeModelGateway());
   if (config.nodeEnv === "production" && modelGateway instanceof FakeModelGateway) {
     throw new Error("FakeModelGateway is prohibited in production");
   }
@@ -95,10 +112,23 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
       identity,
     });
   const resolveActor = createActorResolver(authentication, identity);
+  const budget = dependencies.budget ?? createBudgetService(database);
+  const modelPolicy = dependencies.modelPolicy ?? createModelPolicyService(database);
   const conversations =
     dependencies.conversations ??
-    createConversationService(database, createCursorCodec(config.authSecret));
-  const generations = dependencies.generations ?? createGenerationService(database);
+    createConversationService(
+      database,
+      createCursorCodec(config.authSecret),
+      config.modelGateway,
+      modelPolicy,
+    );
+  const generations =
+    dependencies.generations ??
+    createGenerationService(database, {
+      budget,
+      mode: config.modelGateway === "openrouter" ? "openrouter" : "simulated",
+      modelPolicy,
+    });
   const streamRegistry = dependencies.streamRegistry ?? new ActiveStreamRegistry();
   const responseStreams =
     dependencies.responseStreams ??
@@ -106,6 +136,30 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
       gateway: modelGateway,
       generations,
       registry: streamRegistry,
+    });
+  const catalogClient =
+    config.modelGateway === "openrouter"
+      ? new OpenRouterCatalogClient({ apiKey: config.openRouterApiKey ?? "" })
+      : undefined;
+  const catalogRefreshOwnerId = randomUUID();
+  const maintenance =
+    dependencies.maintenance ??
+    createCostControlMaintenance({
+      budget,
+      onFailure(metadata) {
+        server.log.warn(metadata, "cost-control maintenance failed");
+      },
+      refreshCatalog:
+        catalogClient === undefined
+          ? async () => Object.freeze({ available: 0, claimed: 0, unavailable: 0, updated: 0 })
+          : (signal) =>
+              refreshClaimedCatalog({
+                loadSnapshots: (modelIds, refreshSignal) =>
+                  catalogClient.loadSnapshots(modelIds, refreshSignal),
+                modelPolicy,
+                ownerId: catalogRefreshOwnerId,
+                signal,
+              }),
     });
 
   server.addHook("preValidation", (request, _reply, done) => {
@@ -119,7 +173,11 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
 
   server.addHook("onSend", (request, reply, payload, done) => {
     void reply.header("x-request-id", request.id);
-    if (request.url.startsWith("/api/conversations") || request.url.startsWith("/api/drafts")) {
+    if (
+      request.url.startsWith("/api/conversations") ||
+      request.url.startsWith("/api/drafts") ||
+      request.url.startsWith("/api/model-tiers")
+    ) {
       void reply.header("cache-control", "no-store");
     }
     applySecurityHeaders(reply);
@@ -143,6 +201,11 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
   registerHealthRoutes(server, lifecycle);
   registerAuthRoutes(server, { authentication, config });
   registerSessionRoute(server, resolveActor);
+  registerModelTierRoutes(server, {
+    modelGateway: config.modelGateway,
+    modelPolicy,
+    resolveActor,
+  });
   registerConversationRoutes(server, { conversations, resolveActor });
   registerResponseRoutes(server, {
     generations,
@@ -160,9 +223,12 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
     shutdownPromise ??= (async () => {
       lifecycle.beginDraining();
       streamRegistry.beginDraining();
-      let closeError: unknown;
+      const shutdownErrors: unknown[] = [];
+      const maintenanceStopPromise = maintenance.stop().catch((error: unknown) => {
+        shutdownErrors.push(error);
+      });
       const closePromise = server.close().catch((error: unknown) => {
-        closeError = error;
+        shutdownErrors.push(error);
       });
 
       if (!(await streamRegistry.waitForIdle(generationTuning.gracefulDrainMilliseconds))) {
@@ -170,21 +236,21 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
         await streamRegistry.waitForIdle(generationTuning.backpressureTimeoutMilliseconds);
       }
       await closePromise;
+      await maintenanceStopPromise;
 
       try {
         await pool.end();
       } catch (error: unknown) {
-        if (closeError !== undefined) {
-          throw new AggregateError([closeError, error], "application shutdown failed");
-        }
-
-        throw error;
+        shutdownErrors.push(error);
       } finally {
         lifecycle.markStopped();
       }
 
-      if (closeError !== undefined) {
-        throw closeError;
+      if (shutdownErrors.length === 1) {
+        throw shutdownErrors[0];
+      }
+      if (shutdownErrors.length > 1) {
+        throw new AggregateError(shutdownErrors, "application shutdown failed");
       }
     })();
 
@@ -193,13 +259,16 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
 
   return {
     authentication,
+    budget,
     conversations,
     database,
     emailSender,
     generations,
     identity,
     lifecycle,
+    maintenance,
     modelGateway,
+    modelPolicy,
     pool,
     responseStreams,
     server,

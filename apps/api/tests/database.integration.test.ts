@@ -16,11 +16,15 @@ const productTableNames = [
   "employee_approvals",
   "generations",
   "messages",
+  "model_catalog",
+  "openrouter_privacy_attestations",
   "rate_limit",
   "session",
   "user",
   "verification",
+  "workspace_cost_policies",
   "workspace_memberships",
+  "workspace_model_policies",
   "workspaces",
 ] as const;
 
@@ -112,7 +116,7 @@ describe("PostgreSQL application schema", () => {
         "SELECT table_name AS \"tableName\" FROM information_schema.tables WHERE table_schema = 'public'",
       );
 
-      expect(appliedMigrations.rows).toHaveLength(3);
+      expect(appliedMigrations.rows).toHaveLength(4);
       expect(appliedMigrations.rows[0]?.hash).toMatch(/^[a-f0-9]{64}$/u);
       expect(Number(appliedMigrations.rows[0]?.createdAt)).toBeGreaterThan(0);
       expect(productTables.rows.map(({ tableName }) => tableName).sort()).toEqual(
@@ -178,7 +182,7 @@ describe("PostgreSQL application schema", () => {
         "SELECT table_name AS \"tableName\" FROM information_schema.tables WHERE table_schema = 'public' AND table_name IN ('conversations', 'drafts', 'messages') ORDER BY table_name",
       );
 
-      expect(migrations.rows).toHaveLength(3);
+      expect(migrations.rows).toHaveLength(4);
       expect(workspace.rows).toEqual([{ displayName: "Phase Two Preserved" }]);
       expect(phaseThreeTables.rows.map((row) => row.tableName)).toEqual([
         "conversations",
@@ -318,7 +322,7 @@ describe("PostgreSQL application schema", () => {
         "SELECT count(*)::text AS count FROM generations",
       );
 
-      expect(migrations.rows).toHaveLength(3);
+      expect(migrations.rows).toHaveLength(4);
       expect(preserved.rows).toEqual([
         {
           draftContent: "Borrador preservado",
@@ -329,6 +333,164 @@ describe("PostgreSQL application schema", () => {
         },
       ]);
       expect(generationCount.rows).toEqual([{ count: "0" }]);
+    } finally {
+      await verificationPool.end();
+    }
+  });
+
+  it("upgrades the exact Phase 5 generation shape as untracked and preserves deferred deletion", async () => {
+    const databaseName = "capstone_phase_five_upgrade";
+    const upgradeUrl = databaseUrlFor(databaseUrl, databaseName);
+    const administrativePool = new Pool({ connectionString: databaseUrl });
+    try {
+      await administrativePool.query(`CREATE DATABASE "${databaseName}"`);
+    } finally {
+      await administrativePool.end();
+    }
+
+    const phaseFiveMigrations = await Promise.all(
+      [
+        "0000_bumpy_living_lightning.sql",
+        "0001_conscious_giant_man.sql",
+        "0002_great_serpent_society.sql",
+      ].map((fileName) => readFile(resolve(migrationsFolder, fileName), "utf8")),
+    );
+    const phaseFivePool = new Pool({ connectionString: upgradeUrl });
+    try {
+      for (const migrationSql of phaseFiveMigrations) {
+        for (const statement of migrationSql.split("--> statement-breakpoint")) {
+          if (statement.trim() !== "") {
+            await phaseFivePool.query(statement);
+          }
+        }
+      }
+      await phaseFivePool.query("CREATE SCHEMA drizzle");
+      await phaseFivePool.query(`
+        CREATE TABLE drizzle.__drizzle_migrations (
+          id SERIAL PRIMARY KEY,
+          hash text NOT NULL,
+          created_at bigint
+        )
+      `);
+      const migrationTimes = ["1786061111713", "1786071863036", "1786119062299"];
+      for (const [index, migrationSql] of phaseFiveMigrations.entries()) {
+        await phaseFivePool.query(
+          "INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES ($1, $2)",
+          [createHash("sha256").update(migrationSql).digest("hex"), migrationTimes[index]],
+        );
+      }
+      await phaseFivePool.query(`
+        INSERT INTO workspaces (id, identity, display_name)
+        VALUES ('10101010-1010-4010-8010-101010101010', 'phase-five', 'Phase Five')
+      `);
+      await phaseFivePool.query(`
+        INSERT INTO "user" (id, name, email, email_verified)
+        VALUES ('phase-five-user', 'Phase Five', 'phase-five@example.test', true)
+      `);
+      await phaseFivePool.query(`
+        INSERT INTO conversations (id, workspace_id, user_id)
+        VALUES (
+          '20202020-2020-4020-8020-202020202020',
+          '10101010-1010-4010-8010-101010101010',
+          'phase-five-user'
+        )
+      `);
+      await phaseFivePool.query(`
+        INSERT INTO messages (id, conversation_id, parent_message_id, role, content)
+        VALUES
+          (
+            '30303030-3030-4030-8030-303030303030',
+            '20202020-2020-4020-8020-202020202020',
+            NULL,
+            'user',
+            '[{"type":"text","text":"Pregunta histórica"}]'::jsonb
+          ),
+          (
+            '40404040-4040-4040-8040-404040404040',
+            '20202020-2020-4020-8020-202020202020',
+            '30303030-3030-4030-8030-303030303030',
+            'assistant',
+            '[{"type":"text","text":"Respuesta histórica"}]'::jsonb
+          )
+      `);
+      await phaseFivePool.query(`
+        INSERT INTO generations (
+          id, workspace_id, user_id, conversation_id, assistant_message_id, idempotency_key,
+          requested_tier, system_prompt_version, effective_parameters, status
+        ) VALUES (
+          '50505050-5050-4050-8050-505050505050',
+          '10101010-1010-4010-8010-101010101010',
+          'phase-five-user',
+          '20202020-2020-4020-8020-202020202020',
+          '40404040-4040-4040-8040-404040404040',
+          '60606060-6060-4060-8060-606060606060',
+          'balanced',
+          'capstone-chat-v1',
+          '{}'::jsonb,
+          'active'
+        )
+      `);
+    } finally {
+      await phaseFivePool.end();
+    }
+
+    await migrateDatabase(upgradeUrl);
+    await migrateDatabase(upgradeUrl);
+
+    const verificationPool = new Pool({ connectionString: upgradeUrl });
+    try {
+      const upgraded = await verificationPool.query<{
+        accountingStatus: string | null;
+        preferredTier: string;
+        purpose: string | null;
+        reservedCostUsd: string | null;
+      }>(`
+        SELECT conversation.preferred_tier AS "preferredTier",
+          generation.accounting_status AS "accountingStatus",
+          generation.purpose,
+          generation.reserved_cost_usd::text AS "reservedCostUsd"
+        FROM conversations AS conversation
+        INNER JOIN generations AS generation ON generation.conversation_id = conversation.id
+        WHERE generation.id = '50505050-5050-4050-8050-505050505050'
+      `);
+      const ownedForeignKey = await verificationPool.query<{ deferred: boolean }>(`
+        SELECT condeferrable AS deferred
+        FROM pg_constraint
+        WHERE conname = 'generations_owned_conversation_fk'
+      `);
+      expect(upgraded.rows).toEqual([
+        {
+          accountingStatus: null,
+          preferredTier: "balanced",
+          purpose: null,
+          reservedCostUsd: null,
+        },
+      ]);
+      expect(ownedForeignKey.rows).toEqual([{ deferred: true }]);
+
+      await verificationPool.query("BEGIN");
+      try {
+        await verificationPool.query(`
+          UPDATE generations
+          SET status = 'cancelled', terminal_reason = 'cancelled', completed_at = now(), updated_at = now()
+          WHERE id = '50505050-5050-4050-8050-505050505050'
+        `);
+        await verificationPool.query(`
+          DELETE FROM conversations WHERE id = '20202020-2020-4020-8020-202020202020'
+        `);
+        await verificationPool.query("COMMIT");
+      } catch (error: unknown) {
+        await verificationPool.query("ROLLBACK");
+        throw error;
+      }
+      const retained = await verificationPool.query(`
+        SELECT conversation_id, assistant_message_id, accounting_status
+        FROM generations
+        WHERE id = '50505050-5050-4050-8050-505050505050'
+      `);
+      expect(retained.rows).toEqual([
+        { accounting_status: null, assistant_message_id: null, conversation_id: null },
+      ]);
     } finally {
       await verificationPool.end();
     }
@@ -401,7 +563,7 @@ describe("PostgreSQL application schema", () => {
     }
   });
 
-  it("installs only the approved Phase 4 generation lifecycle shape", async () => {
+  it("installs the additive Phase 6 generation accounting shape", async () => {
     const verificationPool = new Pool({ connectionString: databaseUrl });
     try {
       const columns = await verificationPool.query<{ columnName: string }>(`
@@ -429,13 +591,15 @@ describe("PostgreSQL application schema", () => {
         WHERE conrelid = 'public.generations'::regclass
           AND conname IN (
             'generations_assistant_message_fk',
+            'generations_accounting_check',
             'generations_content_references_check',
             'generations_effective_parameters_check',
             'generations_lifecycle_check',
             'generations_owned_conversation_fk',
             'generations_requested_tier_check',
             'generations_system_prompt_version_check',
-            'generations_timestamps_check'
+            'generations_timestamps_check',
+            'generations_token_counts_check'
           )
         ORDER BY conname
       `);
@@ -445,7 +609,10 @@ describe("PostgreSQL application schema", () => {
         WHERE schemaname = 'public' AND indexname IN (
           'generations_active_conversation_unique',
           'generations_assistant_message_unique',
-          'generations_scoped_idempotency_unique'
+          'generations_openrouter_generation_id_unique',
+          'generations_reserved_expiry_idx',
+          'generations_scoped_idempotency_unique',
+          'generations_workspace_budget_period_idx'
         )
         ORDER BY indexname
       `);
@@ -468,6 +635,29 @@ describe("PostgreSQL application schema", () => {
         "completed_at",
         "created_at",
         "updated_at",
+        "purpose",
+        "requested_model",
+        "resolved_model",
+        "provider",
+        "openrouter_generation_id",
+        "prompt_tokens",
+        "completion_tokens",
+        "reasoning_tokens",
+        "cached_tokens",
+        "cost_usd",
+        "cost_basis",
+        "accounting_status",
+        "estimated_input_tokens",
+        "maximum_output_tokens",
+        "reserved_cost_usd",
+        "prompt_price_ceiling_per_token",
+        "completion_price_ceiling_per_token",
+        "request_price_ceiling_usd",
+        "reservation_margin_basis_points",
+        "budget_period_start",
+        "budget_period_end",
+        "reservation_expires_at",
+        "accounting_settled_at",
       ]);
       expect(enumValues.rows).toEqual([
         { enumName: "generation_status", value: "active" },
@@ -482,7 +672,7 @@ describe("PostgreSQL application schema", () => {
         { enumName: "generation_terminal_reason", value: "cancelled" },
         { enumName: "generation_terminal_reason", value: "error" },
       ]);
-      expect(constraints.rows.map((row) => row.name)).toHaveLength(8);
+      expect(constraints.rows.map((row) => row.name)).toHaveLength(10);
       expect(
         constraints.rows.find((row) => row.name === "generations_owned_conversation_fk"),
       ).toMatchObject({ deferred: true });
@@ -492,7 +682,10 @@ describe("PostgreSQL application schema", () => {
       expect(indexes.rows.map((row) => row.indexName)).toEqual([
         "generations_active_conversation_unique",
         "generations_assistant_message_unique",
+        "generations_openrouter_generation_id_unique",
+        "generations_reserved_expiry_idx",
         "generations_scoped_idempotency_unique",
+        "generations_workspace_budget_period_idx",
       ]);
     } finally {
       await verificationPool.end();
@@ -595,6 +788,27 @@ describe("PostgreSQL application schema", () => {
         verificationPool.query(`
           INSERT INTO generations (
             workspace_id, user_id, conversation_id, assistant_message_id, idempotency_key,
+            requested_tier, system_prompt_version, effective_parameters, status,
+            accounting_status
+          ) VALUES (
+            '66666666-6666-4666-8666-666666666666',
+            'generation-schema-user',
+            'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+            '12345678-1234-4234-8234-123456789019',
+            'balanced',
+            'capstone-chat-v1',
+            '{}'::jsonb,
+            'active',
+            'reserved'
+          )
+        `),
+      ).rejects.toMatchObject({ code: "23514", constraint: "generations_accounting_check" });
+
+      await expect(
+        verificationPool.query(`
+          INSERT INTO generations (
+            workspace_id, user_id, conversation_id, assistant_message_id, idempotency_key,
             requested_tier, system_prompt_version, effective_parameters, status
           ) VALUES (
             '66666666-6666-4666-8666-666666666666',
@@ -662,7 +876,7 @@ describe("PostgreSQL application schema", () => {
             'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
             'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
             '12345678-1234-4234-8234-123456789014',
-            'pro',
+            'ultra',
             'capstone-chat-v1',
             '{}'::jsonb,
             'active'
@@ -816,7 +1030,7 @@ describe("PostgreSQL application schema", () => {
 
     expect(migrationFiles.length).toBeGreaterThan(0);
     expect(migrationSql).toMatch(/\bCREATE (?:TABLE|TYPE)\b/iu);
-    expect(migrationSql).not.toMatch(/\b(?:DELETE\s+FROM|DROP|TRUNCATE)\b/iu);
+    expect(migrationSql).not.toMatch(/\b(?:DELETE\s+FROM|DROP\s+(?:TABLE|COLUMN)|TRUNCATE)\b/iu);
   });
 
   it("keeps liveness healthy when PostgreSQL becomes unavailable", async () => {

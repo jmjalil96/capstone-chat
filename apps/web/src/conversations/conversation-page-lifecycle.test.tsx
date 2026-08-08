@@ -1,11 +1,12 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createMemoryRouter, Outlet } from "react-router";
 import { RouterProvider } from "react-router/dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { copy } from "../copy";
+import { seedModelTierQueries } from "../test/model-tier-fixture";
 import { ConversationPage } from "./conversation-page";
 import { DraftMemoryProvider } from "./draft-memory";
 
@@ -125,6 +126,7 @@ describe("conversation recovery lifecycle", () => {
       }),
     );
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    seedModelTierQueries(queryClient, queryScope, [firstConversationId, secondConversationId]);
     const router = createMemoryRouter(
       [
         {
@@ -251,6 +253,7 @@ describe("conversation recovery lifecycle", () => {
       }),
     );
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    seedModelTierQueries(queryClient, queryScope, [firstConversationId, secondConversationId]);
     const router = createMemoryRouter(
       [
         {
@@ -398,6 +401,7 @@ describe("conversation recovery lifecycle", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    seedModelTierQueries(queryClient, queryScope, [firstConversationId, secondConversationId]);
     const router = createMemoryRouter(
       [
         {
@@ -441,7 +445,14 @@ describe("conversation recovery lifecycle", () => {
     });
     expect(chatMocks.recoverConversation).toHaveBeenCalledOnce();
 
-    const retry = await screen.findByRole("button", { name: copy.conversations.common.retry });
+    const recoveryCopy = await screen.findByText(copy.conversations.generation.errors.recovery);
+    const recoveryAlert = recoveryCopy.closest<HTMLElement>('[role="alert"]');
+    if (!recoveryAlert) {
+      throw new Error("The recovery action was not associated with its alert");
+    }
+    const retry = within(recoveryAlert).getByRole("button", {
+      name: copy.conversations.common.retry,
+    });
     await user.click(retry);
     expect(chatMocks.recoverConversation).toHaveBeenCalledTimes(2);
   });

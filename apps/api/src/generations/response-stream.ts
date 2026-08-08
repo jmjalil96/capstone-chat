@@ -10,7 +10,15 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import { hasUnsupportedControlCharacter } from "../conversations/content.js";
 import { applySecurityHeaders } from "../security/http.js";
 import type { ActiveStreamRegistry } from "./active-streams.js";
-import type { GatewayFailureCode, GatewayUsage, ModelGateway } from "./model-gateway.js";
+import type {
+  GatewayAccounting,
+  GatewayEvent,
+  GatewayFailureCode,
+  GatewayProviderMetadata,
+  GatewayUsage,
+  GenerationAccountingGateway,
+  ModelGateway,
+} from "./model-gateway.js";
 import type {
   DurableGenerationState,
   GenerationService,
@@ -264,6 +272,32 @@ function isWritable(reply: FastifyReply): boolean {
   return !reply.raw.destroyed && !reply.raw.writableEnded;
 }
 
+function accountingGateway(
+  gateway: ModelGateway,
+): (ModelGateway & GenerationAccountingGateway) | null {
+  return "lookupUsage" in gateway && typeof gateway.lookupUsage === "function"
+    ? (gateway as ModelGateway & GenerationAccountingGateway)
+    : null;
+}
+
+async function waitForDurableStatePoll(signal: AbortSignal): Promise<void> {
+  if (signal.aborted) {
+    return;
+  }
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(finish, generationTuning.durableStatePollMilliseconds);
+    const aborted = (): void => finish();
+
+    function finish(): void {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", aborted);
+      resolve();
+    }
+
+    signal.addEventListener("abort", aborted, { once: true });
+  });
+}
+
 export function splitContentDelta(text: string): readonly string[] {
   const lineOverhead = Buffer.byteLength(
     `${JSON.stringify({ text: "", type: "content.delta" })}\n`,
@@ -304,13 +338,17 @@ export function createResponseStreamCoordinator(dependencies: {
   ): Promise<void> {
     let assistantContent = "";
     let assistantBytes = 0;
+    let accountingSettled = false;
     let firstTokenAt: Date | null = null;
+    let providerGenerationId: string | null = null;
     let terminal = false;
+    let usageLookupAttempted = false;
     const lease = registry.register(started.generationId, () => ({
       content: assistantContent,
       firstTokenAt,
     }));
     const disconnected = new AbortController();
+    const durableStateMonitorController = new AbortController();
     const gatewayController = new AbortController();
     const gatewaySignal = AbortSignal.any([
       lease.signal,
@@ -372,18 +410,121 @@ export function createResponseStreamCoordinator(dependencies: {
       await writer.write(event);
     }
 
-    async function fail(errorCode: GatewayFailureCode): Promise<void> {
+    async function persistProviderMetadata(metadata: GatewayProviderMetadata): Promise<void> {
+      providerGenerationId = metadata.providerGenerationId ?? providerGenerationId;
+      await generations.recordProviderMetadata(started.generationId, metadata);
+    }
+
+    async function settleAfterTerminal(
+      usage: GatewayUsage,
+      accounting: GatewayAccounting,
+    ): Promise<void> {
+      providerGenerationId = accounting.metadata.providerGenerationId ?? providerGenerationId;
+      accountingSettled =
+        (await generations.settleAccounting(started.generationId, usage, accounting)) ||
+        accountingSettled;
+    }
+
+    async function lookupAccounting(): Promise<
+      { readonly accounting: GatewayAccounting; readonly usage: GatewayUsage } | undefined
+    > {
+      const lookup = accountingGateway(gateway);
+      if (
+        lookup === null ||
+        providerGenerationId === null ||
+        accountingSettled ||
+        usageLookupAttempted
+      ) {
+        return undefined;
+      }
+      usageLookupAttempted = true;
+      const result = await lookup
+        .lookupUsage(providerGenerationId, new AbortController().signal)
+        .catch(() => ({ status: "unavailable" as const }));
+      if (result.status !== "found") {
+        return undefined;
+      }
+      await persistProviderMetadata(result.accounting.metadata);
+      return { accounting: result.accounting, usage: result.usage };
+    }
+
+    async function settleLateEvent(event: GatewayEvent): Promise<void> {
+      if (event.type === "generation.metadata") {
+        await persistProviderMetadata(event.metadata);
+        return;
+      }
+      if (event.type === "content.delta") {
+        return;
+      }
+      if (event.type === "response.completed") {
+        if (event.accounting !== undefined) {
+          await persistProviderMetadata(event.accounting.metadata);
+          if (validUsage(event.usage)) {
+            await settleAfterTerminal(event.usage, event.accounting);
+          }
+        }
+        return;
+      }
+
+      usageLookupAttempted ||= event.usageLookupAttempted === true;
+      const metadata = event.accounting?.actual?.metadata ?? event.accounting?.metadata;
+      if (metadata !== undefined) {
+        await persistProviderMetadata(metadata);
+      }
+      if (
+        event.accounting?.actual !== undefined &&
+        event.usage !== undefined &&
+        validUsage(event.usage)
+      ) {
+        await settleAfterTerminal(event.usage, event.accounting.actual);
+      }
+    }
+
+    async function monitorDurableState(): Promise<void> {
+      const signal = durableStateMonitorController.signal;
+      while (!signal.aborted) {
+        const state = await generations.readState(started.generationId).catch(() => undefined);
+        if (state === null || (state !== undefined && state.status !== "active")) {
+          gatewayController.abort("durable-terminal");
+          return;
+        }
+        await waitForDurableStatePoll(signal);
+      }
+    }
+
+    const durableStateMonitor =
+      started.request.route === undefined ? undefined : monitorDurableState();
+
+    async function fail(
+      errorCode: GatewayFailureCode,
+      details: {
+        readonly accounting?: GatewayAccounting;
+        readonly settleDeterministicZero?: boolean;
+        readonly usage?: GatewayUsage;
+      } = {},
+    ): Promise<void> {
       const partial = /\S/u.test(assistantContent);
       const result = await generations.terminalize(started.generationId, {
+        ...(details.accounting === undefined || details.usage === undefined
+          ? {}
+          : { accounting: { metadata: details.accounting, usage: details.usage } }),
         content: assistantContent,
         errorCode,
         firstTokenAt,
         reason: "error",
+        ...(details.settleDeterministicZero === undefined
+          ? {}
+          : { settleDeterministicZero: details.settleDeterministicZero }),
         status: partial ? "incomplete" : "failed",
       });
       if (result.won) {
+        accountingSettled =
+          details.accounting !== undefined || details.settleDeterministicZero === true;
         await emitFailure(errorCode, result);
       } else {
+        if (details.accounting !== undefined && details.usage !== undefined) {
+          await settleAfterTerminal(details.usage, details.accounting);
+        }
         terminal = await durableTerminalEvent(result);
       }
     }
@@ -406,6 +547,7 @@ export function createResponseStreamCoordinator(dependencies: {
           throw new GatewayOutputError("GENERATION_FAILED");
         }
         if (state.status !== "active") {
+          await settleLateEvent(event);
           gatewayController.abort("cancelled");
           terminal = await durableTerminalEvent(state);
           break;
@@ -421,6 +563,11 @@ export function createResponseStreamCoordinator(dependencies: {
           break;
         }
         lease.signal.throwIfAborted();
+
+        if (event.type === "generation.metadata") {
+          await persistProviderMetadata(event.metadata);
+          continue;
+        }
 
         if (event.type === "content.delta") {
           if (
@@ -445,7 +592,48 @@ export function createResponseStreamCoordinator(dependencies: {
         }
 
         if (event.type === "response.failed") {
-          await fail(event.errorCode);
+          usageLookupAttempted ||= event.usageLookupAttempted === true;
+          if (event.accounting?.metadata !== undefined) {
+            await persistProviderMetadata(event.accounting.metadata);
+          }
+          let terminalAccounting =
+            event.accounting?.actual !== undefined && event.usage !== undefined
+              ? { accounting: event.accounting.actual, usage: event.usage }
+              : undefined;
+          if (event.providerOutcome !== undefined && terminalAccounting === undefined) {
+            terminalAccounting = await lookupAccounting();
+          }
+          if (event.providerOutcome !== undefined && terminalAccounting !== undefined) {
+            const result = await generations.terminalize(started.generationId, {
+              accounting: {
+                metadata: terminalAccounting.accounting,
+                usage: terminalAccounting.usage,
+              },
+              content: assistantContent,
+              errorCode: null,
+              firstTokenAt,
+              reason: event.providerOutcome,
+              status: "completed",
+            });
+            if (result.won && result.assistantMessageId !== null && result.revision !== null) {
+              accountingSettled = true;
+              await writer.write({
+                messageId: result.assistantMessageId,
+                reason: event.providerOutcome,
+                revision: result.revision,
+                type: "response.completed",
+                usage: terminalAccounting.usage,
+              });
+            } else {
+              await settleAfterTerminal(terminalAccounting.usage, terminalAccounting.accounting);
+              terminal = await durableTerminalEvent(result);
+            }
+          } else {
+            await fail(event.errorCode, {
+              ...(terminalAccounting ?? {}),
+              settleDeterministicZero: event.accounting?.spendRisk === "none",
+            });
+          }
           terminal = true;
           break;
         }
@@ -453,8 +641,15 @@ export function createResponseStreamCoordinator(dependencies: {
         if (!validUsage(event.usage)) {
           throw new GatewayOutputError("GENERATION_FAILED");
         }
-        if (!/\S/u.test(assistantContent)) {
+        if (
+          !/\S/u.test(assistantContent) &&
+          event.reason !== "refusal" &&
+          event.reason !== "content_filter"
+        ) {
           const result = await generations.terminalize(started.generationId, {
+            ...(event.accounting === undefined
+              ? {}
+              : { accounting: { metadata: event.accounting, usage: event.usage } }),
             content: "",
             errorCode: "EMPTY_RESPONSE",
             firstTokenAt,
@@ -462,6 +657,7 @@ export function createResponseStreamCoordinator(dependencies: {
             status: "failed",
           });
           if (result.won) {
+            accountingSettled = event.accounting !== undefined || accountingSettled;
             await emitFailure("EMPTY_RESPONSE", result);
           } else {
             terminal = await durableTerminalEvent(result);
@@ -471,6 +667,9 @@ export function createResponseStreamCoordinator(dependencies: {
         }
 
         const result = await generations.terminalize(started.generationId, {
+          ...(event.accounting === undefined
+            ? {}
+            : { accounting: { metadata: event.accounting, usage: event.usage } }),
           content: assistantContent,
           errorCode: null,
           firstTokenAt,
@@ -478,6 +677,7 @@ export function createResponseStreamCoordinator(dependencies: {
           status: "completed",
         });
         if (result.won && result.assistantMessageId !== null && result.revision !== null) {
+          accountingSettled = event.accounting !== undefined || accountingSettled;
           const completed: ResponseCompletedEvent = {
             messageId: result.assistantMessageId,
             reason: event.reason,
@@ -487,6 +687,9 @@ export function createResponseStreamCoordinator(dependencies: {
           };
           await writer.write(completed);
         } else {
+          if (event.accounting !== undefined) {
+            await settleAfterTerminal(event.usage, event.accounting);
+          }
           terminal = await durableTerminalEvent(result);
         }
         terminal = true;
@@ -528,10 +731,18 @@ export function createResponseStreamCoordinator(dependencies: {
         }
       }
     } finally {
+      durableStateMonitorController.abort("stream-settled");
       if (!gatewayController.signal.aborted) {
         gatewayController.abort("disconnect");
       }
+      await durableStateMonitor;
       await checkpoints.settle();
+      if (!accountingSettled && providerGenerationId !== null) {
+        const recovered = await lookupAccounting().catch(() => undefined);
+        if (recovered !== undefined) {
+          await settleAfterTerminal(recovered.usage, recovered.accounting).catch(() => undefined);
+        }
+      }
       reply.raw.removeListener("close", connectionClosed);
       reply.raw.removeListener("error", connectionError);
       if (!reply.raw.destroyed && !reply.raw.writableEnded) {

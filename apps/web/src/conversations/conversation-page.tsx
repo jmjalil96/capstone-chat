@@ -50,6 +50,7 @@ import { useDraftMemory } from "./draft-memory";
 import { Icon } from "./icons";
 import { CodeCopyAction, MessageActions } from "./message-actions";
 import type { MessageContentProps } from "./message-content";
+import { ModelTierPicker, useConversationModelTier } from "./model-tiers";
 import {
   type ConversationRequestCapture,
   useConversationRequestLifetime,
@@ -207,6 +208,7 @@ export function ConversationPage() {
   const draftMemory = useDraftMemory();
   const runtime = useOptionalChatRuntime();
   const runtimeSnapshot = useOptionalConversationRuntime(conversationId);
+  const modelTier = useConversationModelTier(conversationId);
   const queryScope = draftMemory.queryScope;
   const requestLifetime = useConversationRequestLifetime(`conversation:${conversationId}`);
   const headingRef = useRef<HTMLHeadingElement>(null);
@@ -903,6 +905,8 @@ export function ConversationPage() {
     if (
       !runtime ||
       !conversation ||
+      !modelTier.selectedTier ||
+      !modelTier.available ||
       message.role !== "user" ||
       generationActive ||
       conversation.isArchived ||
@@ -918,7 +922,7 @@ export function ConversationPage() {
           targetMessageId: message.id,
           parentMessageId: message.parentMessageId,
           content: [{ type: "text", text: content }],
-          modelTier: "balanced",
+          modelTier: modelTier.selectedTier,
           observedRevision: conversation.revision,
         },
         {
@@ -942,6 +946,8 @@ export function ConversationPage() {
     if (
       !runtime ||
       !conversation ||
+      !modelTier.selectedTier ||
+      !modelTier.available ||
       message.role !== "assistant" ||
       !message.parentMessageId ||
       generationActive ||
@@ -957,7 +963,7 @@ export function ConversationPage() {
           source: "retry",
           targetMessageId: message.id,
           parentMessageId: message.parentMessageId,
-          modelTier: "balanced",
+          modelTier: modelTier.selectedTier,
           observedRevision: conversation.revision,
         },
         { onStarted: focusComposerAfterGeneration },
@@ -973,6 +979,8 @@ export function ConversationPage() {
     if (
       !runtime ||
       !conversation ||
+      !modelTier.selectedTier ||
+      !modelTier.available ||
       generationActive ||
       conversation.isArchived ||
       composerIncoherent
@@ -985,7 +993,7 @@ export function ConversationPage() {
         {
           source: "continue",
           parentMessageId: messageId,
-          modelTier: "balanced",
+          modelTier: modelTier.selectedTier,
           observedRevision: conversation.revision,
         },
         { onStarted: focusComposerAfterGeneration },
@@ -1032,6 +1040,17 @@ export function ConversationPage() {
             {displayTitle}
           </h1>
         </div>
+        <ModelTierPicker
+          error={modelTier.error}
+          id={`conversation-${conversation.id}`}
+          isPending={modelTier.isPending}
+          onRetry={modelTier.retry}
+          onSelect={modelTier.select}
+          policy={modelTier.policy}
+          selectedTier={modelTier.selectedTier}
+          updateError={modelTier.updateError}
+          updatePending={modelTier.updatePending}
+        />
         <ConversationActions
           conversation={conversation}
           onCanonical={adoptCanonical}
@@ -1238,6 +1257,7 @@ export function ConversationPage() {
                     alternative={alternative}
                     canContinue={
                       canContinue &&
+                      modelTier.available &&
                       !generationActive &&
                       !conversation.isArchived &&
                       !composerIncoherent
@@ -1245,12 +1265,14 @@ export function ConversationPage() {
                     canCopy={contentStable}
                     canEdit={
                       message.role === "user" &&
+                      modelTier.available &&
                       !generationActive &&
                       !conversation.isArchived &&
                       !composerIncoherent
                     }
                     canRetry={
                       message.role === "assistant" &&
+                      modelTier.available &&
                       message.parentMessageId !== null &&
                       !generationActive &&
                       !conversation.isArchived &&
@@ -1360,6 +1382,8 @@ export function ConversationPage() {
           focusRequest={
             composerFocusIntent.conversationId === conversationId ? composerFocusIntent.request : 0
           }
+          modelTier={modelTier.selectedTier}
+          tierAvailable={modelTier.available}
         />
       </div>
     </article>

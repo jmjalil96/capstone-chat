@@ -785,6 +785,103 @@ select:focus-visible,
   line-height: 1.55;
 }
 
+.model-tier-control {
+  min-width: 0;
+  display: grid;
+  gap: var(--capstone-space-2);
+}
+
+.model-tier-picker {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.model-tier-picker legend {
+  margin-block-end: var(--capstone-space-2);
+  color: var(--app-text-muted);
+  font-family: var(--capstone-font-data);
+  font-size: var(--capstone-type-label);
+  font-weight: var(--capstone-weight-semibold);
+}
+
+.model-tier-options {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--capstone-space-2);
+}
+
+.model-tier-option {
+  min-width: 0;
+  position: relative;
+  cursor: pointer;
+}
+
+.model-tier-option input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.model-tier-option > span {
+  min-height: 100%;
+  display: grid;
+  align-content: start;
+  gap: var(--capstone-space-1);
+  padding: var(--capstone-space-3);
+  background: var(--app-panel);
+  border: 1px solid var(--app-control-border);
+  border-radius: var(--capstone-radius-sm);
+}
+
+.model-tier-option strong {
+  color: var(--app-text);
+}
+
+.model-tier-option small {
+  color: var(--app-text-muted);
+  font-size: var(--capstone-type-label);
+  line-height: 1.35;
+}
+
+.model-tier-option input:checked + span {
+  background: var(--app-panel-soft);
+  border-color: var(--app-action);
+  box-shadow: inset 0 -3px 0 var(--app-accent);
+}
+
+.model-tier-option input:focus-visible + span {
+  outline: 3px solid var(--app-action);
+  outline-offset: 2px;
+}
+
+.model-tier-option:has(input:disabled) {
+  cursor: not-allowed;
+}
+
+.model-tier-option:has(input:disabled) > span {
+  opacity: 0.58;
+}
+
+.model-tier-status {
+  margin: 0;
+  color: var(--app-text-muted);
+  font-size: var(--capstone-type-small);
+}
+
+.model-tier-feedback {
+  display: flex;
+  align-items: baseline;
+  gap: var(--capstone-space-2);
+}
+
+.model-tier-error {
+  color: var(--app-danger);
+}
+
 .draft-editor {
   display: grid;
   gap: var(--capstone-space-2);
@@ -1041,6 +1138,37 @@ select:focus-visible,
 
 .conversation-header > div:first-child {
   min-width: 0;
+}
+
+.conversation-header .model-tier-control {
+  width: min(100%, 21rem);
+  margin-inline-start: auto;
+}
+
+.conversation-header .model-tier-picker legend {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.conversation-header .model-tier-option > span {
+  min-height: 2.5rem;
+  align-content: center;
+  justify-items: center;
+  padding: var(--capstone-space-2) var(--capstone-space-3);
+}
+
+.conversation-header .model-tier-option small:first-of-type {
+  display: none;
+}
+
+.conversation-header .model-tier-status {
+  max-width: 21rem;
 }
 
 .conversation-kicker {
@@ -1451,6 +1579,11 @@ select:focus-visible,
     justify-content: flex-start;
   }
 
+  .conversation-header .model-tier-control {
+    width: 100%;
+    margin-inline-start: 0;
+  }
+
   .conversation-alert,
   .message-scroll,
   .conversation-draft-dock {
@@ -1465,6 +1598,10 @@ select:focus-visible,
   .collection-page,
   .new-chat-page {
     padding-inline: var(--capstone-gutter-small);
+  }
+
+  .new-chat-page .model-tier-options {
+    grid-template-columns: 1fr;
   }
 
   .dialog-actions > * {

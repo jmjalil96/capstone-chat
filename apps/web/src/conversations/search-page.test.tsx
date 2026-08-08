@@ -8,6 +8,7 @@ import { RouterProvider } from "react-router/dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { copy } from "../copy";
+import { seedModelTierQueries } from "../test/model-tier-fixture";
 import { conversationQueryKeys } from "./api";
 import { SEARCH_DEBOUNCE_DELAY_MS } from "./config";
 import { ConversationPage } from "./conversation-page";
@@ -17,6 +18,12 @@ import { SearchPage } from "./search-page";
 const conversationId = "11111111-1111-4111-8111-111111111111";
 const leafMessageId = "22222222-2222-4222-8222-222222222222";
 const queryScope = ["workspace-1", "employee-1", "2026-08-06T12:00:00.000Z"] as const;
+
+function createTestQueryClient(): QueryClient {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  seedModelTierQueries(queryClient, queryScope, [conversationId]);
+  return queryClient;
+}
 
 function json(payload: unknown, status = 200): Response {
   return new Response(JSON.stringify(payload), {
@@ -48,7 +55,7 @@ describe("search page", () => {
       throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const queryClient = createTestQueryClient();
     const router = createMemoryRouter(
       [
         {
@@ -127,9 +134,7 @@ describe("search page", () => {
       throw new Error(`Unexpected request: ${method} ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    });
+    const queryClient = createTestQueryClient();
     const router = createMemoryRouter(
       [
         {
@@ -264,9 +269,7 @@ describe("search page", () => {
       throw new Error(`Unexpected request: ${method} ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    });
+    const queryClient = createTestQueryClient();
     const router = createMemoryRouter(
       [
         {
@@ -369,7 +372,7 @@ describe("search page", () => {
       throw new Error(`Unexpected request: ${method} ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const queryClient = createTestQueryClient();
     const router = createMemoryRouter(
       [
         {
@@ -578,7 +581,7 @@ describe("search page", () => {
       throw new Error(`Unexpected request: ${method} ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const queryClient = createTestQueryClient();
     queryClient.setQueryData<InfiniteData<ConversationDetailResponse>>(
       conversationQueryKeys.detail(queryScope, conversationId),
       { pages: [currentPage], pageParams: [undefined] },
@@ -733,7 +736,7 @@ describe("search page", () => {
       throw new Error(`Unexpected request: ${method} ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const queryClient = createTestQueryClient();
     const router = createMemoryRouter(
       [
         {

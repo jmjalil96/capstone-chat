@@ -8,6 +8,7 @@ const logLevels = ["fatal", "error", "warn", "info", "debug", "trace", "silent"]
 export type RuntimeMode = (typeof runtimeModes)[number];
 export type LogLevel = (typeof logLevels)[number];
 export type EmailDelivery = "disabled" | "fake";
+export type ModelGatewayMode = "fake" | "openrouter";
 
 export type ConfigurationKey =
   | "BETTER_AUTH_SECRET"
@@ -15,7 +16,9 @@ export type ConfigurationKey =
   | "EMAIL_DELIVERY"
   | "HOST"
   | "LOG_LEVEL"
+  | "MODEL_GATEWAY"
   | "NODE_ENV"
+  | "OPENROUTER_API_KEY"
   | "PORT"
   | "PUBLIC_ORIGIN";
 
@@ -33,13 +36,19 @@ export interface DatabaseConfig {
   readonly databaseUrl: string;
 }
 
+export interface OpenRouterOperatorConfig {
+  readonly apiKey: string;
+}
+
 export interface ApiConfig {
   readonly authSecret: string;
   readonly databaseUrl: string;
   readonly emailDelivery: EmailDelivery;
   readonly host: string;
   readonly logLevel: LogLevel;
+  readonly modelGateway: ModelGatewayMode;
   readonly nodeEnv: RuntimeMode;
+  readonly openRouterApiKey: string | null;
   readonly port: number;
   readonly publicOrigin: string;
   readonly trustProxy: false;
@@ -209,6 +218,35 @@ function readLogLevel(value: string | undefined, mode: RuntimeMode): LogLevel {
   return level;
 }
 
+function readModelGateway(value: string | undefined, mode: RuntimeMode): ModelGatewayMode {
+  const gateway = value?.trim() || (mode === "production" ? undefined : "fake");
+
+  if (gateway === undefined) {
+    throw new ConfigurationError("MODEL_GATEWAY", "MODEL_GATEWAY is required in production");
+  }
+  if (gateway !== "fake" && gateway !== "openrouter") {
+    throw new ConfigurationError("MODEL_GATEWAY", "MODEL_GATEWAY must be fake or openrouter");
+  }
+  if (mode === "production" && gateway === "fake") {
+    throw new ConfigurationError("MODEL_GATEWAY", "MODEL_GATEWAY=fake is prohibited in production");
+  }
+  return gateway;
+}
+
+function readOpenRouterApiKey(value: string | undefined, gateway: ModelGatewayMode): string | null {
+  if (gateway === "fake") {
+    return null;
+  }
+  const apiKey = value?.trim();
+  if (apiKey === undefined || apiKey.length === 0) {
+    throw new ConfigurationError(
+      "OPENROUTER_API_KEY",
+      "OPENROUTER_API_KEY is required when MODEL_GATEWAY=openrouter",
+    );
+  }
+  return apiKey;
+}
+
 function readDatabaseConfig(
   source: NodeJS.ProcessEnv,
   nodeEnv: RuntimeMode,
@@ -232,6 +270,19 @@ export function loadDatabaseConfig(
   return readDatabaseConfig(source, nodeEnv);
 }
 
+export function loadOpenRouterOperatorConfig(
+  source: NodeJS.ProcessEnv = process.env,
+): Readonly<OpenRouterOperatorConfig> {
+  const apiKey = readOpenRouterApiKey(source.OPENROUTER_API_KEY, "openrouter");
+  if (apiKey === null) {
+    throw new ConfigurationError(
+      "OPENROUTER_API_KEY",
+      "OPENROUTER_API_KEY is required for OpenRouter operator commands",
+    );
+  }
+  return Object.freeze({ apiKey });
+}
+
 export function loadConfig(source: NodeJS.ProcessEnv = process.env): Readonly<ApiConfig> {
   const nodeEnv = readRuntimeMode(source.NODE_ENV);
   const { databaseUrl } = readDatabaseConfig(source, nodeEnv);
@@ -244,6 +295,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): Readonly<Ap
     ),
     nodeEnv,
   );
+  const modelGateway = readModelGateway(source.MODEL_GATEWAY, nodeEnv);
 
   return Object.freeze({
     authSecret: readAuthSecret(source, nodeEnv),
@@ -251,7 +303,9 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): Readonly<Ap
     emailDelivery: readEmailDelivery(source.EMAIL_DELIVERY, nodeEnv),
     host: readHost(source.HOST, nodeEnv),
     logLevel: readLogLevel(source.LOG_LEVEL, nodeEnv),
+    modelGateway,
     nodeEnv,
+    openRouterApiKey: readOpenRouterApiKey(source.OPENROUTER_API_KEY, modelGateway),
     port: readPort(source.PORT),
     publicOrigin,
     trustProxy: false,
@@ -263,6 +317,7 @@ export function publicConfigMetadata(config: ApiConfig): Readonly<Record<string,
     emailDelivery: config.emailDelivery,
     host: config.host,
     logLevel: config.logLevel,
+    modelGateway: config.modelGateway,
     nodeEnv: config.nodeEnv,
     port: config.port,
     publicOrigin: config.publicOrigin,

@@ -9,6 +9,10 @@ export async function startServer(config: ApiConfig): Promise<ApiApplication> {
   try {
     await application.server.listen({ host: config.host, port: config.port });
     const readiness = await application.lifecycle.initialize();
+    if (config.nodeEnv === "production" && readiness.status === "ready") {
+      await application.modelPolicy.assertRuntimeMode("openrouter");
+    }
+    application.maintenance.start();
 
     application.server.log.info(
       { ...publicConfigMetadata(config), readiness: readiness.status },

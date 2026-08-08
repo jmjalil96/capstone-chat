@@ -1,4 +1,8 @@
-import type { DraftScope } from "@capstone/protocol";
+import type {
+  ConversationPreferredTierResponse,
+  DraftScope,
+  GenerationModelTier,
+} from "@capstone/protocol";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   type KeyboardEvent,
@@ -48,7 +52,9 @@ interface DraftEditorProps {
   readonly autoFocus?: boolean;
   readonly composer?: DraftEditorComposer;
   readonly focusRequest?: number;
+  readonly modelTier?: GenerationModelTier | undefined;
   readonly scope: DraftScope;
+  readonly tierAvailable?: boolean;
 }
 
 function isActivePhase(phase: ChatRuntimePhase | undefined): boolean {
@@ -89,6 +95,12 @@ export function generationErrorCodeCopy(code: string | undefined): string {
     case "MESSAGE_TOO_LARGE":
     case "PAYLOAD_TOO_LARGE":
       return copy.conversations.generation.errors.tooLarge;
+    case "TIER_UNAVAILABLE":
+      return copy.conversations.generation.errors.tierUnavailable;
+    case "EMPLOYEE_GENERATION_LIMIT_REACHED":
+      return copy.conversations.generation.errors.generationLimit;
+    case "WORKSPACE_BUDGET_EXCEEDED":
+      return copy.conversations.generation.errors.workspaceBudget;
     default:
       return copy.conversations.generation.errors.generic;
   }
@@ -164,7 +176,9 @@ export function DraftEditor({
   autoFocus = false,
   composer,
   focusRequest = 0,
+  modelTier,
   scope,
+  tierAvailable = false,
 }: DraftEditorProps) {
   const draft = useServerDraft(scope);
   const memory = useDraftMemory();
@@ -229,6 +243,8 @@ export function DraftEditor({
     if (
       !composer ||
       !runtime ||
+      !modelTier ||
+      !tierAvailable ||
       sendLockRef.current ||
       generationActive ||
       draft.isLoading ||
@@ -245,6 +261,7 @@ export function DraftEditor({
     setSubmitting(true);
     setSendError(undefined);
     const capture = requestLifetime.capture();
+    let createdConversationId: string | undefined;
     try {
       const confirmed = await draft.confirmForSend();
       if (!capture.isCurrent() || !confirmed) {
@@ -276,6 +293,11 @@ export function DraftEditor({
         if (!capture.isCurrent()) {
           return;
         }
+        createdConversationId = conversation.id;
+        queryClient.setQueryData<ConversationPreferredTierResponse>(
+          conversationQueryKeys.preferredTier(memory.queryScope, conversation.id),
+          { conversationId: conversation.id, modelTier },
+        );
         const movedScope = { kind: "conversation", conversationId: conversation.id } as const;
         memory.moveDraftToConversation(conversation.id);
         void queryClient.invalidateQueries({
@@ -288,7 +310,7 @@ export function DraftEditor({
             source: "draft",
             parentMessageId: null,
             content: [{ type: "text", text: confirmed.content }],
-            modelTier: "balanced",
+            modelTier,
             observedRevision: conversation.revision,
             draftRevision: confirmed.revision,
           },
@@ -308,7 +330,7 @@ export function DraftEditor({
           source: "draft",
           parentMessageId: composer.parentMessageId,
           content: [{ type: "text", text: confirmed.content }],
-          modelTier: "balanced",
+          modelTier,
           observedRevision: composer.observedRevision,
           draftRevision: confirmed.revision,
         },
@@ -321,6 +343,16 @@ export function DraftEditor({
       );
     } catch (error) {
       if (capture.isCurrent()) {
+        if (createdConversationId) {
+          void queryClient.invalidateQueries({
+            queryKey: conversationQueryKeys.preferredTier(memory.queryScope, createdConversationId),
+          });
+        }
+        if (error instanceof ConversationApiError && error.code === "TIER_UNAVAILABLE") {
+          void queryClient.invalidateQueries({
+            queryKey: conversationQueryKeys.modelTierPolicy(memory.queryScope),
+          });
+        }
         setSendError(requestErrorCopy(error));
       }
     } finally {
@@ -332,7 +364,18 @@ export function DraftEditor({
       sendLockRef.current = false;
       sendConfirmedRef.current = false;
     }
-  }, [composer, draft, generationActive, memory, queryClient, requestLifetime, runtime, scope]);
+  }, [
+    composer,
+    draft,
+    generationActive,
+    memory,
+    modelTier,
+    queryClient,
+    requestLifetime,
+    runtime,
+    scope,
+    tierAvailable,
+  ]);
 
   const stop = useCallback(() => {
     if (!runtime || !conversationId || stopping || !activeGeneration) {
@@ -388,6 +431,8 @@ export function DraftEditor({
           : (generationStatus ?? remoteStatus);
   const sendDisabled =
     !runtime ||
+    !modelTier ||
+    !tierAvailable ||
     submitting ||
     draft.isLoading ||
     draft.loadError ||

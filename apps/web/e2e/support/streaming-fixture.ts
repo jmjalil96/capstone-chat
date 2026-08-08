@@ -3,11 +3,13 @@ import type {
   ConversationSummary,
   CreateResponseRequest,
   DraftState,
+  GenerationModelTier,
   ResponseStartedEvent,
   ResponseState,
   StreamEvent,
 } from "@capstone/protocol";
 import type { Page, Route } from "@playwright/test";
+import { availableModelTierPolicy } from "../../src/test/model-tier-fixture";
 
 const now = "2026-08-07T12:00:00.000Z";
 const continueMessage =
@@ -65,6 +67,7 @@ interface StoredConversation {
   readonly responses: Map<string, ResponseState>;
   readonly streams: StreamPlan[];
   hasStartedResponse: boolean;
+  preferredTier: GenerationModelTier;
   selectedLeafId: string | null;
   summary: ConversationSummary;
 }
@@ -139,6 +142,7 @@ class StreamingBackend implements StreamingFixture {
         messages: [...(seed.messages ?? [])],
         responses: new Map(seed.responses?.map((response) => [response.messageId, response])),
         hasStartedResponse: false,
+        preferredTier: "balanced",
         selectedLeafId: seed.selectedLeafId ?? null,
         streams: [...(seed.streams ?? [])],
         summary: {
@@ -176,6 +180,10 @@ class StreamingBackend implements StreamingFixture {
       await json(route, session);
       return;
     }
+    if (url.pathname === "/api/model-tiers" && method === "GET") {
+      await json(route, availableModelTierPolicy);
+      return;
+    }
     if (url.pathname === "/api/conversations" && method === "GET") {
       const view = url.searchParams.get("view");
       const conversations = [...this.#conversations.values()]
@@ -183,6 +191,30 @@ class StreamingBackend implements StreamingFixture {
         .filter((conversation) => conversation.isArchived === (view === "archived"));
       await json(route, { conversations, nextCursor: null });
       return;
+    }
+
+    const preferredTierMatch = url.pathname.match(
+      /^\/api\/conversations\/([0-9a-f-]+)\/preferred-tier$/u,
+    );
+    if (preferredTierMatch) {
+      const conversationId = preferredTierMatch[1];
+      if (!conversationId) {
+        await this.#notFound(route);
+        return;
+      }
+      const conversation = this.#conversations.get(conversationId);
+      if (!conversation) {
+        await this.#notFound(route);
+        return;
+      }
+      if (method === "PUT") {
+        const body = request.postDataJSON() as { readonly modelTier: GenerationModelTier };
+        conversation.preferredTier = body.modelTier;
+      }
+      if (method === "GET" || method === "PUT") {
+        await json(route, { conversationId, modelTier: conversation.preferredTier });
+        return;
+      }
     }
 
     const match = url.pathname.match(

@@ -15,8 +15,9 @@ import { user } from "../src/database/auth-schema.generated.js";
 import { conversations, drafts, messages } from "../src/database/conversation-schema.js";
 import { type AppDatabase, createDatabase } from "../src/database/database.js";
 import { generations } from "../src/database/generation-schema.js";
-import { workspaces } from "../src/database/identity-schema.js";
+import { workspaceMemberships, workspaces } from "../src/database/identity-schema.js";
 import { migrateDatabase } from "../src/database/migrate.js";
+import { modelCatalog } from "../src/database/model-policy-schema.js";
 import { ApplicationError } from "../src/errors.js";
 import { FakeModelGateway } from "../src/generations/fake-model-gateway.js";
 import type { GenerationRequest, ModelGateway } from "../src/generations/model-gateway.js";
@@ -24,6 +25,15 @@ import { continueMessage, systemPrompt } from "../src/generations/prompt.js";
 import { createGenerationService, type GenerationService } from "../src/generations/service.js";
 import type { RequestActor } from "../src/identity/authorization.js";
 import type { IdentityService } from "../src/identity/service.js";
+import {
+  type CatalogModelSnapshot,
+  initialTierModels,
+  type ModelTier,
+  modelTiers,
+  verifyPrivacyAttestation,
+} from "../src/model-policy/catalog.js";
+import { createModelPolicyService } from "../src/model-policy/service.js";
+import { bootstrapSimulatedModelPolicy } from "./support/model-policy.js";
 
 function createActor(userId: string, workspaceId: string): RequestActor {
   return {
@@ -48,11 +58,41 @@ async function expectCode(operation: Promise<unknown>, code: string): Promise<vo
   throw new Error(`Expected ${code}`);
 }
 
+function openRouterCatalog(
+  completionPricePerToken: string,
+  validatedAt: Date,
+): Readonly<Record<ModelTier, CatalogModelSnapshot>> {
+  return Object.freeze(
+    Object.fromEntries(
+      modelTiers.map((tier) => [
+        tier,
+        Object.freeze({
+          available: true,
+          canonicalSlug: initialTierModels[tier],
+          completionPricePerToken,
+          contextLength: 1_000_000,
+          displayName: `Synthetic ${tier}`,
+          inputModalities: Object.freeze(["text"]),
+          maximumOutputTokens: 1,
+          metadataSource: "openrouter",
+          modelId: initialTierModels[tier],
+          outputModalities: Object.freeze(["text"]),
+          promptPricePerToken: "0",
+          requestPriceUsd: "0",
+          supportedParameters: Object.freeze(["max_tokens", "reasoning"]),
+          validatedAt,
+        }),
+      ]),
+    ) as Record<ModelTier, CatalogModelSnapshot>,
+  );
+}
+
 describe.sequential("generation lifecycle integration", () => {
   let container: StartedPostgreSqlContainer;
   let databaseUrl: string;
   let pool: Pool;
   let database: AppDatabase;
+  let workspaceIdentity: string;
   let actor: RequestActor;
   let conversationsService: ConversationService;
   let generationService: GenerationService;
@@ -72,14 +112,15 @@ describe.sequential("generation lifecycle integration", () => {
     pool = new Pool({ connectionString: databaseUrl });
     database = createDatabase(pool);
     await pool.query(
-      'TRUNCATE TABLE "generations", "drafts", "messages", "conversations", "workspace_memberships", "employee_approvals", "user", "workspaces" RESTART IDENTITY CASCADE',
+      'TRUNCATE TABLE "generations", "drafts", "messages", "conversations", "workspace_memberships", "employee_approvals", "user", "workspaces", "model_catalog" RESTART IDENTITY CASCADE',
     );
     const workspaceId = randomUUID();
+    workspaceIdentity = `workspace-${randomUUID()}`;
     const userId = `user-${randomUUID()}`;
     await database.insert(workspaces).values({
       displayName: "Synthetic",
       id: workspaceId,
-      identity: `workspace-${randomUUID()}`,
+      identity: workspaceIdentity,
     });
     await database.insert(user).values({
       email: "member@example.test",
@@ -87,6 +128,12 @@ describe.sequential("generation lifecycle integration", () => {
       id: userId,
       name: "Member",
     });
+    await database.insert(workspaceMemberships).values({
+      role: "member",
+      userId,
+      workspaceId,
+    });
+    await bootstrapSimulatedModelPolicy(createModelPolicyService(database), workspaceIdentity);
     actor = createActor(userId, workspaceId);
     conversationsService = createConversationService(
       database,
@@ -118,6 +165,321 @@ describe.sequential("generation lifecycle integration", () => {
     ).toMatchObject({ content, revision: draft.revision });
     return { conversation, draft };
   }
+
+  async function useOpenRouterPolicy(): Promise<void> {
+    await pool.query(
+      'TRUNCATE TABLE "workspace_cost_policies", "model_catalog" RESTART IDENTITY CASCADE',
+    );
+    const policy = createModelPolicyService(database);
+    const verifiedAt = new Date(Date.now() - 1_000);
+    await policy.bootstrap({
+      catalog: openRouterCatalog("1", verifiedAt),
+      employeeActiveGenerationLimit: 1,
+      maximumOutputTokens: { balanced: 1, fast: 1, pro: 1 },
+      mode: "openrouter",
+      monthlyBudgetUsd: "100",
+      privacyAttestation: verifyPrivacyAttestation({
+        attestationVersion: "openrouter-privacy-v1",
+        broadcastEnabled: false,
+        dataDiscountLoggingEnabled: false,
+        inputOutputLoggingEnabled: false,
+        verifiedAt,
+      }),
+      reservationMarginBasisPoints: 0,
+      workspaceIdentity,
+    });
+    conversationsService = createConversationService(
+      database,
+      createCursorCodec("generation-test-secret-longer-than-thirty-two-characters"),
+      "openrouter",
+      policy,
+    );
+    generationService = createGenerationService(database, {
+      mode: "openrouter",
+      modelPolicy: policy,
+    });
+  }
+
+  it("preserves the conversation and draft when its mapped tier is no longer approved", async () => {
+    await database
+      .update(modelCatalog)
+      .set({ approved: false })
+      .where(eq(modelCatalog.openRouterModelId, initialTierModels.balanced));
+    const policy = createModelPolicyService(database);
+    await expect(policy.readEmployeeTierPolicy(actor.workspace.id, "simulated")).resolves.toEqual({
+      defaultTier: "balanced",
+      tiers: [
+        { available: true, enabled: true, tier: "fast" },
+        { available: false, enabled: true, tier: "balanced" },
+        { available: true, enabled: true, tier: "pro" },
+      ],
+    });
+
+    const { conversation, draft } = await adoptedConversation("No debe enviarse");
+    await expectCode(
+      generationService.startResponse(actor, conversation.id, randomUUID(), {
+        content: [{ text: draft.content, type: "text" }],
+        draftRevision: draft.revision,
+        modelTier: "balanced",
+        observedRevision: 0,
+        parentMessageId: null,
+        source: "draft",
+      }),
+      "TIER_UNAVAILABLE",
+    );
+
+    await expect(conversationsService.get(actor, conversation.id)).resolves.toMatchObject({
+      conversation: { revision: 0 },
+      messages: [],
+    });
+    await expect(
+      conversationsService.getDraft(actor, {
+        conversationId: conversation.id,
+        kind: "conversation",
+      }),
+    ).resolves.toMatchObject({
+      content: draft.content,
+      revision: draft.revision,
+      scope: { conversationId: conversation.id, kind: "conversation" },
+    });
+    await expect(database.select().from(generations)).resolves.toEqual([]);
+  });
+
+  it.each([
+    {
+      employeeActiveGenerationLimit: 2,
+      expectedCode: "WORKSPACE_BUDGET_EXCEEDED",
+      monthlyBudgetUsd: "1",
+      scenario: "workspace budget",
+    },
+    {
+      employeeActiveGenerationLimit: 1,
+      expectedCode: "EMPLOYEE_GENERATION_LIMIT_REACHED",
+      monthlyBudgetUsd: "100",
+      scenario: "employee concurrency",
+    },
+  ])(
+    "atomically admits one of two concurrent conversations at the $scenario boundary",
+    async ({ employeeActiveGenerationLimit, expectedCode, monthlyBudgetUsd }) => {
+      await pool.query(
+        'TRUNCATE TABLE "workspace_cost_policies", "model_catalog" RESTART IDENTITY CASCADE',
+      );
+      const policy = createModelPolicyService(database);
+      const verifiedAt = new Date(Date.now() - 1_000);
+      await policy.bootstrap({
+        catalog: openRouterCatalog("1", verifiedAt),
+        employeeActiveGenerationLimit,
+        maximumOutputTokens: { balanced: 1, fast: 1, pro: 1 },
+        mode: "openrouter",
+        monthlyBudgetUsd,
+        privacyAttestation: verifyPrivacyAttestation({
+          attestationVersion: "openrouter-privacy-v1",
+          broadcastEnabled: false,
+          dataDiscountLoggingEnabled: false,
+          inputOutputLoggingEnabled: false,
+          verifiedAt,
+        }),
+        reservationMarginBasisPoints: 0,
+        workspaceIdentity,
+      });
+      conversationsService = createConversationService(
+        database,
+        createCursorCodec("generation-test-secret-longer-than-thirty-two-characters"),
+        "openrouter",
+        policy,
+      );
+      generationService = createGenerationService(database, {
+        mode: "openrouter",
+        modelPolicy: policy,
+      });
+      const prepared = [
+        await adoptedConversation("Primera reserva concurrente"),
+        await adoptedConversation("Segunda reserva concurrente"),
+      ];
+      const results = await Promise.allSettled(
+        prepared.map(({ conversation, draft }, index) =>
+          generationService.startResponse(actor, conversation.id, randomUUID(), {
+            content: [
+              { text: `${index === 0 ? "Primera" : "Segunda"} reserva concurrente`, type: "text" },
+            ],
+            draftRevision: draft.revision,
+            modelTier: "balanced",
+            observedRevision: 0,
+            parentMessageId: null,
+            source: "draft",
+          }),
+        ),
+      );
+      const winnerIndex = results.findIndex((result) => result.status === "fulfilled");
+      const loserIndex = results.findIndex((result) => result.status === "rejected");
+      expect(winnerIndex).toBeGreaterThanOrEqual(0);
+      expect(loserIndex).toBeGreaterThanOrEqual(0);
+      expect(results.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
+      const rejection = results[loserIndex];
+      expect(rejection?.status).toBe("rejected");
+      if (rejection?.status !== "rejected") {
+        throw new Error("Concurrent admission did not produce one rejected request");
+      }
+      expect(rejection.reason).toMatchObject({ code: expectedCode });
+
+      const loser = prepared[loserIndex];
+      if (loser === undefined) {
+        throw new Error("Concurrent admission loser fixture disappeared");
+      }
+      await expect(
+        conversationsService.getDraft(actor, {
+          conversationId: loser.conversation.id,
+          kind: "conversation",
+        }),
+      ).resolves.toMatchObject({
+        content: loser.draft.content,
+        revision: loser.draft.revision,
+        scope: { conversationId: loser.conversation.id, kind: "conversation" },
+      });
+      await expect(conversationsService.get(actor, loser.conversation.id)).resolves.toMatchObject({
+        conversation: { revision: 0 },
+        messages: [],
+      });
+
+      const stored = await database.select().from(generations);
+      expect(stored).toHaveLength(1);
+      expect(stored[0]).toMatchObject({
+        accountingStatus: "reserved",
+        effectiveParameters: {
+          maximumOutputTokens: 1,
+          priceCeiling: {
+            completionUsdPerMillion: "1000000",
+            promptUsdPerMillion: "0",
+            requestUsd: "0",
+          },
+        },
+        requestedModel: initialTierModels.balanced,
+        requestedTier: "balanced",
+        reservedCostUsd: "1.000000000000000000",
+      });
+      const winner = results[winnerIndex];
+      if (winner?.status !== "fulfilled") {
+        throw new Error("Concurrent admission winner fixture disappeared");
+      }
+      expect(winner.value.request.route).toEqual({
+        completionPriceCeilingUsdPerToken: "1",
+        maximumOutputTokens: 1,
+        promptPriceCeilingUsdPerToken: "0",
+        requestPriceCeilingUsd: "0",
+        requestedModel: initialTierModels.balanced,
+      });
+      const winnerFixture = prepared[winnerIndex];
+      if (winnerFixture === undefined) {
+        throw new Error("Concurrent admission winner conversation disappeared");
+      }
+      await expect(
+        generationService.removeConversation(actor, winnerFixture.conversation.id, 1),
+      ).resolves.toBe(winner.value.generationId);
+      await expect(
+        database.select().from(generations).where(eq(generations.id, winner.value.generationId)),
+      ).resolves.toMatchObject([
+        {
+          accountingStatus: "reserved",
+          assistantMessageId: null,
+          budgetPeriodEnd: expect.any(Date),
+          budgetPeriodStart: expect.any(Date),
+          conversationId: null,
+          requestedModel: initialTierModels.balanced,
+          reservedCostUsd: "1.000000000000000000",
+          status: "cancelled",
+        },
+      ]);
+    },
+  );
+
+  it("settles a deterministic pre-provider failure at zero in the terminal transaction", async () => {
+    await useOpenRouterPolicy();
+    const { conversation, draft } = await adoptedConversation("Falla previa al proveedor");
+    const started = await generationService.startResponse(actor, conversation.id, randomUUID(), {
+      content: [{ text: draft.content, type: "text" }],
+      draftRevision: draft.revision,
+      modelTier: "balanced",
+      observedRevision: 0,
+      parentMessageId: null,
+      source: "draft",
+    });
+
+    await expect(
+      generationService.terminalize(started.generationId, {
+        content: "",
+        errorCode: "GENERATION_FAILED",
+        firstTokenAt: null,
+        reason: "error",
+        settleDeterministicZero: true,
+        status: "failed",
+      }),
+    ).resolves.toMatchObject({ status: "failed", won: true });
+
+    await expect(
+      database.select().from(generations).where(eq(generations.id, started.generationId)),
+    ).resolves.toMatchObject([
+      {
+        accountingSettledAt: expect.any(Date),
+        accountingStatus: "actual",
+        completionTokens: 0n,
+        costBasis: "actual",
+        costUsd: "0.000000000000000000",
+        errorCode: "GENERATION_FAILED",
+        promptTokens: 0n,
+        status: "failed",
+      },
+    ]);
+  });
+
+  it("persists authoritative provider metadata with terminal accounting", async () => {
+    await useOpenRouterPolicy();
+    const { conversation, draft } = await adoptedConversation("Respuesta con proveedor recuperado");
+    const started = await generationService.startResponse(actor, conversation.id, randomUUID(), {
+      content: [{ text: draft.content, type: "text" }],
+      draftRevision: draft.revision,
+      modelTier: "balanced",
+      observedRevision: 0,
+      parentMessageId: null,
+      source: "draft",
+    });
+
+    await expect(
+      generationService.terminalize(started.generationId, {
+        accounting: {
+          metadata: {
+            costUsd: "0.000123",
+            metadata: {
+              provider: "provider-recovered",
+              providerGenerationId: "provider-generation-recovered",
+              resolvedModel: initialTierModels.balanced,
+            },
+          },
+          usage: { inputTokens: 11, outputTokens: 1 },
+        },
+        content: "Respuesta con contabilidad completa",
+        errorCode: null,
+        firstTokenAt: new Date(),
+        reason: "stop",
+        status: "completed",
+      }),
+    ).resolves.toMatchObject({ status: "completed", won: true });
+
+    await expect(
+      database.select().from(generations).where(eq(generations.id, started.generationId)),
+    ).resolves.toMatchObject([
+      {
+        accountingStatus: "actual",
+        completionTokens: 1n,
+        costBasis: "actual",
+        costUsd: "0.000123000000000000",
+        openRouterGenerationId: "provider-generation-recovered",
+        promptTokens: 11n,
+        provider: "provider-recovered",
+        resolvedModel: initialTierModels.balanced,
+        status: "completed",
+      },
+    ]);
+  });
 
   it("adopts and consumes a confirmed draft, checkpoints, completes, and continues", async () => {
     const { conversation, draft } = await adoptedConversation("Primera pregunta");

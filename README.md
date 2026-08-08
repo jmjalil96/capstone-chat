@@ -1,17 +1,15 @@
 # Capstone Chat
 
-Capstone Chat is an internal AI chat product. The repository currently implements the Phase 5
-conversation-controls checkpoint: an approved employee can create and verify an account, sign in
-with a database-backed session, keep server-side drafts, manage and search owned conversation
-history, stream and stop simulated answers, edit or retry preserved turns, navigate immutable
-branches, safely read Markdown and mathematics, copy source, and control streaming scroll behavior.
-Operators manage the first workspace, employee approvals, and deactivation through explicit
-commands.
+Capstone Chat is an internal AI chat product. The repository currently implements the Phase 6
+OpenRouter and cost-control checkpoint. Approved employees can use the complete conversation
+experience from the earlier phases and choose Fast, Balanced, or Pro for each next response. The
+backend owns the exact model mapping, privacy route, output bounds, employee concurrency, monthly
+workspace budget, reservation, and authoritative usage settlement.
 
-Phase 5 deliberately uses a deterministic local `FakeModelGateway`; it makes no external model
-request and is prohibited in production. Real model access, the functional Fast/Balanced/Pro picker,
-cost and budget policy, context compaction, web administration, and production deployment remain
-outside this milestone.
+Development and automated tests still default to the deterministic zero-cost `FakeModelGateway`.
+Real inference is an explicit `MODEL_GATEWAY=openrouter` opt-in and requires a dedicated key, a live
+validated catalog, and a fresh privacy attestation. Context compaction, web administration, usage
+reports, transactional email, and production deployment remain outside this milestone.
 
 ## Prerequisites
 
@@ -58,6 +56,25 @@ An exact retry is safe and reports `"repeated": true`. A different workspace or 
 bootstrap fails explicitly. Migrations and bootstrap are operator actions; API replicas never run
 either one during startup.
 
+Bootstrap the local zero-cost model policy with explicit development limits:
+
+```sh
+pnpm model-policy:bootstrap \
+  --mode simulated \
+  --workspace capstone \
+  --monthly-budget-usd 100 \
+  --fast-max-output 4096 \
+  --balanced-max-output 8192 \
+  --pro-max-output 16384 \
+  --employee-generation-limit 2 \
+  --reservation-margin-bps 2000
+```
+
+The simulated policy makes all three employee-facing tiers available but records them as untracked,
+zero-cost local generations. An exact retry is idempotent. Changing any effective input is rejected;
+switching an existing workspace from simulated to real policy requires a fresh database/workspace
+until Phase 7 supplies controlled policy administration.
+
 Start Fastify and Vite together:
 
 ```sh
@@ -67,13 +84,75 @@ pnpm dev
 Open [http://localhost:5173](http://localhost:5173). Vite proxies `/api` to Fastify at
 `http://127.0.0.1:3000`.
 
-After signing in, enter a draft and choose **Enviar** (or press Enter on desktop). The local fake
-streams this clearly simulated answer in three deterministic chunks about 400 ms apart:
+After signing in, choose Fast, Balanced, or Pro, enter a draft, and choose **Enviar** (or press Enter
+on desktop). The local fake preserves the selected preference and streams this clearly simulated
+answer in three deterministic chunks about 400 ms apart:
 
 > Esta es una respuesta simulada de Capstone Chat para desarrollo local.
 
-No OpenRouter key or model configuration is used in Phase 5. Send, Continue, Edit, and Try again all
-use the temporary fixed Balanced request tier until Phase 6 supplies real model policy.
+No OpenRouter key is needed in simulated mode. Send, Continue, Edit, and Try again use the selected
+tier; changing the picker while a response is active applies only to the next response.
+
+## Real OpenRouter setup
+
+Real mode maps Fast, Balanced, and Pro to the three approved exact model IDs in backend policy; raw
+provider and model names never enter employee responses. Before real bootstrap, verify in the
+dedicated OpenRouter workspace that data-discount logging, observability input/output logging, and
+observability broadcast are all disabled. Record that operator verification in a local JSON file:
+
+```json
+{
+  "attestationVersion": "openrouter-privacy-v1",
+  "broadcastEnabled": false,
+  "dataDiscountLoggingEnabled": false,
+  "inputOutputLoggingEnabled": false,
+  "verifiedAt": "2026-08-08T16:00:00.000Z"
+}
+```
+
+Use the actual current canonical UTC timestamp. Keep the attestation file and key outside Git, set
+`MODEL_GATEWAY=openrouter` and `OPENROUTER_API_KEY` in the local environment, then run:
+
+```sh
+pnpm model-policy:bootstrap \
+  --mode openrouter \
+  --workspace capstone \
+  --monthly-budget-usd 100 \
+  --fast-max-output 4096 \
+  --balanced-max-output 8192 \
+  --pro-max-output 16384 \
+  --employee-generation-limit 2 \
+  --reservation-margin-bps 2000 \
+  --privacy-attestation /absolute/path/to/openrouter-privacy.json
+```
+
+An attestation is valid for 30 days. Before it expires, verify the same three dedicated-workspace
+settings again, update only `verifiedAt` in the local document, and renew it without changing model
+or cost policy:
+
+```sh
+pnpm model-policy:attest \
+  --workspace capstone \
+  --privacy-attestation /absolute/path/to/openrouter-privacy.json
+```
+
+An identical retry is idempotent. The command accepts only a newer, still-fresh verification for an
+existing real OpenRouter policy; it rejects older timestamps, simulated policy, and unbootstrapped
+workspaces. Expiry makes every real tier unavailable and blocks inference until renewal succeeds.
+The command reads no model metadata and makes no network request.
+
+Bootstrap and `pnpm model-catalog:refresh` read only the approved OpenRouter metadata and do not
+request a model generation. API replicas refresh due approved rows with a short PostgreSQL lease;
+network failure preserves the last valid catalog, while a successful response confirming no safe
+route makes that tier unavailable. Merely configuring a key incurs no inference spend. Spend begins
+only when an employee sends a response while the application is running in OpenRouter mode.
+
+Each real response reserves the configured fixed-request ceiling plus conservative input and maximum
+output cost inside the same transaction that creates its turn. The current workspace month is based
+on its IANA timezone. Final OpenRouter usage and billed USD replace the reservation when available;
+ambiguous interrupted requests remain fully reserved until a narrow reconciler settles the
+conservative estimate after expiry. Conversation deletion removes content but retains generation
+accounting required for later workspace reporting.
 
 The development fake sender is process-local. The bootstrap and approval commands therefore report
 the safe `signUpPath` in their JSON result; open [http://localhost:5173/sign-up](http://localhost:5173/sign-up)
@@ -107,7 +186,7 @@ Deactivate an employee and revoke their database sessions:
 pnpm identity:deactivate --workspace capstone --email employee@example.test
 ```
 
-Deactivation blocks authorization before session cleanup and is safe to retry. Phase 5 has no web
+Deactivation blocks authorization before session cleanup and is safe to retry. Phase 6 has no web
 administration surface.
 
 ## Identity and recovery flow
@@ -199,11 +278,11 @@ Completion, cancellation, and failure never force a final scroll. Opening a mess
 selects its preserved branch, loads ancestors until the exact match is present, positions once, and
 marks it briefly without placing the query or message content in the URL.
 
-The committed migration history includes the Phase 3 conversation tables and PostgreSQL `unaccent`
-search extension plus the Phase 4 durable generation lifecycle. Apply the complete history with
-`pnpm db:migrate` after updating a checkout; API replicas never migrate during startup. If
-conversation or response routes fail after an update, confirm the migrations ran against the
-selected `DATABASE_URL` before investigating application code.
+The committed migration history includes the conversation/search tables, durable generation
+lifecycle, and Phase 6 model-policy, catalog, preference, reservation, and accounting state. Apply
+the complete history with `pnpm db:migrate` after updating a checkout; API replicas never migrate
+during startup. If conversation, model-tier, or response routes fail after an update, confirm the
+migrations ran against the selected `DATABASE_URL` before investigating application code.
 
 ## Health and troubleshooting
 
@@ -252,6 +331,9 @@ report that the service is unavailable. Restart it with `docker compose start po
 | `pnpm identity:bootstrap …` | Create the initial workspace and pending administrator approval |
 | `pnpm identity:approve …` | Create an idempotent pending employee approval |
 | `pnpm identity:deactivate …` | Block an employee and revoke their sessions |
+| `pnpm model-policy:bootstrap …` | Create the explicit simulated or real workspace model/cost policy |
+| `pnpm model-policy:attest …` | Renew the content-free OpenRouter privacy attestation for an existing real policy |
+| `pnpm model-catalog:refresh` | Revalidate approved real OpenRouter models and print a metadata-only summary |
 | `pnpm --filter @capstone/api auth:schema:generate` | Regenerate the reviewed Better Auth Drizzle schema with the pinned CLI |
 
 Use `pnpm run ci`, not `pnpm ci`: `ci` is also a built-in pnpm install alias and does not invoke the
@@ -307,6 +389,8 @@ object through the process.
 | `BETTER_AUTH_SECRET` | `capstone-chat-local-auth-secret-not-for-production-use` | Better Auth signing secret, at least 32 characters; explicit and secret in production |
 | `EMAIL_DELIVERY` | `fake` | `fake` for development/test or `disabled`; fake is prohibited in production |
 | `LOG_LEVEL` | `info` | Pino log level |
+| `MODEL_GATEWAY` | `fake` | `fake` or `openrouter`; production requires `openrouter` |
+| `OPENROUTER_API_KEY` | unset | Backend-only key required when `MODEL_GATEWAY=openrouter` |
 
 `CAPSTONE_WEB_PORT` selects Vite's local port, and `CAPSTONE_POSTGRES_PORT` selects the Compose host
 port. They default to 5173 and 5432 and are not exposed in the browser bundle. If the web port
@@ -349,8 +433,8 @@ docker build --file apps/api/Dockerfile --tag capstone-chat-api .
 
 The Vite output is static content in `apps/web/dist`; no production static host has been selected.
 The API image runs as the non-root `node` user and includes the compiled runtime and committed
-migrations. Building the image verifies the artifact, but Phase 5 does not ship a production model
-gateway.
+migrations. Building the image verifies the artifact. Phase 6 includes the production OpenRouter
+adapter, but does not select or configure a deployment platform.
 
 The migration job receives only `NODE_ENV` and `DATABASE_URL`; it does not receive the Better Auth
 secret, public origin, or email configuration. Apply migrations as a separate deployment action
@@ -364,13 +448,12 @@ docker run --rm \
   node apps/api/dist/database/migrate-command.js
 ```
 
-`EMAIL_DELIVERY=disabled` is an honest Phase 2 validation mode, not a launch-capable email setup:
+`EMAIL_DELIVERY=disabled` is an honest validation mode, not a launch-capable email setup:
 verification and password-recovery sends fail safely. `EMAIL_DELIVERY=fake` is rejected during
-production startup. Likewise, the Phase 4–5 fake model gateway is rejected in production and no
-environment variable can enable or script it. Consequently the server image is not a deployable AI
-service in this milestone. A real model gateway arrives with Phase 6; a transactional email
-provider, secret wiring, deployment venue, static host, and edge configuration remain deliberately
-unselected until production hardening.
+production startup. The fake model gateway is also rejected in production; OpenRouter mode requires
+its key and a previously bootstrapped real policy with a fresh privacy attestation. A
+transactional email provider, managed secret wiring, deployment venue, static host, and edge
+configuration remain deliberately unselected until production hardening.
 
 Bootstrap and approval commit their database change before attempting invitation delivery. With
 delivery disabled, the command reports `"outcome":"approval-committed"` and

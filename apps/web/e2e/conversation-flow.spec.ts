@@ -8,10 +8,22 @@ const employee = {
   password: "browser-conversation-password",
 } as const;
 
-test("completes the real Phase 4 conversation lifecycle through the browser", async ({
+test("completes the real conversation and model-tier lifecycle through the browser", async ({
   context,
   page,
 }) => {
+  const requestedTiers: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      /\/api\/conversations\/[^/]+\/responses$/u.test(request.url())
+    ) {
+      const body = request.postDataJSON() as { readonly modelTier?: string };
+      if (body.modelTier) {
+        requestedTiers.push(body.modelTier);
+      }
+    }
+  });
   await page.goto("/sign-in");
   await page.getByLabel(copy.identity.common.emailLabel).fill(employee.email);
   await page
@@ -30,6 +42,9 @@ test("completes the real Phase 4 conversation lifecycle through the browser", as
   await page.reload();
   await expect(draft).toHaveValue("Borrador nuevo persistido para la prueba.");
   expect(await page.evaluate(() => Object.keys(window.localStorage))).toEqual([]);
+  await expect(page.getByRole("radio", { name: /Balanced/u })).toBeChecked();
+  await page.getByRole("radio", { name: /Pro/u }).check();
+  await expect(page.getByRole("radio", { name: /Pro/u })).toBeChecked();
 
   await page.evaluate(() => {
     const observed = window as unknown as {
@@ -57,6 +72,8 @@ test("completes the real Phase 4 conversation lifecycle through the browser", as
   await expect(
     page.getByRole("button", { name: copy.conversations.generation.actions.stop }),
   ).toBeVisible();
+  await page.getByRole("radio", { name: /Fast/u }).click();
+  await expect(page.getByRole("radio", { name: /Fast/u })).toBeChecked();
   await draft.fill("Segundo mensaje confirmado para detener.");
   const simulatedResponse =
     "Esta es una respuesta simulada de Capstone Chat para desarrollo local.";
@@ -69,10 +86,16 @@ test("completes the real Phase 4 conversation lifecycle through the browser", as
   expect(observedLengths.some((length) => length > 0 && length < simulatedResponse.length)).toBe(
     true,
   );
+  expect(requestedTiers).toEqual(["pro"]);
+
+  await page.reload();
+  await expect(page.getByRole("radio", { name: /Fast/u })).toBeChecked();
+  await expect(draft).toHaveValue("Segundo mensaje confirmado para detener.");
 
   await page.getByRole("button", { name: copy.conversations.generation.actions.send }).click();
   const stop = page.getByRole("button", { name: copy.conversations.generation.actions.stop });
   await expect(stop).toBeVisible();
+  expect(requestedTiers).toEqual(["pro", "fast"]);
   await expect(draft).toHaveValue("");
   await draft.fill("El siguiente borrador debe sobrevivir a Detener.");
   await stop.click();

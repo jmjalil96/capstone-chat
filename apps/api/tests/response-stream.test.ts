@@ -2,7 +2,11 @@ import Fastify, { type FastifyReply } from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ActiveStreamRegistry } from "../src/generations/active-streams.js";
 import { FakeModelGateway } from "../src/generations/fake-model-gateway.js";
-import type { ModelGateway } from "../src/generations/model-gateway.js";
+import type {
+  GatewayProviderMetadata,
+  GenerationAccountingGateway,
+  ModelGateway,
+} from "../src/generations/model-gateway.js";
 import { systemPrompt } from "../src/generations/prompt.js";
 import { createResponseStreamCoordinator } from "../src/generations/response-stream.js";
 import type {
@@ -26,12 +30,28 @@ const started: StartedResponse = {
   userMessageId: "00000000-0000-4000-8000-000000000004",
 };
 
+const routedStarted: StartedResponse = {
+  ...started,
+  request: {
+    ...started.request,
+    route: {
+      completionPriceCeilingUsdPerToken: "0.000002",
+      maximumOutputTokens: 1_024,
+      promptPriceCeilingUsdPerToken: "0.000001",
+      requestPriceCeilingUsd: "0",
+      requestedModel: "synthetic/model",
+    },
+  },
+};
+
 interface MemoryGenerationService {
   service: GenerationService;
   content: string;
   failTerminalPersistence: boolean;
   firstTokenAt: Date | null;
+  providerMetadata: GatewayProviderMetadata[];
   state: DurableGenerationState;
+  terminalizeInputs: Parameters<GenerationService["terminalize"]>[1][];
 }
 
 function memoryGenerationService(): MemoryGenerationService {
@@ -39,6 +59,7 @@ function memoryGenerationService(): MemoryGenerationService {
     content: "",
     failTerminalPersistence: false,
     firstTokenAt: null,
+    providerMetadata: [],
     service: undefined as unknown as GenerationService,
     state: {
       assistantMessageId: started.messageId,
@@ -48,6 +69,7 @@ function memoryGenerationService(): MemoryGenerationService {
       revision: 1,
       status: "active",
     },
+    terminalizeInputs: [],
   };
   memory.service = {
     checkpoint: async (_generationId: string, content: string, firstTokenAt: Date | null) => {
@@ -58,11 +80,17 @@ function memoryGenerationService(): MemoryGenerationService {
       memory.firstTokenAt ??= firstTokenAt;
       return true;
     },
+    recordProviderMetadata: async (_generationId: string, metadata: GatewayProviderMetadata) => {
+      memory.providerMetadata.push(metadata);
+      return true;
+    },
     readState: async () => ({ ...memory.state }),
+    settleAccounting: async () => false,
     terminalize: async (
       _generationId: string,
       input: Parameters<GenerationService["terminalize"]>[1],
     ) => {
+      memory.terminalizeInputs.push(input);
       if (memory.failTerminalPersistence) {
         throw new Error("Synthetic terminal persistence failure");
       }
@@ -92,6 +120,7 @@ async function streamUrl(
   memory: MemoryGenerationService,
   registry = new ActiveStreamRegistry(),
   prepareReply?: (reply: FastifyReply) => void,
+  response = started,
 ): Promise<string> {
   const server = Fastify();
   servers.push(server);
@@ -102,7 +131,7 @@ async function streamUrl(
   });
   server.post("/stream", async (request, reply) => {
     prepareReply?.(reply);
-    await coordinator.stream(started, request, reply);
+    await coordinator.stream(response, request, reply);
   });
   await server.listen({ host: "127.0.0.1", port: 0 });
   const address = server.server.address();
@@ -295,6 +324,86 @@ describe("response stream normalization", () => {
       expect(memory.state).toMatchObject({ reason, status: "completed" });
     },
   );
+
+  it("passes recovered provider accounting into terminal persistence", async () => {
+    const memory = memoryGenerationService();
+    const events = await eventsFrom(
+      await fetch(
+        await streamUrl(
+          new FakeModelGateway([
+            { event: { text: "Provider-backed response", type: "content.delta" } },
+            {
+              event: {
+                accounting: {
+                  costUsd: "0.000123",
+                  metadata: {
+                    provider: "provider-recovered",
+                    providerGenerationId: "provider-generation-recovered",
+                    resolvedModel: "synthetic/resolved-model",
+                  },
+                },
+                reason: "stop",
+                type: "response.completed",
+                usage: { inputTokens: 11, outputTokens: 7 },
+              },
+            },
+          ]),
+          memory,
+          undefined,
+          undefined,
+          routedStarted,
+        ),
+        { method: "POST" },
+      ),
+    );
+
+    expect(events.at(-1)).toMatchObject({ reason: "stop", type: "response.completed" });
+    expect(memory.terminalizeInputs.at(-1)).toMatchObject({
+      accounting: {
+        metadata: {
+          costUsd: "0.000123",
+          metadata: {
+            provider: "provider-recovered",
+            providerGenerationId: "provider-generation-recovered",
+            resolvedModel: "synthetic/resolved-model",
+          },
+        },
+        usage: { inputTokens: 11, outputTokens: 7 },
+      },
+      reason: "stop",
+      status: "completed",
+    });
+  });
+
+  it("requests deterministic zero settlement for a proven no-spend provider failure", async () => {
+    const memory = memoryGenerationService();
+    const gateway: ModelGateway = {
+      async *stream() {
+        yield {
+          accounting: { spendRisk: "none" },
+          errorCode: "GENERATION_FAILED",
+          providerErrorType: "authentication",
+          type: "response.failed",
+        };
+      },
+    };
+
+    const events = await eventsFrom(
+      await fetch(await streamUrl(gateway, memory, undefined, undefined, routedStarted), {
+        method: "POST",
+      }),
+    );
+
+    expect(events.at(-1)).toMatchObject({
+      errorCode: "GENERATION_FAILED",
+      type: "response.failed",
+    });
+    expect(memory.terminalizeInputs).toHaveLength(1);
+    expect(memory.terminalizeInputs[0]).toMatchObject({
+      settleDeterministicZero: true,
+      status: "failed",
+    });
+  });
 
   it("ends without a false terminal event when terminal persistence fails", async () => {
     const memory = memoryGenerationService();
@@ -559,6 +668,155 @@ describe("response stream normalization", () => {
     ]);
     expect(events).not.toContainEqual(expect.objectContaining({ text: "Must not forward" }));
     expect(gatewaySignal?.aborted).toBe(true);
+  });
+
+  it("persists metadata that arrives after cancellation when usage lookup is unavailable", async () => {
+    const memory = memoryGenerationService();
+    const lookedUpGenerationIds: string[] = [];
+    const metadata = {
+      provider: "synthetic-provider",
+      providerGenerationId: "provider-generation-late",
+      resolvedModel: "synthetic/resolved-model",
+    } as const;
+    const gateway: ModelGateway & GenerationAccountingGateway = {
+      async lookupUsage(providerGenerationId) {
+        lookedUpGenerationIds.push(providerGenerationId);
+        return { status: "unavailable" };
+      },
+      async *stream() {
+        memory.state = {
+          ...memory.state,
+          errorCode: null,
+          reason: "cancelled",
+          revision: 2,
+          status: "cancelled",
+        };
+        yield { metadata, type: "generation.metadata" };
+      },
+    };
+
+    const events = await eventsFrom(
+      await fetch(await streamUrl(gateway, memory), { method: "POST" }),
+    );
+
+    expect(events.map((event) => event.type)).toEqual(["response.started", "response.cancelled"]);
+    expect(memory.providerMetadata).toEqual([metadata]);
+    expect(lookedUpGenerationIds).toEqual([metadata.providerGenerationId]);
+    expect(memory.state).toMatchObject({ reason: "cancelled", status: "cancelled" });
+  });
+
+  it("memoizes one unavailable coordinator lookup for a typed provider outcome", async () => {
+    const memory = memoryGenerationService();
+    const lookedUpGenerationIds: string[] = [];
+    const metadata = { providerGenerationId: "provider-refusal-unavailable" } as const;
+    const gateway: ModelGateway & GenerationAccountingGateway = {
+      async lookupUsage(providerGenerationId) {
+        lookedUpGenerationIds.push(providerGenerationId);
+        return { status: "unavailable" };
+      },
+      async *stream() {
+        yield { metadata, type: "generation.metadata" };
+        yield {
+          accounting: { metadata, spendRisk: "unknown" },
+          errorCode: "GENERATION_FAILED",
+          providerOutcome: "refusal",
+          type: "response.failed",
+        };
+      },
+    };
+
+    const events = await eventsFrom(
+      await fetch(await streamUrl(gateway, memory, undefined, undefined, routedStarted), {
+        method: "POST",
+      }),
+    );
+
+    expect(lookedUpGenerationIds).toEqual([metadata.providerGenerationId]);
+    expect(events.at(-1)).toMatchObject({
+      errorCode: "GENERATION_FAILED",
+      type: "response.failed",
+    });
+    expect(memory.state.status).toBe("failed");
+  });
+
+  it("does not retry a usage lookup already exhausted by the provider adapter", async () => {
+    const memory = memoryGenerationService();
+    const lookupUsage = vi.fn(async () => ({ status: "unavailable" as const }));
+    const metadata = { providerGenerationId: "provider-adapter-exhausted" } as const;
+    const gateway: ModelGateway & GenerationAccountingGateway = {
+      lookupUsage,
+      async *stream() {
+        yield { metadata, type: "generation.metadata" };
+        yield {
+          accounting: { metadata, spendRisk: "unknown" },
+          errorCode: "GENERATION_FAILED",
+          providerOutcome: "content_filter",
+          type: "response.failed",
+          usageLookupAttempted: true,
+        };
+      },
+    };
+
+    const events = await eventsFrom(
+      await fetch(await streamUrl(gateway, memory, undefined, undefined, routedStarted), {
+        method: "POST",
+      }),
+    );
+
+    expect(lookupUsage).not.toHaveBeenCalled();
+    expect(events.at(-1)).toMatchObject({
+      errorCode: "GENERATION_FAILED",
+      type: "response.failed",
+    });
+    expect(memory.state.status).toBe("failed");
+  });
+
+  it("polls durable state and aborts a stalled routed gateway after remote cancellation", async () => {
+    const memory = memoryGenerationService();
+    const originalReadState = memory.service.readState.bind(memory.service);
+    let stateReads = 0;
+    memory.service = {
+      ...memory.service,
+      readState: async (generationId: string) => {
+        stateReads += 1;
+        return originalReadState(generationId);
+      },
+    } as GenerationService;
+    let gatewaySignal: AbortSignal | undefined;
+    const gateway: ModelGateway = {
+      async *stream(_request, signal) {
+        gatewaySignal = signal;
+        await new Promise<void>((_resolve, reject) => {
+          const aborted = (): void => reject(new DOMException("aborted", "AbortError"));
+          if (signal.aborted) {
+            aborted();
+            return;
+          }
+          signal.addEventListener("abort", aborted, { once: true });
+        });
+      },
+    };
+    const response = await fetch(
+      await streamUrl(gateway, memory, new ActiveStreamRegistry(), undefined, routedStarted),
+      { method: "POST" },
+    );
+    for (let attempt = 0; attempt < 100 && stateReads === 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(stateReads).toBeGreaterThan(0);
+    memory.state = {
+      ...memory.state,
+      errorCode: null,
+      reason: "cancelled",
+      revision: 2,
+      status: "cancelled",
+    };
+
+    const events = await eventsFrom(response);
+
+    expect(stateReads).toBeGreaterThanOrEqual(2);
+    expect(gatewaySignal?.aborted).toBe(true);
+    expect(events.map((event) => event.type)).toEqual(["response.started", "response.cancelled"]);
   });
 
   it("fences local cancellation and enqueues its backpressured terminal exactly once", async () => {

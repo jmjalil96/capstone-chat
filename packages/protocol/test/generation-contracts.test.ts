@@ -12,6 +12,7 @@ import {
   CreateResponseRequestHeadersSchema,
   CreateResponseRequestSchema,
   CreateRetryResponseRequestSchema,
+  GenerationModelTierSchema,
   GenerationUsageSchema,
   ResponseStateRequestSchema,
   ResponseStateResponseSchema,
@@ -90,6 +91,25 @@ describe("complete stable error catalog", () => {
 });
 
 describe("generation request contracts", () => {
+  it.each(["fast", "balanced", "pro"])("accepts the approved %s tier", (modelTier) => {
+    expect(Value.Check(GenerationModelTierSchema, modelTier)).toBe(true);
+    expect(
+      Value.Check(CreateResponseRequestSchema, {
+        source: "continue",
+        parentMessageId: assistantMessageId,
+        modelTier,
+        observedRevision: 9,
+      }),
+    ).toBe(true);
+  });
+
+  it.each(["deepseek/deepseek-v4-pro", "premium", "FAST", ""])(
+    "rejects a raw or unsupported tier value: %s",
+    (modelTier) => {
+      expect(Value.Check(GenerationModelTierSchema, modelTier)).toBe(false);
+    },
+  );
+
   it("accepts one bounded normalized text block for draft sends", () => {
     expect(
       Value.Check(CreateResponseRequestSchema, {
@@ -227,22 +247,6 @@ describe("generation request contracts", () => {
       parentMessageId: assistantMessageId,
       content: [{ type: "text", text: "Browser copy" }],
       modelTier: "balanced",
-      observedRevision: 9,
-    },
-    {
-      source: "draft",
-      parentMessageId: assistantMessageId,
-      content: [{ type: "text", text: "Texto" }],
-      modelTier: "fast",
-      observedRevision: 9,
-      draftRevision: 3,
-    },
-    {
-      source: "edit",
-      targetMessageId: userMessageId,
-      parentMessageId: null,
-      content: [{ type: "text", text: "Texto" }],
-      modelTier: "fast",
       observedRevision: 9,
     },
     {

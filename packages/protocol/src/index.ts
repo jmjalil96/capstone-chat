@@ -156,6 +156,16 @@ export {
   ReadinessResponseSchema,
 } from "./health.js";
 export {
+  type ConversationPreferredTierResponse,
+  ConversationPreferredTierResponseSchema,
+  type ModelTierPolicyResponse,
+  ModelTierPolicyResponseSchema,
+  type UpdateConversationPreferredTierRequest,
+  UpdateConversationPreferredTierRequestSchema,
+  type UpdateConversationPreferredTierResponse,
+  UpdateConversationPreferredTierResponseSchema,
+} from "./model-tier.js";
+export {
   ActiveResponseStateSchema,
   CancelledResponseStateSchema,
   CompletedResponseStateSchema,

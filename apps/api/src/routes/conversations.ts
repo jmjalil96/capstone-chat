@@ -9,6 +9,7 @@ import {
   ConversationListQuerySchema,
   ConversationListResponseSchema,
   ConversationParamsSchema,
+  ConversationPreferredTierResponseSchema,
   ConversationSearchRequestSchema,
   ConversationSearchResponseSchema,
   ConversationSelectionResponseSchema,
@@ -23,6 +24,8 @@ import {
   UnarchiveConversationResponseSchema,
   UndoConversationRequestSchema,
   UndoConversationResponseSchema,
+  UpdateConversationPreferredTierRequestSchema,
+  UpdateConversationPreferredTierResponseSchema,
 } from "@capstone/protocol";
 import type { TypeBoxTypeProvider } from "@fastify/type-provider-typebox";
 import type { FastifyInstance } from "fastify";
@@ -135,6 +138,51 @@ export function registerConversationRoutes(
             { kind: "new" },
             request.body.content,
             request.body.observedRevision,
+          ),
+        );
+    },
+  );
+
+  server.get(
+    "/api/conversations/:conversationId/preferred-tier",
+    {
+      schema: {
+        params: ConversationParamsSchema,
+        response: { 200: ConversationPreferredTierResponseSchema, ...ordinaryErrorResponses },
+      },
+    },
+    async (request, reply) => {
+      const actor = await resolveMember(request, reply, dependencies.resolveActor);
+      return reply
+        .code(200)
+        .send(
+          await dependencies.conversations.getPreferredTier(actor, request.params.conversationId),
+        );
+    },
+  );
+
+  server.put(
+    "/api/conversations/:conversationId/preferred-tier",
+    {
+      bodyLimit: 1_024,
+      schema: {
+        body: UpdateConversationPreferredTierRequestSchema,
+        params: ConversationParamsSchema,
+        response: {
+          200: UpdateConversationPreferredTierResponseSchema,
+          ...ordinaryErrorResponses,
+        },
+      },
+    },
+    async (request, reply) => {
+      const actor = await resolveMember(request, reply, dependencies.resolveActor);
+      return reply
+        .code(200)
+        .send(
+          await dependencies.conversations.setPreferredTier(
+            actor,
+            request.params.conversationId,
+            request.body.modelTier,
           ),
         );
     },
