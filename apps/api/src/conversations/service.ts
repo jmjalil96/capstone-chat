@@ -1,4 +1,5 @@
 import type {
+  AlternativeContextResponse,
   ConversationDetailResponse,
   ConversationListResponse,
   ConversationMessage,
@@ -10,6 +11,7 @@ import type {
   DraftState,
   MessageContent,
 } from "@capstone/protocol";
+import { ALTERNATIVE_CONTEXT_MAX_MESSAGE_IDS } from "@capstone/protocol";
 import { and, desc, eq, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
 import { conversations, drafts, messages } from "../database/conversation-schema.js";
 import type { AppDatabase } from "../database/database.js";
@@ -31,8 +33,10 @@ const conversationCopy = {
   changed: "La conversación cambió. Actualiza la información e inténtalo de nuevo.",
   draftChanged: "El borrador cambió en otra pestaña o dispositivo.",
   generationActive: "Detén la respuesta en curso antes de cambiar de rama.",
+  invalidAlternativeContext: "Los mensajes solicitados no pertenecen a la rama seleccionada.",
   invalidContent: "El contenido almacenado de la conversación no es válido.",
   notFound: "No se encontró la conversación solicitada.",
+  undoUnavailable: "No hay un turno anterior para deshacer.",
 } as const;
 
 interface ConversationRow {
@@ -66,6 +70,19 @@ interface SearchRow extends ConversationRow {
   readonly resultId: string;
   readonly sourceText: string;
   readonly sourceFolds: string[] | null;
+}
+
+interface AlternativeContextRow {
+  readonly messageId: string;
+  readonly nextLeafMessageId: string | null;
+  readonly position: number | string;
+  readonly previousLeafMessageId: string | null;
+  readonly total: number | string;
+}
+
+interface UndoTargetRow {
+  readonly currentRole: "assistant" | "user";
+  readonly targetMessageId: string | null;
 }
 
 function changed(): never {
@@ -563,6 +580,264 @@ export function createConversationService(database: AppDatabase, cursorCodec: Cu
     });
   }
 
+  async function getAlternativeContexts(
+    actor: RequestActor,
+    conversationId: string,
+    messageIds: readonly string[],
+  ): Promise<AlternativeContextResponse> {
+    if (
+      messageIds.length === 0 ||
+      messageIds.length > ALTERNATIVE_CONTEXT_MAX_MESSAGE_IDS ||
+      new Set(messageIds).size !== messageIds.length
+    ) {
+      throw new ApplicationError(400, "BAD_REQUEST", conversationCopy.invalidAlternativeContext);
+    }
+
+    return database.transaction(async (transaction) => {
+      const conversationRows = await transaction
+        .select()
+        .from(conversations)
+        .where(ownedConversationWhere(actor, conversationId))
+        .limit(1)
+        .for("share");
+      const conversation = conversationRows[0];
+      if (conversation === undefined) {
+        return notFound();
+      }
+      if (conversation.selectedLeafMessageId === null) {
+        throw new ApplicationError(400, "BAD_REQUEST", conversationCopy.invalidAlternativeContext);
+      }
+      const requestedMessageIds = sql.join(
+        messageIds.map((messageId) => sql`${messageId}`),
+        sql`, `,
+      );
+
+      const result = await transaction.execute(sql<AlternativeContextRow>`
+        WITH RECURSIVE selected_path AS (
+          SELECT message.id, message.parent_message_id
+          FROM messages AS message
+          WHERE message.conversation_id = ${conversation.id}
+            AND message.id = ${conversation.selectedLeafMessageId}
+          UNION ALL
+          SELECT parent.id, parent.parent_message_id
+          FROM messages AS parent
+          INNER JOIN selected_path
+            ON parent.conversation_id = ${conversation.id}
+            AND parent.id = selected_path.parent_message_id
+        ),
+        requested AS (
+          SELECT requested_message.id, requested_message.input_position
+          FROM unnest(ARRAY[${requestedMessageIds}]::uuid[]) WITH ORDINALITY
+            AS requested_message(id, input_position)
+        ),
+        requested_messages AS (
+          SELECT message.id, message.parent_message_id,
+            requested.input_position
+          FROM requested
+          INNER JOIN selected_path ON selected_path.id = requested.id
+          INNER JOIN messages AS message
+            ON message.conversation_id = ${conversation.id}
+            AND message.id = requested.id
+        ),
+        requested_parents AS (
+          SELECT DISTINCT requested_message.parent_message_id
+          FROM requested_messages AS requested_message
+        ),
+        ordered_siblings AS (
+          SELECT sibling.id, sibling.parent_message_id,
+            row_number() OVER (
+              PARTITION BY sibling.parent_message_id
+              ORDER BY sibling.created_at ASC, sibling.id ASC
+            ) AS position,
+            count(*) OVER (PARTITION BY sibling.parent_message_id) AS total
+          FROM messages AS sibling
+          WHERE sibling.conversation_id = ${conversation.id}
+            AND EXISTS (
+              SELECT 1
+              FROM requested_parents AS requested_parent
+              WHERE requested_parent.parent_message_id
+                IS NOT DISTINCT FROM sibling.parent_message_id
+            )
+        ),
+        current_context AS (
+          SELECT requested_message.id AS message_id,
+            requested_message.input_position,
+            current_sibling.position,
+            current_sibling.total,
+            previous_sibling.id AS previous_sibling_id,
+            next_sibling.id AS next_sibling_id
+          FROM requested_messages AS requested_message
+          INNER JOIN ordered_siblings AS current_sibling
+            ON current_sibling.id = requested_message.id
+          LEFT JOIN ordered_siblings AS previous_sibling
+            ON previous_sibling.parent_message_id
+              IS NOT DISTINCT FROM current_sibling.parent_message_id
+            AND previous_sibling.position = current_sibling.position - 1
+          LEFT JOIN ordered_siblings AS next_sibling
+            ON next_sibling.parent_message_id
+              IS NOT DISTINCT FROM current_sibling.parent_message_id
+            AND next_sibling.position = current_sibling.position + 1
+        ),
+        adjacent_roots AS (
+          SELECT context.message_id, 'previous'::text AS direction,
+            context.previous_sibling_id AS root_id
+          FROM current_context AS context
+          WHERE context.previous_sibling_id IS NOT NULL
+          UNION ALL
+          SELECT context.message_id, 'next'::text AS direction,
+            context.next_sibling_id AS root_id
+          FROM current_context AS context
+          WHERE context.next_sibling_id IS NOT NULL
+        ),
+        descendants AS (
+          SELECT adjacent.message_id, adjacent.direction,
+            root.id, root.created_at
+          FROM adjacent_roots AS adjacent
+          INNER JOIN messages AS root
+            ON root.conversation_id = ${conversation.id}
+            AND root.id = adjacent.root_id
+          UNION ALL
+          SELECT descendant.message_id, descendant.direction,
+            child.id, child.created_at
+          FROM descendants AS descendant
+          INNER JOIN messages AS child
+            ON child.conversation_id = ${conversation.id}
+            AND child.parent_message_id = descendant.id
+        ),
+        ranked_leaves AS (
+          SELECT descendant.message_id, descendant.direction, descendant.id,
+            row_number() OVER (
+              PARTITION BY descendant.message_id, descendant.direction
+              ORDER BY descendant.created_at DESC, descendant.id DESC
+            ) AS leaf_position
+          FROM descendants AS descendant
+          WHERE NOT EXISTS (
+            SELECT 1
+            FROM messages AS child
+            WHERE child.conversation_id = ${conversation.id}
+              AND child.parent_message_id = descendant.id
+          )
+        )
+        SELECT context.message_id AS "messageId",
+          context.position AS "position",
+          context.total AS "total",
+          previous_leaf.id AS "previousLeafMessageId",
+          next_leaf.id AS "nextLeafMessageId"
+        FROM current_context AS context
+        LEFT JOIN ranked_leaves AS previous_leaf
+          ON previous_leaf.message_id = context.message_id
+          AND previous_leaf.direction = 'previous'
+          AND previous_leaf.leaf_position = 1
+        LEFT JOIN ranked_leaves AS next_leaf
+          ON next_leaf.message_id = context.message_id
+          AND next_leaf.direction = 'next'
+          AND next_leaf.leaf_position = 1
+        ORDER BY context.input_position ASC
+      `);
+      const rows = result.rows as unknown as AlternativeContextRow[];
+      if (rows.length !== messageIds.length) {
+        throw new ApplicationError(400, "BAD_REQUEST", conversationCopy.invalidAlternativeContext);
+      }
+      return {
+        contexts: rows.map((row) => ({
+          messageId: row.messageId,
+          nextLeafMessageId: row.nextLeafMessageId,
+          position: Number(row.position),
+          previousLeafMessageId: row.previousLeafMessageId,
+          total: Number(row.total),
+        })),
+        conversationId,
+        revision: conversation.revision,
+      };
+    });
+  }
+
+  async function undo(
+    actor: RequestActor,
+    conversationId: string,
+    observedRevision: number,
+  ): Promise<ConversationSelectionResponse> {
+    return database.transaction(async (transaction) => {
+      const conversationRows = await transaction
+        .select()
+        .from(conversations)
+        .where(ownedConversationWhere(actor, conversationId))
+        .limit(1)
+        .for("update");
+      const conversation = conversationRows[0];
+      if (conversation === undefined) {
+        return notFound();
+      }
+      const activeRows = await transaction
+        .select({ id: generations.id })
+        .from(generations)
+        .where(
+          and(eq(generations.conversationId, conversationId), eq(generations.status, "active")),
+        )
+        .limit(1);
+      if (activeRows.length !== 0) {
+        throw new ApplicationError(409, "GENERATION_ACTIVE", conversationCopy.generationActive);
+      }
+      if (conversation.revision !== observedRevision) {
+        return changed();
+      }
+      if (conversation.selectedLeafMessageId === null) {
+        throw new ApplicationError(400, "BAD_REQUEST", conversationCopy.undoUnavailable);
+      }
+
+      const targetResult = await transaction.execute(sql<UndoTargetRow>`
+        WITH RECURSIVE selected_path AS (
+          SELECT message.id, message.parent_message_id, message.role, 0 AS depth
+          FROM messages AS message
+          WHERE message.conversation_id = ${conversation.id}
+            AND message.id = ${conversation.selectedLeafMessageId}
+          UNION ALL
+          SELECT parent.id, parent.parent_message_id, parent.role,
+            selected_path.depth + 1
+          FROM messages AS parent
+          INNER JOIN selected_path
+            ON parent.conversation_id = ${conversation.id}
+            AND parent.id = selected_path.parent_message_id
+        )
+        SELECT (
+            SELECT selected.role FROM selected_path AS selected WHERE selected.depth = 0
+          ) AS "currentRole",
+          (
+            SELECT ancestor.id
+            FROM selected_path AS ancestor
+            WHERE ancestor.depth > 0 AND ancestor.role = 'assistant'
+            ORDER BY ancestor.depth ASC
+            LIMIT 1
+          ) AS "targetMessageId"
+      `);
+      const target = (targetResult.rows as unknown as UndoTargetRow[])[0];
+      if (target?.currentRole !== "assistant" || target.targetMessageId === null) {
+        throw new ApplicationError(400, "BAD_REQUEST", conversationCopy.undoUnavailable);
+      }
+
+      const now = new Date();
+      const updatedRows = await transaction
+        .update(conversations)
+        .set({
+          revision: conversation.revision + 1,
+          selectedLeafMessageId: target.targetMessageId,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            ownedConversationWhere(actor, conversationId),
+            eq(conversations.revision, observedRevision),
+          ),
+        )
+        .returning();
+      const updated = updatedRows[0];
+      if (updated === undefined) {
+        return changed();
+      }
+      return { conversation: toSummary(updated), selectedLeafId: target.targetMessageId };
+    });
+  }
+
   async function setArchived(
     actor: RequestActor,
     conversationId: string,
@@ -894,12 +1169,13 @@ export function createConversationService(database: AppDatabase, cursorCodec: Cu
           )
           SELECT descendant.id
           FROM descendants AS descendant
-          WHERE NOT EXISTS (
-            SELECT 1
-            FROM messages AS child
-            WHERE child.conversation_id = conversation.id
-              AND child.parent_message_id = descendant.id
-          )
+          WHERE descendant.id = conversation.selected_leaf_message_id
+            OR NOT EXISTS (
+              SELECT 1
+              FROM messages AS child
+              WHERE child.conversation_id = conversation.id
+                AND child.parent_message_id = descendant.id
+            )
           ORDER BY
             (descendant.id = conversation.selected_leaf_message_id) DESC,
             descendant.created_at DESC,
@@ -1013,6 +1289,7 @@ export function createConversationService(database: AppDatabase, cursorCodec: Cu
   return Object.freeze({
     create,
     get,
+    getAlternativeContexts,
     getDraft,
     insertImmutableMessage,
     list,
@@ -1021,6 +1298,7 @@ export function createConversationService(database: AppDatabase, cursorCodec: Cu
     search,
     selectLeaf,
     setArchived,
+    undo,
   });
 }
 

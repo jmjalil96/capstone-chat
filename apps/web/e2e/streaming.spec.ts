@@ -93,7 +93,7 @@ test("@critical-stream keeps conversation streams isolated across navigation and
   }
 });
 
-test("@critical-stream keeps the committed turn ordered and positions Send only once", async ({
+test("@critical-stream follows growth, respects manual scrolling, and jumps to the latest output", async ({
   page,
 }) => {
   const conversationId = browserUuid(60);
@@ -127,20 +127,34 @@ test("@critical-stream keeps the committed turn ordered and positions Send only 
       revision: 10,
       selectedLeafId: priorSelectedLeafId,
       messages: priorMessages,
-      canonicalDetailDelayMilliseconds: 2_000,
       streams: [
         {
           deltas: [
             { delayMilliseconds: 80, text: "Primer fragmento visible." },
             {
-              delayMilliseconds: 900,
+              delayMilliseconds: 500,
               text: `\n${Array.from(
                 { length: 20 },
                 (_, index) => `Línea de crecimiento ${index + 1}.`,
               ).join("\n")}`,
             },
+            {
+              delayMilliseconds: 700,
+              text: `\n${Array.from(
+                { length: 12 },
+                (_, index) => `Contenido no visto ${index + 1}.`,
+              ).join("\n")}`,
+            },
+            {
+              delayMilliseconds: 1_200,
+              text: "\nFragmento seguido después del salto.",
+            },
+            {
+              delayMilliseconds: 700,
+              text: "\nCierre final seguido.",
+            },
           ],
-          outcome: "hold",
+          outcome: "completed",
         },
       ],
     },
@@ -183,6 +197,7 @@ test("@critical-stream keeps the committed turn ordered and positions Send only 
       const user = sent.getBoundingClientRect();
       return {
         assistantTop: assistant.getBoundingClientRect().top,
+        distanceFromBottom: container.scrollHeight - container.scrollTop - container.clientHeight,
         scrollTop: container.scrollTop,
         userBottom: user.bottom,
         userTop: user.top,
@@ -195,11 +210,14 @@ test("@critical-stream keeps the committed turn ordered and positions Send only 
   expect(initialGeometry.userTop).toBeGreaterThanOrEqual(initialGeometry.viewportTop);
   expect(initialGeometry.userTop).toBeLessThan(initialGeometry.viewportBottom);
   expect(initialGeometry.assistantTop).toBeGreaterThanOrEqual(initialGeometry.userBottom);
-  expect(initialGeometry.assistantTop).toBeLessThan(initialGeometry.viewportBottom);
+  expect(initialGeometry.assistantTop).toBeLessThan(initialGeometry.viewportBottom + 32);
+  expect(initialGeometry.distanceFromBottom).toBeLessThanOrEqual(96);
 
   await expect(sentAssistant).toContainText("Línea de crecimiento 20.");
-  const grownGeometry = await page.locator(".message-scroll").evaluate(
+  const scroll = page.locator(".message-scroll");
+  const grownGeometry = await scroll.evaluate(
     (container, userId) => ({
+      distanceFromBottom: container.scrollHeight - container.scrollTop - container.clientHeight,
       scrollTop: container.scrollTop,
       userTop: container
         .querySelector<HTMLElement>(`[data-message-id="${userId}"]`)
@@ -207,8 +225,63 @@ test("@critical-stream keeps the committed turn ordered and positions Send only 
     }),
     sentUserId,
   );
-  expect(Math.abs(grownGeometry.scrollTop - initialGeometry.scrollTop)).toBeLessThan(2);
-  expect(Math.abs((grownGeometry.userTop ?? 0) - initialGeometry.userTop)).toBeLessThan(2);
+  expect(grownGeometry.distanceFromBottom).toBeLessThan(3);
+
+  await scroll.hover();
+  await page.mouse.wheel(0, -700);
+  await expect
+    .poll(() => scroll.evaluate((container) => container.scrollTop))
+    .toBeLessThan(grownGeometry.scrollTop - 96);
+  const disengagedTop = await scroll.evaluate((container) => container.scrollTop);
+  await expect(sentAssistant).toContainText("Contenido no visto 12.");
+  const jump = page.getByRole("button", { name: copy.conversations.scroll.jumpToLatest });
+  await expect(jump).toBeVisible();
+  expect(
+    Math.abs((await scroll.evaluate((container) => container.scrollTop)) - disengagedTop),
+  ).toBeLessThan(3);
+
+  await jump.click();
+  await expect(jump).toHaveCount(0);
+  await expect
+    .poll(() =>
+      scroll.evaluate(
+        (container) => container.scrollHeight - container.scrollTop - container.clientHeight,
+      ),
+    )
+    .toBeLessThan(3);
+
+  await sentAssistant.evaluate((message) => {
+    const walker = document.createTreeWalker(message, NodeFilter.SHOW_TEXT);
+    const text = walker.nextNode();
+    if (!text?.textContent) {
+      throw new Error("The streamed response has no selectable text");
+    }
+    const range = document.createRange();
+    range.setStart(text, 0);
+    range.setEnd(text, Math.min(10, text.textContent.length));
+    const selection = document.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  });
+  const selectedTop = await scroll.evaluate((container) => container.scrollTop);
+  await expect(sentAssistant).toContainText("Fragmento seguido después del salto.");
+  await expect(jump).toBeVisible();
+  expect(
+    Math.abs((await scroll.evaluate((container) => container.scrollTop)) - selectedTop),
+  ).toBeLessThan(3);
+  await page.evaluate(() => document.getSelection()?.removeAllRanges());
+  await jump.click();
+  await expect
+    .poll(() =>
+      scroll.evaluate(
+        (container) => container.scrollHeight - container.scrollTop - container.clientHeight,
+      ),
+    )
+    .toBeLessThan(3);
+  await expect(sentAssistant).toContainText("Cierre final seguido.");
+  await expect(
+    page.getByRole("button", { name: copy.conversations.generation.actions.send }),
+  ).toBeVisible();
 });
 
 test("@critical-stream reloads canonical active state and remotely stops without losing the draft", async ({
@@ -260,6 +333,7 @@ test("@critical-stream reloads canonical active state and remotely stops without
   const draft = page.getByRole("textbox", { name: copy.conversations.draft.label });
   await expect(stop).toBeVisible();
   await expect(draft).toHaveValue("Borrador remoto intacto.");
+  await expect(page.getByText("Salida parcial remota.", { exact: true })).toBeVisible();
 
   await page.reload();
   await expect(stop).toBeVisible();

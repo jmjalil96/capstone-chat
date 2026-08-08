@@ -9,6 +9,7 @@ export const CONVERSATION_SEARCH_SNIPPET_MAX_CODE_POINTS = 162;
 export const CONVERSATION_DRAFT_MAX_UTF8_BYTES = 32_768;
 export const USER_MESSAGE_MAX_UTF8_BYTES = CONVERSATION_DRAFT_MAX_UTF8_BYTES;
 export const CONVERSATION_REVISION_MAX = 2_147_483_647;
+export const ALTERNATIVE_CONTEXT_MAX_MESSAGE_IDS = CONVERSATION_MESSAGE_PAGE_SIZE;
 
 function hasUnsupportedControlCharacter(value: string): boolean {
   for (const character of value) {
@@ -305,6 +306,49 @@ export const ConversationSelectionResponseSchema = Type.Object(
 );
 export type ConversationSelectionResponse = Type.Static<typeof ConversationSelectionResponseSchema>;
 
+export const AlternativeContextRequestSchema = Type.Object(
+  {
+    messageIds: Type.Array(MessageIdSchema, {
+      minItems: 1,
+      maxItems: ALTERNATIVE_CONTEXT_MAX_MESSAGE_IDS,
+      uniqueItems: true,
+    }),
+  },
+  { additionalProperties: false },
+);
+export type AlternativeContextRequest = Type.Static<typeof AlternativeContextRequestSchema>;
+
+export const AlternativeContextSchema = Type.Refine(
+  Type.Object(
+    {
+      messageId: MessageIdSchema,
+      position: Type.Integer({ minimum: 1 }),
+      total: Type.Integer({ minimum: 1 }),
+      previousLeafMessageId: Type.Union([MessageIdSchema, Type.Null()]),
+      nextLeafMessageId: Type.Union([MessageIdSchema, Type.Null()]),
+    },
+    { additionalProperties: false },
+  ),
+  (value) =>
+    value.position <= value.total &&
+    (value.previousLeafMessageId === null) === (value.position === 1) &&
+    (value.nextLeafMessageId === null) === (value.position === value.total),
+);
+export type AlternativeContext = Type.Static<typeof AlternativeContextSchema>;
+
+export const AlternativeContextResponseSchema = Type.Object(
+  {
+    conversationId: ConversationIdSchema,
+    revision: ConversationRevisionSchema,
+    contexts: Type.Array(AlternativeContextSchema, {
+      minItems: 1,
+      maxItems: ALTERNATIVE_CONTEXT_MAX_MESSAGE_IDS,
+    }),
+  },
+  { additionalProperties: false },
+);
+export type AlternativeContextResponse = Type.Static<typeof AlternativeContextResponseSchema>;
+
 export const ConversationRevisionRequestSchema = Type.Object(
   {
     observedRevision: ConversationRevisionSchema,
@@ -312,6 +356,12 @@ export const ConversationRevisionRequestSchema = Type.Object(
   { additionalProperties: false },
 );
 export type ConversationRevisionRequest = Type.Static<typeof ConversationRevisionRequestSchema>;
+
+export const UndoConversationRequestSchema = ConversationRevisionRequestSchema;
+export type UndoConversationRequest = Type.Static<typeof UndoConversationRequestSchema>;
+
+export const UndoConversationResponseSchema = ConversationSelectionResponseSchema;
+export type UndoConversationResponse = Type.Static<typeof UndoConversationResponseSchema>;
 
 export const ArchiveConversationRequestSchema = ConversationRevisionRequestSchema;
 export type ArchiveConversationRequest = Type.Static<typeof ArchiveConversationRequestSchema>;

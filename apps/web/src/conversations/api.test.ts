@@ -5,9 +5,11 @@ import {
   conversationActorScope,
   conversationQueryKeys,
   conversationQueryScope,
+  fetchAlternativeContexts,
   fetchResponseStates,
   openConversationResponse,
   searchConversations,
+  undoConversation,
 } from "./api";
 
 afterEach(() => {
@@ -153,5 +155,87 @@ describe("conversation browser requests", () => {
         messageIds: ["66666666-6666-4666-8666-666666666666"],
       }),
     ).rejects.toThrow("requested messages");
+  });
+
+  it("binds alternative-context caches to actor, revision, and a sorted message set", () => {
+    const queryScope = ["workspace-1", "employee-1", "session-1"] as const;
+    const ids = ["66666666-6666-4666-8666-666666666666", "55555555-5555-4555-8555-555555555555"];
+
+    expect(conversationQueryKeys.alternativeContext(queryScope, "conversation-1", 7, ids)).toEqual([
+      "conversations",
+      ...queryScope,
+      "alternative-context",
+      "conversation-1",
+      7,
+      [...ids].sort(),
+    ]);
+  });
+
+  it("requires one exact alternative context for every requested message", async () => {
+    const conversationId = "33333333-3333-4333-8333-333333333333";
+    const firstMessageId = "55555555-5555-4555-8555-555555555555";
+    const secondMessageId = "66666666-6666-4666-8666-666666666666";
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          conversationId,
+          revision: 3,
+          contexts: [
+            {
+              messageId: firstMessageId,
+              position: 1,
+              total: 2,
+              previousLeafMessageId: null,
+              nextLeafMessageId: "77777777-7777-4777-8777-777777777777",
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      fetchAlternativeContexts(conversationId, {
+        messageIds: [firstMessageId, secondMessageId],
+      }),
+    ).rejects.toThrow("requested messages");
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/api/conversations/${conversationId}/alternative-contexts`,
+      expect.objectContaining({
+        body: JSON.stringify({ messageIds: [firstMessageId, secondMessageId] }),
+        method: "POST",
+      }),
+    );
+  });
+
+  it("posts Undo with the observed revision and validates the selected conversation", async () => {
+    const conversationId = "33333333-3333-4333-8333-333333333333";
+    const selectedLeafId = "55555555-5555-4555-8555-555555555555";
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          conversation: {
+            id: conversationId,
+            title: "Conversación",
+            isArchived: false,
+            revision: 4,
+            createdAt: "2026-08-07T12:00:00.000Z",
+            updatedAt: "2026-08-07T12:00:01.000Z",
+          },
+          selectedLeafId,
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(undoConversation(conversationId, { observedRevision: 3 })).resolves.toMatchObject({
+      selectedLeafId,
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/api/conversations/${conversationId}/undo`,
+      expect.objectContaining({ body: JSON.stringify({ observedRevision: 3 }), method: "POST" }),
+    );
   });
 });

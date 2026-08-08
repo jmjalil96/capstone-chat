@@ -19,7 +19,7 @@ import { workspaces } from "../src/database/identity-schema.js";
 import { migrateDatabase } from "../src/database/migrate.js";
 import { ApplicationError } from "../src/errors.js";
 import { FakeModelGateway } from "../src/generations/fake-model-gateway.js";
-import type { ModelGateway } from "../src/generations/model-gateway.js";
+import type { GenerationRequest, ModelGateway } from "../src/generations/model-gateway.js";
 import { continueMessage, systemPrompt } from "../src/generations/prompt.js";
 import { createGenerationService, type GenerationService } from "../src/generations/service.js";
 import type { RequestActor } from "../src/identity/authorization.js";
@@ -211,6 +211,439 @@ describe.sequential("generation lifecycle integration", () => {
     expect(visible.messages.map((message) => message.content[0]?.text)).toContain(
       continueMessage.text,
     );
+  });
+
+  it("creates additive edit and retry branches from authoritative prefixes", async () => {
+    const { conversation, draft } = await adoptedConversation("Pregunta raíz original");
+    const first = await generationService.startResponse(actor, conversation.id, randomUUID(), {
+      content: [{ text: "Pregunta raíz original", type: "text" }],
+      draftRevision: draft.revision,
+      modelTier: "balanced",
+      observedRevision: 0,
+      parentMessageId: null,
+      source: "draft",
+    });
+    await generationService.terminalize(first.generationId, {
+      content: "Primera respuesta",
+      errorCode: null,
+      firstTokenAt: new Date(),
+      reason: "stop",
+      status: "completed",
+    });
+
+    const secondDraft = await conversationsService.saveDraft(
+      actor,
+      { conversationId: conversation.id, kind: "conversation" },
+      "Segunda pregunta original",
+      0,
+    );
+    const second = await generationService.startResponse(actor, conversation.id, randomUUID(), {
+      content: [{ text: "Segunda pregunta original", type: "text" }],
+      draftRevision: secondDraft.revision,
+      modelTier: "balanced",
+      observedRevision: 2,
+      parentMessageId: first.messageId,
+      source: "draft",
+    });
+    await generationService.terminalize(second.generationId, {
+      content: "Segunda respuesta original",
+      errorCode: null,
+      firstTokenAt: new Date(),
+      reason: "stop",
+      status: "completed",
+    });
+    const preservedDraft = await conversationsService.saveDraft(
+      actor,
+      { conversationId: conversation.id, kind: "conversation" },
+      "Borrador que no se consume",
+      0,
+    );
+    const originalTitle = (await conversationsService.get(actor, conversation.id)).conversation
+      .title;
+
+    const edited = await generationService.startResponse(actor, conversation.id, randomUUID(), {
+      content: [{ text: "Segunda pregunta editada", type: "text" }],
+      modelTier: "balanced",
+      observedRevision: 4,
+      parentMessageId: first.messageId,
+      source: "edit",
+      targetMessageId: second.userMessageId,
+    });
+    expect(edited).toMatchObject({ revision: 5 });
+    expect(edited.request).toMatchObject({
+      history: [
+        { role: "user", text: "Pregunta raíz original" },
+        { role: "assistant", text: "Primera respuesta" },
+      ],
+      message: { role: "user", text: "Segunda pregunta editada" },
+    });
+    expect(edited.userMessageId).not.toBe(second.userMessageId);
+    expect(
+      await conversationsService.getDraft(actor, {
+        conversationId: conversation.id,
+        kind: "conversation",
+      }),
+    ).toMatchObject(preservedDraft);
+    expect((await conversationsService.get(actor, conversation.id)).conversation.title).toBe(
+      originalTitle,
+    );
+    await generationService.terminalize(edited.generationId, {
+      content: "Segunda respuesta editada",
+      errorCode: null,
+      firstTokenAt: new Date(),
+      reason: "stop",
+      status: "completed",
+    });
+
+    const retried = await generationService.startResponse(actor, conversation.id, randomUUID(), {
+      modelTier: "balanced",
+      observedRevision: 6,
+      parentMessageId: edited.userMessageId,
+      source: "retry",
+      targetMessageId: edited.messageId,
+    });
+    expect(retried).toMatchObject({ revision: 7, userMessageId: edited.userMessageId });
+    expect(retried.messageId).not.toBe(edited.messageId);
+    expect(retried.request).toMatchObject({
+      history: [
+        { role: "user", text: "Pregunta raíz original" },
+        { role: "assistant", text: "Primera respuesta" },
+      ],
+      message: { role: "user", text: "Segunda pregunta editada" },
+    });
+    await generationService.terminalize(retried.generationId, {
+      content: "Segunda respuesta reintentada",
+      errorCode: null,
+      firstTokenAt: new Date(),
+      reason: "stop",
+      status: "completed",
+    });
+
+    const rootEdit = await generationService.startResponse(actor, conversation.id, randomUUID(), {
+      content: [{ text: "Pregunta raíz editada", type: "text" }],
+      modelTier: "balanced",
+      observedRevision: 8,
+      parentMessageId: null,
+      source: "edit",
+      targetMessageId: first.userMessageId,
+    });
+    expect(rootEdit.request).toMatchObject({
+      history: [],
+      message: { role: "user", text: "Pregunta raíz editada" },
+    });
+    await generationService.terminalize(rootEdit.generationId, {
+      content: "Primera respuesta editada",
+      errorCode: null,
+      firstTokenAt: new Date(),
+      reason: "stop",
+      status: "completed",
+    });
+    const firstAnswerRetry = await generationService.startResponse(
+      actor,
+      conversation.id,
+      randomUUID(),
+      {
+        modelTier: "balanced",
+        observedRevision: 10,
+        parentMessageId: rootEdit.userMessageId,
+        source: "retry",
+        targetMessageId: rootEdit.messageId,
+      },
+    );
+    expect(firstAnswerRetry.request).toMatchObject({
+      history: [],
+      message: { role: "user", text: "Pregunta raíz editada" },
+    });
+    expect(firstAnswerRetry.userMessageId).toBe(rootEdit.userMessageId);
+
+    const storedMessages = await database
+      .select()
+      .from(messages)
+      .where(eq(messages.conversationId, conversation.id));
+    expect(storedMessages).toHaveLength(10);
+    expect(storedMessages.some((message) => message.id === second.messageId)).toBe(true);
+    expect(storedMessages.some((message) => message.id === edited.messageId)).toBe(true);
+    expect(storedMessages.filter((message) => message.id === edited.userMessageId)).toHaveLength(1);
+    expect((await conversationsService.get(actor, conversation.id)).conversation.title).toBe(
+      originalTitle,
+    );
+  });
+
+  it("rejects invalid edit and retry targets without mutating the tree or draft", async () => {
+    const { conversation, draft } = await adoptedConversation("Pregunta original");
+    const started = await generationService.startResponse(actor, conversation.id, randomUUID(), {
+      content: [{ text: "Pregunta original", type: "text" }],
+      draftRevision: draft.revision,
+      modelTier: "balanced",
+      observedRevision: 0,
+      parentMessageId: null,
+      source: "draft",
+    });
+    await generationService.terminalize(started.generationId, {
+      content: "Respuesta original",
+      errorCode: null,
+      firstTokenAt: new Date(),
+      reason: "stop",
+      status: "completed",
+    });
+    const preservedDraft = await conversationsService.saveDraft(
+      actor,
+      { conversationId: conversation.id, kind: "conversation" },
+      "Borrador preservado",
+      0,
+    );
+    const alternateRootRows = await database
+      .insert(messages)
+      .values({
+        content: [{ text: "Pregunta no seleccionada", type: "text" }],
+        conversationId: conversation.id,
+        parentMessageId: null,
+        role: "user",
+      })
+      .returning();
+    const alternateRoot = alternateRootRows[0];
+    if (alternateRoot === undefined) throw new Error("Missing non-selected root fixture");
+    const alternateAssistantRows = await database
+      .insert(messages)
+      .values({
+        content: [{ text: "Respuesta no seleccionada", type: "text" }],
+        conversationId: conversation.id,
+        parentMessageId: alternateRoot.id,
+        role: "assistant",
+      })
+      .returning();
+    const alternateAssistant = alternateAssistantRows[0];
+    if (alternateAssistant === undefined) throw new Error("Missing non-selected answer fixture");
+
+    const foreignConversation = await conversationsService.create(actor);
+    const foreignUser = await conversationsService.insertImmutableMessage(actor, {
+      content: [{ text: "Pregunta de otra conversación", type: "text" }],
+      conversationId: foreignConversation.id,
+      parentMessageId: null,
+      role: "user",
+    });
+    const foreignAssistant = await conversationsService.insertImmutableMessage(actor, {
+      content: [{ text: "Respuesta de otra conversación", type: "text" }],
+      conversationId: foreignConversation.id,
+      parentMessageId: foreignUser.id,
+      role: "assistant",
+    });
+    const messageCount = (
+      await database.select().from(messages).where(eq(messages.conversationId, conversation.id))
+    ).length;
+
+    await expectCode(
+      generationService.startResponse(actor, conversation.id, randomUUID(), {
+        content: [{ text: "Pregunta original", type: "text" }],
+        modelTier: "balanced",
+        observedRevision: 2,
+        parentMessageId: null,
+        source: "edit",
+        targetMessageId: started.userMessageId,
+      }),
+      "BAD_REQUEST",
+    );
+    await expectCode(
+      generationService.startResponse(actor, conversation.id, randomUUID(), {
+        content: [{ text: "Rol incorrecto", type: "text" }],
+        modelTier: "balanced",
+        observedRevision: 2,
+        parentMessageId: started.userMessageId,
+        source: "edit",
+        targetMessageId: started.messageId,
+      }),
+      "BAD_REQUEST",
+    );
+    await expectCode(
+      generationService.startResponse(actor, conversation.id, randomUUID(), {
+        content: [{ text: "Padre incorrecto", type: "text" }],
+        modelTier: "balanced",
+        observedRevision: 2,
+        parentMessageId: started.messageId,
+        source: "edit",
+        targetMessageId: started.userMessageId,
+      }),
+      "BAD_REQUEST",
+    );
+    await expectCode(
+      generationService.startResponse(actor, conversation.id, randomUUID(), {
+        modelTier: "balanced",
+        observedRevision: 2,
+        parentMessageId: started.userMessageId,
+        source: "retry",
+        targetMessageId: started.userMessageId,
+      }),
+      "BAD_REQUEST",
+    );
+    await expectCode(
+      generationService.startResponse(actor, conversation.id, randomUUID(), {
+        modelTier: "balanced",
+        observedRevision: 2,
+        parentMessageId: started.messageId,
+        source: "retry",
+        targetMessageId: started.messageId,
+      }),
+      "BAD_REQUEST",
+    );
+    for (const invalidTarget of [
+      { assistant: alternateAssistant.id, user: alternateRoot.id },
+      { assistant: foreignAssistant.id, user: foreignUser.id },
+    ]) {
+      await expectCode(
+        generationService.startResponse(actor, conversation.id, randomUUID(), {
+          content: [{ text: "Edición inválida", type: "text" }],
+          modelTier: "balanced",
+          observedRevision: 2,
+          parentMessageId: null,
+          source: "edit",
+          targetMessageId: invalidTarget.user,
+        }),
+        "BAD_REQUEST",
+      );
+      await expectCode(
+        generationService.startResponse(actor, conversation.id, randomUUID(), {
+          modelTier: "balanced",
+          observedRevision: 2,
+          parentMessageId: invalidTarget.user,
+          source: "retry",
+          targetMessageId: invalidTarget.assistant,
+        }),
+        "BAD_REQUEST",
+      );
+    }
+    await expectCode(
+      generationService.startResponse(actor, conversation.id, randomUUID(), {
+        content: [{ text: "   \n\t", type: "text" }],
+        modelTier: "balanced",
+        observedRevision: 2,
+        parentMessageId: null,
+        source: "edit",
+        targetMessageId: started.userMessageId,
+      }),
+      "BAD_REQUEST",
+    );
+    await expectCode(
+      generationService.startResponse(actor, conversation.id, randomUUID(), {
+        content: [{ text: "ñ".repeat(16_385), type: "text" }],
+        modelTier: "balanced",
+        observedRevision: 2,
+        parentMessageId: null,
+        source: "edit",
+        targetMessageId: started.userMessageId,
+      }),
+      "MESSAGE_TOO_LARGE",
+    );
+    await expectCode(
+      generationService.startResponse(actor, conversation.id, randomUUID(), {
+        modelTier: "balanced",
+        observedRevision: 1,
+        parentMessageId: started.userMessageId,
+        source: "retry",
+        targetMessageId: started.messageId,
+      }),
+      "CONVERSATION_CHANGED",
+    );
+
+    expect(
+      await database.select().from(messages).where(eq(messages.conversationId, conversation.id)),
+    ).toHaveLength(messageCount);
+    expect(
+      await conversationsService.getDraft(actor, {
+        conversationId: conversation.id,
+        kind: "conversation",
+      }),
+    ).toMatchObject(preservedDraft);
+
+    const archived = await conversationsService.setArchived(actor, conversation.id, true, 2);
+    for (const request of [
+      {
+        content: [{ text: "Edición archivada", type: "text" as const }],
+        modelTier: "balanced" as const,
+        observedRevision: archived.revision,
+        parentMessageId: null,
+        source: "edit" as const,
+        targetMessageId: started.userMessageId,
+      },
+      {
+        modelTier: "balanced" as const,
+        observedRevision: archived.revision,
+        parentMessageId: started.userMessageId,
+        source: "retry" as const,
+        targetMessageId: started.messageId,
+      },
+    ]) {
+      await expectCode(
+        generationService.startResponse(actor, conversation.id, randomUUID(), request),
+        "CONVERSATION_ARCHIVED",
+      );
+    }
+    const unarchived = await conversationsService.setArchived(
+      actor,
+      conversation.id,
+      false,
+      archived.revision,
+    );
+
+    const concurrentEdits = [
+      {
+        key: randomUUID(),
+        request: {
+          content: [{ text: "Edición concurrente uno", type: "text" as const }],
+          modelTier: "balanced" as const,
+          observedRevision: unarchived.revision,
+          parentMessageId: null,
+          source: "edit" as const,
+          targetMessageId: started.userMessageId,
+        },
+      },
+      {
+        key: randomUUID(),
+        request: {
+          content: [{ text: "Edición concurrente dos", type: "text" as const }],
+          modelTier: "balanced" as const,
+          observedRevision: unarchived.revision,
+          parentMessageId: null,
+          source: "edit" as const,
+          targetMessageId: started.userMessageId,
+        },
+      },
+    ];
+    const concurrentResults = await Promise.allSettled(
+      concurrentEdits.map(({ key, request }) =>
+        generationService.startResponse(actor, conversation.id, key, request),
+      ),
+    );
+    expect(concurrentResults.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(concurrentResults.find((result) => result.status === "rejected")).toMatchObject({
+      reason: { code: "GENERATION_ACTIVE" },
+      status: "rejected",
+    });
+    const winnerIndex = concurrentResults.findIndex((result) => result.status === "fulfilled");
+    const winner = concurrentEdits[winnerIndex];
+    if (winner === undefined) throw new Error("Concurrent edit did not produce a winner");
+    await expectCode(
+      generationService.startResponse(actor, conversation.id, winner.key, winner.request),
+      "GENERATION_ALREADY_EXISTS",
+    );
+    await expectCode(
+      generationService.startResponse(actor, conversation.id, randomUUID(), {
+        modelTier: "balanced",
+        observedRevision: unarchived.revision + 1,
+        parentMessageId: started.userMessageId,
+        source: "retry",
+        targetMessageId: started.messageId,
+      }),
+      "GENERATION_ACTIVE",
+    );
+    expect(
+      await database.select().from(messages).where(eq(messages.conversationId, conversation.id)),
+    ).toHaveLength(messageCount + 2);
+    expect(
+      await conversationsService.getDraft(actor, {
+        conversationId: conversation.id,
+        kind: "conversation",
+      }),
+    ).toMatchObject(preservedDraft);
   });
 
   it("orders idempotency ahead of active conflicts and cancels idempotently", async () => {
@@ -707,6 +1140,7 @@ describe.sequential("generation lifecycle integration", () => {
     const cancellableRequest = "Respuesta cancelable sin checkpoint";
     const cancellablePartial = "Parcial visible y todavía no checkpointed";
     let cancellableGatewaySignal: AbortSignal | undefined;
+    const observedRequests: GenerationRequest[] = [];
     const ordinaryGateway = new FakeModelGateway([
       { event: { text: "Respuesta ", type: "content.delta" } },
       { event: { text: "simulada.", type: "content.delta" } },
@@ -720,6 +1154,7 @@ describe.sequential("generation lifecycle integration", () => {
     ]);
     const modelGateway: ModelGateway = {
       stream(request, signal) {
+        observedRequests.push(request);
         if (request.message.text !== cancellableRequest) {
           return ordinaryGateway.stream(request, signal);
         }
@@ -840,7 +1275,15 @@ describe.sequential("generation lifecycle integration", () => {
     const events = (await streamed.text())
       .trim()
       .split("\n")
-      .map((line) => JSON.parse(line) as { type: string });
+      .map(
+        (line) =>
+          JSON.parse(line) as {
+            messageId?: string;
+            revision?: number;
+            type: string;
+            userMessageId?: string;
+          },
+      );
     expect(events.map((event) => event.type)).toEqual([
       "response.started",
       "content.delta",
@@ -856,6 +1299,108 @@ describe.sequential("generation lifecycle integration", () => {
     expect(capturedLogs).not.toContain(systemPrompt.text);
     expect(capturedLogs).not.toContain(continueMessage.text);
     expect(capturedLogs).not.toContain("content.delta");
+
+    const originalStarted = events.find((event) => event.type === "response.started");
+    if (
+      originalStarted?.messageId === undefined ||
+      originalStarted.userMessageId === undefined ||
+      originalStarted.revision === undefined
+    ) {
+      throw new Error("Initial real HTTP stream did not expose canonical identifiers");
+    }
+    const editedResponse = await fetch(
+      `${baseUrl}/api/conversations/${prepared.conversation.id}/responses`,
+      {
+        body: JSON.stringify({
+          content: [{ text: "contenido editado por HTTP", type: "text" }],
+          modelTier: "balanced",
+          observedRevision: originalStarted.revision + 1,
+          parentMessageId: null,
+          source: "edit",
+          targetMessageId: originalStarted.userMessageId,
+        }),
+        headers: {
+          accept: "application/x-ndjson",
+          "content-type": "application/json",
+          "idempotency-key": randomUUID(),
+          origin: "http://localhost:5173",
+        },
+        method: "POST",
+      },
+    );
+    expect(editedResponse.status).toBe(200);
+    const editedEvents = (await editedResponse.text())
+      .trim()
+      .split("\n")
+      .map(
+        (line) =>
+          JSON.parse(line) as {
+            messageId?: string;
+            revision?: number;
+            type: string;
+            userMessageId?: string;
+          },
+      );
+    expect(editedEvents.map((event) => event.type)).toEqual([
+      "response.started",
+      "content.delta",
+      "content.delta",
+      "response.completed",
+    ]);
+    const editedStarted = editedEvents.find((event) => event.type === "response.started");
+    if (
+      editedStarted?.messageId === undefined ||
+      editedStarted.userMessageId === undefined ||
+      editedStarted.revision === undefined
+    ) {
+      throw new Error("Edit real HTTP stream did not expose canonical identifiers");
+    }
+    expect(editedStarted.userMessageId).not.toBe(originalStarted.userMessageId);
+
+    const retriedResponse = await fetch(
+      `${baseUrl}/api/conversations/${prepared.conversation.id}/responses`,
+      {
+        body: JSON.stringify({
+          modelTier: "balanced",
+          observedRevision: editedStarted.revision + 1,
+          parentMessageId: editedStarted.userMessageId,
+          source: "retry",
+          targetMessageId: editedStarted.messageId,
+        }),
+        headers: {
+          accept: "application/x-ndjson",
+          "content-type": "application/json",
+          "idempotency-key": randomUUID(),
+          origin: "http://localhost:5173",
+        },
+        method: "POST",
+      },
+    );
+    expect(retriedResponse.status).toBe(200);
+    const retriedEvents = (await retriedResponse.text())
+      .trim()
+      .split("\n")
+      .map(
+        (line) =>
+          JSON.parse(line) as {
+            type: string;
+            userMessageId?: string;
+          },
+      );
+    expect(retriedEvents.map((event) => event.type)).toEqual([
+      "response.started",
+      "content.delta",
+      "content.delta",
+      "response.completed",
+    ]);
+    expect(retriedEvents.find((event) => event.type === "response.started")).toMatchObject({
+      userMessageId: editedStarted.userMessageId,
+    });
+    expect(observedRequests.slice(0, 3)).toMatchObject([
+      { history: [], message: { text: "contenido-sensible-de-prueba" } },
+      { history: [], message: { text: "contenido editado por HTTP" } },
+      { history: [], message: { text: "contenido editado por HTTP" } },
+    ]);
 
     const oversizedConversation = await conversationsService.create(actor);
     const messageTooLarge = await fetch(

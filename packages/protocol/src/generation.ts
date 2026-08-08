@@ -94,9 +94,36 @@ export const CreateContinueResponseRequestSchema = Type.Object(
 );
 export type CreateContinueResponseRequest = Type.Static<typeof CreateContinueResponseRequestSchema>;
 
+export const CreateEditResponseRequestSchema = Type.Object(
+  {
+    source: Type.Literal("edit"),
+    targetMessageId: MessageIdSchema,
+    parentMessageId: Type.Union([MessageIdSchema, Type.Null()]),
+    content: UserMessageContentSchema,
+    modelTier: GenerationModelTierSchema,
+    observedRevision: ConversationRevisionSchema,
+  },
+  { additionalProperties: false },
+);
+export type CreateEditResponseRequest = Type.Static<typeof CreateEditResponseRequestSchema>;
+
+export const CreateRetryResponseRequestSchema = Type.Object(
+  {
+    source: Type.Literal("retry"),
+    targetMessageId: MessageIdSchema,
+    parentMessageId: MessageIdSchema,
+    modelTier: GenerationModelTierSchema,
+    observedRevision: ConversationRevisionSchema,
+  },
+  { additionalProperties: false },
+);
+export type CreateRetryResponseRequest = Type.Static<typeof CreateRetryResponseRequestSchema>;
+
 export const CreateResponseRequestSchema = Type.Union([
   CreateDraftResponseRequestSchema,
   CreateContinueResponseRequestSchema,
+  CreateEditResponseRequestSchema,
+  CreateRetryResponseRequestSchema,
 ]);
 export type CreateResponseRequest = Type.Static<typeof CreateResponseRequestSchema>;
 

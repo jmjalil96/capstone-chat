@@ -2,6 +2,7 @@ import {
   API_ERROR_CODES,
   ConversationSearchRequestSchema,
   SaveDraftRequestSchema,
+  UserMessageContentSchema,
 } from "@capstone/protocol";
 import type { TSchema } from "typebox";
 import Value from "typebox/value";
@@ -30,4 +31,10 @@ export function searchContentValidationIssue(query: string): ContentValidationIs
     return undefined;
   }
   return validationIssue(ConversationSearchRequestSchema, { query });
+}
+
+export function userMessageContentValidationIssue(
+  content: string,
+): ContentValidationIssue | undefined {
+  return validationIssue(UserMessageContentSchema, [{ type: "text", text: content }]);
 }

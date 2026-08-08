@@ -276,7 +276,7 @@ describe("conversation recovery lifecycle", () => {
     expect(document.querySelector(".generation-status")).toHaveTextContent(
       copy.conversations.generation.status.refreshing,
     );
-    expect(screen.getByText("Respuesta final", { exact: true })).toBeVisible();
+    expect(await screen.findByText("Respuesta final", { exact: true })).toBeVisible();
     expect(
       screen.getByRole("button", { name: copy.conversations.generation.actions.send }),
     ).toBeDisabled();

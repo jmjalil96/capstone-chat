@@ -45,6 +45,15 @@ interface ContextRow {
   readonly role: "assistant" | "user";
 }
 
+interface SelectedPathMessageRow {
+  readonly content: unknown;
+  readonly id: string;
+  readonly parentMessageId: string | null;
+  readonly role: "assistant" | "user";
+}
+
+type DatabaseTransaction = Parameters<Parameters<AppDatabase["transaction"]>[0]>[0];
+
 export interface StartedResponse {
   readonly conversationId: string;
   readonly generationId: string;
@@ -157,21 +166,27 @@ function toDurableState(row: {
 }
 
 export function createGenerationService(database: AppDatabase) {
-  async function reconstructContext(
-    transaction: Parameters<Parameters<AppDatabase["transaction"]>[0]>[0],
+  async function assertEmptyConversation(
+    transaction: DatabaseTransaction,
     conversationId: string,
-    selectedLeafMessageId: string | null,
+  ): Promise<void> {
+    const existing = await transaction
+      .select({ id: messages.id })
+      .from(messages)
+      .where(eq(messages.conversationId, conversationId))
+      .limit(1);
+    if (existing.length !== 0) {
+      throw new Error("Empty conversation has stored messages");
+    }
+  }
+
+  async function reconstructContextPrefix(
+    transaction: DatabaseTransaction,
+    conversationId: string,
+    endpointMessageId: string | null,
     maximumHistoryBytes: number,
   ): Promise<readonly GenerationContextMessage[]> {
-    if (selectedLeafMessageId === null) {
-      const existing = await transaction
-        .select({ id: messages.id })
-        .from(messages)
-        .where(eq(messages.conversationId, conversationId))
-        .limit(1);
-      if (existing.length !== 0) {
-        throw new Error("Empty conversation has stored messages");
-      }
+    if (endpointMessageId === null) {
       return [];
     }
 
@@ -182,7 +197,7 @@ export function createGenerationService(database: AppDatabase) {
             AS accumulated_bytes
         FROM messages AS message
         WHERE message.conversation_id = ${conversationId}
-          AND message.id = ${selectedLeafMessageId}
+          AND message.id = ${endpointMessageId}
         UNION ALL
         SELECT parent.id, parent.parent_message_id, parent.role, parent.content,
           selected_branch.depth + 1,
@@ -219,6 +234,43 @@ export function createGenerationService(database: AppDatabase) {
     return rows.map((row) => ({ role: row.role, text: textFromStoredContent(row.content) }));
   }
 
+  async function selectedPathMessage(
+    transaction: DatabaseTransaction,
+    conversationId: string,
+    selectedEndpointId: string | null,
+    targetMessageId: string,
+  ): Promise<SelectedPathMessageRow> {
+    if (selectedEndpointId === null) {
+      throw new ApplicationError(400, "BAD_REQUEST", generationCopy.invalidMessage);
+    }
+    const result = await transaction.execute(sql<SelectedPathMessageRow>`
+      WITH RECURSIVE selected_path AS (
+        SELECT message.id, message.parent_message_id, message.role, message.content
+        FROM messages AS message
+        WHERE message.conversation_id = ${conversationId}
+          AND message.id = ${selectedEndpointId}
+        UNION ALL
+        SELECT parent.id, parent.parent_message_id, parent.role, parent.content
+        FROM messages AS parent
+        INNER JOIN selected_path
+          ON parent.conversation_id = ${conversationId}
+          AND parent.id = selected_path.parent_message_id
+      )
+      SELECT selected.id AS "id",
+        selected.parent_message_id AS "parentMessageId",
+        selected.role AS "role",
+        selected.content AS "content"
+      FROM selected_path AS selected
+      WHERE selected.id = ${targetMessageId}
+      LIMIT 1
+    `);
+    const target = (result.rows as unknown as SelectedPathMessageRow[])[0];
+    if (target === undefined) {
+      throw new ApplicationError(400, "BAD_REQUEST", generationCopy.invalidMessage);
+    }
+    return target;
+  }
+
   function assertContextFits(
     history: readonly GenerationContextMessage[],
     messageText: string,
@@ -239,16 +291,20 @@ export function createGenerationService(database: AppDatabase) {
     idempotencyKey: string,
     input: CreateResponseRequest,
   ): Promise<StartedResponse> {
-    const messageText =
-      input.source === "draft"
+    const submittedMessageText =
+      input.source === "draft" || input.source === "edit"
         ? normalizeStoredText(input.content[0]?.text ?? "")
-        : continueMessage.text;
+        : input.source === "continue"
+          ? continueMessage.text
+          : null;
     const draftRevision = input.source === "draft" ? input.draftRevision : null;
-    if (!usefulText(messageText)) {
-      throw new ApplicationError(400, "BAD_REQUEST", generationCopy.invalidMessage);
-    }
-    if (Buffer.byteLength(messageText, "utf8") > generationTuning.messageBytes) {
-      throw new ApplicationError(413, "MESSAGE_TOO_LARGE", generationCopy.messageTooLarge);
+    if (submittedMessageText !== null) {
+      if (!usefulText(submittedMessageText)) {
+        throw new ApplicationError(400, "BAD_REQUEST", generationCopy.invalidMessage);
+      }
+      if (Buffer.byteLength(submittedMessageText, "utf8") > generationTuning.messageBytes) {
+        throw new ApplicationError(413, "MESSAGE_TOO_LARGE", generationCopy.messageTooLarge);
+      }
     }
 
     try {
@@ -294,49 +350,129 @@ export function createGenerationService(database: AppDatabase) {
         if (conversation.revision !== input.observedRevision) {
           return changed();
         }
-        if (conversation.selectedLeafMessageId !== input.parentMessageId) {
-          throw new ApplicationError(400, "BAD_REQUEST", generationCopy.invalidMessage);
-        }
 
         let consumedDraftId: string | undefined;
-        if (input.source === "draft") {
-          const draftRows = await transaction
-            .select()
-            .from(drafts)
-            .where(
-              and(
-                eq(drafts.workspaceId, actor.workspace.id),
-                eq(drafts.userId, actor.employee.id),
-                eq(drafts.conversationId, conversationId),
-              ),
-            )
-            .limit(1)
-            .for("update");
-          const draft = draftRows[0];
-          if (
-            draft === undefined ||
-            draft.revision !== draftRevision ||
-            draft.content !== messageText
-          ) {
-            return draftChanged();
+        let historyEndpointId: string | null;
+        let insertUserMessage = true;
+        let messageText: string;
+        let userMessageId: string | undefined;
+        let userParentMessageId: string | null;
+
+        switch (input.source) {
+          case "draft": {
+            if (conversation.selectedLeafMessageId !== input.parentMessageId) {
+              throw new ApplicationError(400, "BAD_REQUEST", generationCopy.invalidMessage);
+            }
+            messageText = submittedMessageText ?? "";
+            historyEndpointId = conversation.selectedLeafMessageId;
+            userParentMessageId = input.parentMessageId;
+            if (conversation.selectedLeafMessageId === null) {
+              await assertEmptyConversation(transaction, conversationId);
+            }
+            const draftRows = await transaction
+              .select()
+              .from(drafts)
+              .where(
+                and(
+                  eq(drafts.workspaceId, actor.workspace.id),
+                  eq(drafts.userId, actor.employee.id),
+                  eq(drafts.conversationId, conversationId),
+                ),
+              )
+              .limit(1)
+              .for("update");
+            const draft = draftRows[0];
+            if (
+              draft === undefined ||
+              draft.revision !== draftRevision ||
+              draft.content !== messageText
+            ) {
+              return draftChanged();
+            }
+            consumedDraftId = draft.id;
+            break;
           }
-          consumedDraftId = draft.id;
-        } else {
-          const parentGeneration = await transaction
-            .select({ id: generations.id })
-            .from(generations)
-            .where(
-              and(
-                eq(generations.conversationId, conversationId),
-                eq(generations.assistantMessageId, input.parentMessageId),
-                eq(generations.status, "completed"),
-                eq(generations.terminalReason, "length"),
-              ),
-            )
-            .limit(1);
-          if (parentGeneration.length !== 1) {
-            throw new ApplicationError(400, "BAD_REQUEST", generationCopy.invalidMessage);
+          case "continue": {
+            if (conversation.selectedLeafMessageId !== input.parentMessageId) {
+              throw new ApplicationError(400, "BAD_REQUEST", generationCopy.invalidMessage);
+            }
+            messageText = submittedMessageText ?? "";
+            historyEndpointId = conversation.selectedLeafMessageId;
+            userParentMessageId = input.parentMessageId;
+            const parentGeneration = await transaction
+              .select({ id: generations.id })
+              .from(generations)
+              .where(
+                and(
+                  eq(generations.conversationId, conversationId),
+                  eq(generations.assistantMessageId, input.parentMessageId),
+                  eq(generations.status, "completed"),
+                  eq(generations.terminalReason, "length"),
+                ),
+              )
+              .limit(1);
+            if (parentGeneration.length !== 1) {
+              throw new ApplicationError(400, "BAD_REQUEST", generationCopy.invalidMessage);
+            }
+            break;
           }
+          case "edit": {
+            const target = await selectedPathMessage(
+              transaction,
+              conversationId,
+              conversation.selectedLeafMessageId,
+              input.targetMessageId,
+            );
+            messageText = submittedMessageText ?? "";
+            if (
+              target.role !== "user" ||
+              target.parentMessageId !== input.parentMessageId ||
+              textFromStoredContent(target.content) === messageText
+            ) {
+              throw new ApplicationError(400, "BAD_REQUEST", generationCopy.invalidMessage);
+            }
+            historyEndpointId = target.parentMessageId;
+            userParentMessageId = target.parentMessageId;
+            break;
+          }
+          case "retry": {
+            const target = await selectedPathMessage(
+              transaction,
+              conversationId,
+              conversation.selectedLeafMessageId,
+              input.targetMessageId,
+            );
+            const parent = await selectedPathMessage(
+              transaction,
+              conversationId,
+              conversation.selectedLeafMessageId,
+              input.parentMessageId,
+            );
+            if (
+              target.role !== "assistant" ||
+              target.parentMessageId !== input.parentMessageId ||
+              parent.role !== "user"
+            ) {
+              throw new ApplicationError(400, "BAD_REQUEST", generationCopy.invalidMessage);
+            }
+            messageText = textFromStoredContent(parent.content);
+            historyEndpointId = parent.parentMessageId;
+            insertUserMessage = false;
+            userMessageId = parent.id;
+            userParentMessageId = parent.parentMessageId;
+            break;
+          }
+          default: {
+            const exhaustive: never = input;
+            throw new Error(`Unsupported response source: ${String(exhaustive)}`);
+          }
+        }
+
+        if (!usefulText(messageText)) {
+          throw new ApplicationError(400, "BAD_REQUEST", generationCopy.invalidMessage);
+        }
+        if (Buffer.byteLength(messageText, "utf8") > generationTuning.messageBytes) {
+          throw new ApplicationError(413, "MESSAGE_TOO_LARGE", generationCopy.messageTooLarge);
         }
 
         const fixedContextBytes =
@@ -344,41 +480,42 @@ export function createGenerationService(database: AppDatabase) {
         if (fixedContextBytes > generationTuning.maximumContextBytes) {
           throw new ApplicationError(413, "MESSAGE_TOO_LARGE", generationCopy.messageTooLarge);
         }
-        const history = await reconstructContext(
+        const history = await reconstructContextPrefix(
           transaction,
           conversationId,
-          conversation.selectedLeafMessageId,
+          historyEndpointId,
           generationTuning.maximumContextBytes - fixedContextBytes,
         );
-        const parent = history.at(-1);
-        if (
-          (conversation.selectedLeafMessageId === null && input.parentMessageId !== null) ||
-          (conversation.selectedLeafMessageId !== null && parent?.role !== "assistant")
-        ) {
+        if (historyEndpointId !== null && history.at(-1)?.role !== "assistant") {
           throw new ApplicationError(400, "BAD_REQUEST", generationCopy.invalidMessage);
         }
 
         assertContextFits(history, messageText);
 
-        const userRows = await transaction
-          .insert(messages)
-          .values({
-            content: toStoredContent(messageText),
-            conversationId,
-            parentMessageId: input.parentMessageId,
-            role: "user",
-          })
-          .returning();
-        const userMessage = userRows[0];
-        if (userMessage === undefined) {
-          throw new Error("User message insertion returned no row");
+        if (insertUserMessage) {
+          const userRows = await transaction
+            .insert(messages)
+            .values({
+              content: toStoredContent(messageText),
+              conversationId,
+              parentMessageId: userParentMessageId,
+              role: "user",
+            })
+            .returning({ id: messages.id });
+          userMessageId = userRows[0]?.id;
+          if (userMessageId === undefined) {
+            throw new Error("User message insertion returned no row");
+          }
+        }
+        if (userMessageId === undefined) {
+          throw new Error("Response source did not resolve a user message");
         }
         const assistantRows = await transaction
           .insert(messages)
           .values({
             content: toStoredContent(""),
             conversationId,
-            parentMessageId: userMessage.id,
+            parentMessageId: userMessageId,
             role: "assistant",
           })
           .returning();
@@ -412,7 +549,10 @@ export function createGenerationService(database: AppDatabase) {
           .set({
             revision: conversation.revision + 1,
             selectedLeafMessageId: assistantMessage.id,
-            title: conversation.title ?? createInitialTitle(messageText),
+            title:
+              input.source === "edit" || input.source === "retry"
+                ? conversation.title
+                : (conversation.title ?? createInitialTitle(messageText)),
             updatedAt: now,
           })
           .where(
@@ -447,7 +587,7 @@ export function createGenerationService(database: AppDatabase) {
             systemPrompt,
           },
           revision: updated.revision,
-          userMessageId: userMessage.id,
+          userMessageId,
         };
       });
     } catch (error: unknown) {

@@ -8,8 +8,10 @@ import {
   CancelGenerationResponseSchema,
   CONVERSATION_MESSAGE_PAGE_SIZE,
   ContentDeltaEventSchema,
+  CreateEditResponseRequestSchema,
   CreateResponseRequestHeadersSchema,
   CreateResponseRequestSchema,
+  CreateRetryResponseRequestSchema,
   GenerationUsageSchema,
   ResponseStateRequestSchema,
   ResponseStateResponseSchema,
@@ -141,6 +143,78 @@ describe("generation request contracts", () => {
     ).toBe(true);
   });
 
+  it("accepts edit with one bounded text block and an observed branch anchor", () => {
+    const request = {
+      source: "edit",
+      targetMessageId: userMessageId,
+      parentMessageId: null,
+      content: [{ type: "text", text: "Texto editado\r\ncon contexto" }],
+      modelTier: "balanced",
+      observedRevision: 9,
+    };
+    expect(Value.Check(CreateEditResponseRequestSchema, request)).toBe(true);
+    expect(Value.Check(CreateResponseRequestSchema, request)).toBe(true);
+    expect(
+      Value.Check(CreateEditResponseRequestSchema, {
+        ...request,
+        parentMessageId: assistantMessageId,
+      }),
+    ).toBe(true);
+  });
+
+  it.each([
+    "",
+    " \n\t ",
+    String.fromCharCode(0),
+    String.fromCharCode(0xd800),
+    "🙂".repeat(USER_MESSAGE_MAX_UTF8_BYTES / 4 + 1),
+  ])("rejects invalid edit text", (text) => {
+    expect(
+      Value.Check(CreateEditResponseRequestSchema, {
+        source: "edit",
+        targetMessageId: userMessageId,
+        parentMessageId: null,
+        content: [{ type: "text", text }],
+        modelTier: "balanced",
+        observedRevision: 9,
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects malformed edit and retry identifiers", () => {
+    expect(
+      Value.Check(CreateEditResponseRequestSchema, {
+        source: "edit",
+        targetMessageId: "user-message",
+        parentMessageId: null,
+        content: [{ type: "text", text: "Texto editado" }],
+        modelTier: "balanced",
+        observedRevision: 9,
+      }),
+    ).toBe(false);
+    expect(
+      Value.Check(CreateRetryResponseRequestSchema, {
+        source: "retry",
+        targetMessageId: assistantMessageId,
+        parentMessageId: "user-message",
+        modelTier: "balanced",
+        observedRevision: 9,
+      }),
+    ).toBe(false);
+  });
+
+  it("accepts retry without browser-owned message content", () => {
+    const request = {
+      source: "retry",
+      targetMessageId: assistantMessageId,
+      parentMessageId: userMessageId,
+      modelTier: "balanced",
+      observedRevision: 9,
+    };
+    expect(Value.Check(CreateRetryResponseRequestSchema, request)).toBe(true);
+    expect(Value.Check(CreateResponseRequestSchema, request)).toBe(true);
+  });
+
   it.each([
     {
       source: "continue",
@@ -162,6 +236,38 @@ describe("generation request contracts", () => {
       modelTier: "fast",
       observedRevision: 9,
       draftRevision: 3,
+    },
+    {
+      source: "edit",
+      targetMessageId: userMessageId,
+      parentMessageId: null,
+      content: [{ type: "text", text: "Texto" }],
+      modelTier: "fast",
+      observedRevision: 9,
+    },
+    {
+      source: "edit",
+      targetMessageId: userMessageId,
+      parentMessageId: null,
+      content: [{ type: "text", text: "Texto" }],
+      modelTier: "balanced",
+      observedRevision: 9,
+      draftRevision: 3,
+    },
+    {
+      source: "retry",
+      targetMessageId: assistantMessageId,
+      parentMessageId: null,
+      modelTier: "balanced",
+      observedRevision: 9,
+    },
+    {
+      source: "retry",
+      targetMessageId: assistantMessageId,
+      parentMessageId: userMessageId,
+      content: [{ type: "text", text: "Browser copy" }],
+      modelTier: "balanced",
+      observedRevision: 9,
     },
   ])("rejects unsupported request variants", (request) => {
     expect(Value.Check(CreateResponseRequestSchema, request)).toBe(false);

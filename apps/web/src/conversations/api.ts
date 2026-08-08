@@ -1,4 +1,7 @@
 import {
+  type AlternativeContextRequest,
+  type AlternativeContextResponse,
+  AlternativeContextResponseSchema,
   type ApiErrorCode,
   ApiErrorSchema,
   type ArchiveConversationRequest,
@@ -32,6 +35,9 @@ import {
   type SessionResponse,
   type UnarchiveConversationRequest,
   UnarchiveConversationResponseSchema,
+  type UndoConversationRequest,
+  type UndoConversationResponse,
+  UndoConversationResponseSchema,
 } from "@capstone/protocol";
 import type { TSchema } from "typebox";
 import Value from "typebox/value";
@@ -179,6 +185,20 @@ export const conversationQueryKeys = {
       conversationId,
       [...messageIds].sort(),
     ] as const,
+  alternativeContexts: (queryScope: ConversationQueryScope) =>
+    [...conversationQueryKeys.all(queryScope), "alternative-context"] as const,
+  alternativeContext: (
+    queryScope: ConversationQueryScope,
+    conversationId: string,
+    revision: number,
+    messageIds: readonly string[],
+  ) =>
+    [
+      ...conversationQueryKeys.alternativeContexts(queryScope),
+      conversationId,
+      revision,
+      [...messageIds].sort(),
+    ] as const,
 };
 
 export async function createConversation(
@@ -259,6 +279,51 @@ export async function selectConversationLeaf(
   const selection = await validatedResponse<ConversationSelectionResponse>(
     response,
     ConversationSelectionResponseSchema,
+  );
+  assertConversationId(conversationId, selection.conversation.id);
+  return selection;
+}
+
+export async function fetchAlternativeContexts(
+  conversationId: string,
+  input: AlternativeContextRequest,
+  signal?: AbortSignal,
+): Promise<AlternativeContextResponse> {
+  const response = await fetch(
+    `/api/conversations/${encodeURIComponent(conversationId)}/alternative-contexts`,
+    jsonRequest("POST", input, signal),
+  );
+  const contexts = await validatedResponse<AlternativeContextResponse>(
+    response,
+    AlternativeContextResponseSchema,
+  );
+  assertConversationId(conversationId, contexts.conversationId);
+  const requestedIds = new Set(input.messageIds);
+  const receivedIds = new Set<string>();
+  for (const context of contexts.contexts) {
+    if (!requestedIds.has(context.messageId) || receivedIds.has(context.messageId)) {
+      throw new Error("The alternative context did not match the requested messages.");
+    }
+    receivedIds.add(context.messageId);
+  }
+  if (receivedIds.size !== requestedIds.size) {
+    throw new Error("The alternative context did not match the requested messages.");
+  }
+  return contexts;
+}
+
+export async function undoConversation(
+  conversationId: string,
+  input: UndoConversationRequest,
+  signal?: AbortSignal,
+): Promise<UndoConversationResponse> {
+  const response = await fetch(
+    `/api/conversations/${encodeURIComponent(conversationId)}/undo`,
+    jsonRequest("POST", input, signal),
+  );
+  const selection = await validatedResponse<UndoConversationResponse>(
+    response,
+    UndoConversationResponseSchema,
   );
   assertConversationId(conversationId, selection.conversation.id);
   return selection;

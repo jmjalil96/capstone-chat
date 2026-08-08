@@ -1,4 +1,6 @@
 import {
+  AlternativeContextRequestSchema,
+  AlternativeContextResponseSchema,
   ApiErrorSchema,
   ArchiveConversationRequestSchema,
   ArchiveConversationResponseSchema,
@@ -19,6 +21,8 @@ import {
   SelectConversationLeafRequestSchema,
   UnarchiveConversationRequestSchema,
   UnarchiveConversationResponseSchema,
+  UndoConversationRequestSchema,
+  UndoConversationResponseSchema,
 } from "@capstone/protocol";
 import type { TypeBoxTypeProvider } from "@fastify/type-provider-typebox";
 import type { FastifyInstance } from "fastify";
@@ -203,6 +207,54 @@ export function registerConversationRoutes(
             actor,
             request.params.conversationId,
             request.body.leafMessageId,
+            request.body.observedRevision,
+          ),
+        );
+    },
+  );
+
+  server.post(
+    "/api/conversations/:conversationId/alternative-contexts",
+    {
+      bodyLimit: 4_096,
+      schema: {
+        body: AlternativeContextRequestSchema,
+        params: ConversationParamsSchema,
+        response: { 200: AlternativeContextResponseSchema, ...ordinaryErrorResponses },
+      },
+    },
+    async (request, reply) => {
+      const actor = await resolveMember(request, reply, dependencies.resolveActor);
+      return reply
+        .code(200)
+        .send(
+          await dependencies.conversations.getAlternativeContexts(
+            actor,
+            request.params.conversationId,
+            request.body.messageIds,
+          ),
+        );
+    },
+  );
+
+  server.post(
+    "/api/conversations/:conversationId/undo",
+    {
+      bodyLimit: 1_024,
+      schema: {
+        body: UndoConversationRequestSchema,
+        params: ConversationParamsSchema,
+        response: { 200: UndoConversationResponseSchema, ...ordinaryErrorResponses },
+      },
+    },
+    async (request, reply) => {
+      const actor = await resolveMember(request, reply, dependencies.resolveActor);
+      return reply
+        .code(200)
+        .send(
+          await dependencies.conversations.undo(
+            actor,
+            request.params.conversationId,
             request.body.observedRevision,
           ),
         );

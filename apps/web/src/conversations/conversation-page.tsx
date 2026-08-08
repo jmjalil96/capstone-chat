@@ -1,7 +1,10 @@
 import {
   type ConversationDetailResponse,
+  type ConversationMessage,
+  type ConversationSelectionResponse,
   type ConversationSummary,
   ConversationTitleSchema,
+  MessageIdSchema,
   type OpaqueCursor,
   type ResponseState,
 } from "@capstone/protocol";
@@ -11,11 +14,21 @@ import {
   useMutation,
   useQueryClient,
 } from "@tanstack/react-query";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useLocation, useNavigate, useParams } from "react-router";
 import Value from "typebox/value";
 
 import { copy } from "../copy";
+import { useConversationAlternativeContexts } from "./alternative-contexts";
 import {
   archiveConversation,
   ConversationApiError,
@@ -23,19 +36,38 @@ import {
   deleteConversation,
   fetchConversation,
   renameConversation,
+  selectConversationLeaf,
   unarchiveConversation,
+  undoConversation,
 } from "./api";
 import { useOptionalChatRuntime, useOptionalConversationRuntime } from "./chat-runtime-provider";
 import { orderedBranchMessages } from "./collection";
+import { SEARCH_MATCH_FADE_MS, SEARCH_MATCH_HOLD_MS } from "./config";
+import { useConversationScroll } from "./conversation-scroll";
 import { DraftEditor, generationErrorCodeCopy, type RemoteResponseOutcome } from "./draft-editor";
 import { useDraftMemory } from "./draft-memory";
 import { Icon } from "./icons";
+import { CodeCopyAction, MessageActions } from "./message-actions";
+import type { MessageContentProps } from "./message-content";
 import {
   type ConversationRequestCapture,
   useConversationRequestLifetime,
 } from "./request-lifetime";
 import { useConversationResponseStates } from "./response-state";
 import { useRouteHeading } from "./route-heading";
+
+const MessageContent = lazy(() =>
+  import("./message-content").then(({ MessageContent: component }) => ({ default: component })),
+);
+
+interface DeferredMessageContentProps extends MessageContentProps {
+  readonly onReady: () => void;
+}
+
+function DeferredMessageContent({ onReady, ...props }: DeferredMessageContentProps) {
+  useLayoutEffect(onReady, [onReady]);
+  return <MessageContent {...props} />;
+}
 
 function openDialog(dialog: HTMLDialogElement | null): void {
   if (!dialog) {
@@ -111,16 +143,53 @@ function remoteResponseOutcome(
   return "completed";
 }
 
-interface PaginationScrollAnchor {
-  readonly conversationId: string;
-  readonly height: number;
-  readonly pageCount: number;
-  readonly top: number;
-}
-
 interface ComposerFocusIntent {
   readonly conversationId: string;
   readonly request: number;
+}
+
+interface SearchPositionIntent {
+  readonly attempt: number;
+  readonly conversationId: string;
+  readonly messageId: string;
+}
+
+type SearchHighlightPhase = "hold" | "fade";
+
+function matchedMessageIdFromRouteState(state: unknown): string | undefined {
+  if (
+    typeof state !== "object" ||
+    state === null ||
+    !("matchedMessageId" in state) ||
+    !Value.Check(MessageIdSchema, state.matchedMessageId)
+  ) {
+    return undefined;
+  }
+  return state.matchedMessageId;
+}
+
+function renderCodeCopyAction(source: string) {
+  return <CodeCopyAction source={source} />;
+}
+
+export function branchPresentationMessages(
+  canonicalMessages: readonly ConversationMessage[],
+  runtimeSnapshot: ReturnType<typeof useOptionalConversationRuntime>,
+): ConversationMessage[] {
+  if (
+    !runtimeSnapshot?.messageId ||
+    (runtimeSnapshot.requestSource !== "edit" && runtimeSnapshot.requestSource !== "retry") ||
+    canonicalMessages.some((message) => message.id === runtimeSnapshot.messageId)
+  ) {
+    return [...canonicalMessages];
+  }
+
+  const anchor = runtimeSnapshot.branchAnchorMessageId;
+  if (anchor === null) {
+    return [];
+  }
+  const anchorIndex = canonicalMessages.findIndex((message) => message.id === anchor);
+  return anchorIndex < 0 ? [] : canonicalMessages.slice(0, anchorIndex + 1);
 }
 
 export function ConversationPage() {
@@ -132,6 +201,7 @@ export function ConversationPage() {
     location.state !== null &&
     "focusComposer" in location.state &&
     location.state.focusComposer === true;
+  const matchedRouteMessageId = matchedMessageIdFromRouteState(location.state);
   const queryClient = useQueryClient();
   const draftMemory = useDraftMemory();
   const runtime = useOptionalChatRuntime();
@@ -140,22 +210,36 @@ export function ConversationPage() {
   const requestLifetime = useConversationRequestLifetime(`conversation:${conversationId}`);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const alertRef = useRef<HTMLParagraphElement>(null);
-  const messageScrollRef = useRef<HTMLDivElement>(null);
-  const previousScrollRef = useRef<PaginationScrollAnchor | undefined>(undefined);
-  const initializedScrollRef = useRef(false);
-  const positionedCanonicalRequestRef = useRef(0);
-  const scrollConversationIdRef = useRef(conversationId);
-  const positionedSentUserIdRef = useRef<string | undefined>(undefined);
+  const mutationErrorFocusRef = useRef(true);
+  const structuralFocusRestoreRef = useRef<HTMLButtonElement | undefined>(undefined);
+  const currentConversationIdRef = useRef(conversationId);
+  const consumedSearchLocationRef = useRef<string | undefined>(undefined);
+  const handledSearchAttemptRef = useRef<string | undefined>(undefined);
   const focusedConversationRef = useRef<string | undefined>(undefined);
   const [mutationError, setMutationError] = useState<string>();
+  const [mutationStatus, setMutationStatus] = useState<string>();
+  const [renderedConversationId, setRenderedConversationId] = useState<string>();
+  const [structuralPendingMessageId, setStructuralPendingMessageId] = useState<string>();
   const [canonicalRecoveryFailed, setCanonicalRecoveryFailed] = useState(false);
   const [canonicalRecoveryPending, setCanonicalRecoveryPending] = useState(false);
   const [canonicalPositionRequest, setCanonicalPositionRequest] = useState(0);
+  const [searchHighlight, setSearchHighlight] = useState<{
+    readonly messageId: string;
+    readonly phase: SearchHighlightPhase;
+  }>();
+  const [searchPositionError, setSearchPositionError] = useState(false);
+  const [searchPositionPending, setSearchPositionPending] = useState(false);
+  const [searchPositionStatus, setSearchPositionStatus] = useState<string>();
+  const [searchPositionIntent, setSearchPositionIntent] = useState<SearchPositionIntent>();
   const [composerFocusIntent, setComposerFocusIntent] = useState<ComposerFocusIntent>({
     conversationId,
     request: 0,
   });
   const [lifecycleRefreshPending, setLifecycleRefreshPending] = useState(false);
+  const reportMutationError = useCallback((message: string, moveFocus = true) => {
+    mutationErrorFocusRef.current = moveFocus;
+    setMutationError(message);
+  }, []);
   const detail = useInfiniteQuery({
     queryKey: conversationQueryKeys.detail(queryScope, conversationId),
     queryFn: ({ pageParam, signal }) => fetchConversation(conversationId, pageParam, signal),
@@ -165,23 +249,25 @@ export function ConversationPage() {
   });
   const firstPage = detail.data?.pages[0];
   const conversation = firstPage?.conversation;
-  const messages = orderedBranchMessages(detail.data?.pages ?? []);
+  const canonicalMessages = orderedBranchMessages(detail.data?.pages ?? []);
+  const messages = branchPresentationMessages(canonicalMessages, runtimeSnapshot);
   const pageCount = detail.data?.pages.length ?? 0;
-  const canonicalMessageIds = new Set(messages.map((message) => message.id));
+  const canonicalMessageIds = new Set(canonicalMessages.map((message) => message.id));
+  const presentedCanonicalIds = new Set(messages.map((message) => message.id));
   const runtimeUserId = runtimeSnapshot?.userMessageId;
   const presentsRuntimeUser = Boolean(
     runtimeUserId &&
       runtimeSnapshot?.committedUserText !== undefined &&
-      !canonicalMessageIds.has(runtimeUserId),
+      !presentedCanonicalIds.has(runtimeUserId),
   );
   const presentsRuntimeAssistant = Boolean(
     runtimeSnapshot?.messageId &&
       !canonicalMessageIds.has(runtimeSnapshot.messageId) &&
       runtimeUserId &&
-      (canonicalMessageIds.has(runtimeUserId) || presentsRuntimeUser),
+      (presentedCanonicalIds.has(runtimeUserId) || presentsRuntimeUser),
   );
   const presentedRuntimeUserId =
-    runtimeUserId && (canonicalMessageIds.has(runtimeUserId) || presentsRuntimeUser)
+    runtimeUserId && (presentedCanonicalIds.has(runtimeUserId) || presentsRuntimeUser)
       ? runtimeUserId
       : undefined;
   const presentedMessageCount =
@@ -202,6 +288,11 @@ export function ConversationPage() {
     return pages;
   }, [detail.data?.pages, runtimeSnapshot?.messageId]);
   const responseStates = useConversationResponseStates(conversationId, assistantMessageIdPages);
+  const alternativeContexts = useConversationAlternativeContexts(
+    conversationId,
+    conversation?.revision,
+    detail.data?.pages ?? [],
+  );
   const remoteActive = [...responseStates.byMessageId.values()].find(
     (state) => state.status === "active",
   );
@@ -237,6 +328,11 @@ export function ConversationPage() {
             ? copy.conversations.generation.errors.responseState
             : undefined;
   const hasPresentedMessages = presentedMessageCount > 0;
+  const messageContentReady = !hasPresentedMessages || renderedConversationId === conversationId;
+  const markMessageContentReady = useCallback(
+    () => setRenderedConversationId(conversationId),
+    [conversationId],
+  );
   const responseRevisionMismatch =
     Boolean(conversation) &&
     responseStates.revisions.some((revision) => revision !== conversation?.revision);
@@ -253,6 +349,27 @@ export function ConversationPage() {
     ? responseStates.byMessageId.get(firstPage.selectedLeafId)
     : undefined;
   const selectedRemoteOutcome = remoteResponseOutcome(selectedResponseState);
+  const searchRequestLifetime = useConversationRequestLifetime(
+    `search-position:${conversationId}:${conversation?.revision ?? "loading"}:${searchPositionIntent?.attempt ?? 0}`,
+  );
+  const streamPublication = useMemo(
+    () =>
+      runtimeSnapshot?.messageId
+        ? { messageId: runtimeSnapshot.messageId, text: runtimeSnapshot.text }
+        : undefined,
+    [runtimeSnapshot?.messageId, runtimeSnapshot?.text],
+  );
+  const conversationScroll = useConversationScroll({
+    contentReady: messageContentReady,
+    conversationId,
+    isFetchingNextPage: detail.isFetchingNextPage || searchPositionPending,
+    pageCount,
+    positionRequest: canonicalPositionRequest,
+    presentedMessageCount,
+    sentUserMessageId: presentedRuntimeUserId,
+    streamActive: runtimeActive,
+    streamPublication,
+  });
   const branchCursorChanged =
     detail.isFetchNextPageError &&
     detail.error instanceof ConversationApiError &&
@@ -268,43 +385,52 @@ export function ConversationPage() {
     : displayTitle;
   useRouteHeading(documentTitle, headingRef, false);
 
-  const recoverCanonical = useCallback(async () => {
-    const capture = requestLifetime.capture();
-    setCanonicalRecoveryPending(true);
-    try {
-      const canonical = await fetchConversation(conversationId, undefined, capture.signal);
-      if (!capture.isCurrent()) {
+  const recoverCanonical = useCallback(
+    async (moveErrorFocus = true) => {
+      const capture = requestLifetime.capture();
+      setCanonicalRecoveryPending(true);
+      try {
+        const canonical = await fetchConversation(conversationId, undefined, capture.signal);
+        if (!capture.isCurrent()) {
+          return false;
+        }
+        queryClient.setQueryData<InfiniteData<ConversationDetailResponse>>(
+          conversationQueryKeys.detail(queryScope, conversationId),
+          { pages: [canonical], pageParams: [undefined] },
+        );
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: conversationQueryKeys.histories(queryScope) }),
+          queryClient.invalidateQueries({ queryKey: conversationQueryKeys.searches(queryScope) }),
+          queryClient.invalidateQueries({
+            queryKey: conversationQueryKeys.alternativeContexts(queryScope),
+          }),
+          queryClient.invalidateQueries({
+            queryKey: conversationQueryKeys.responseStates(queryScope),
+          }),
+        ]);
+        if (!capture.isCurrent()) {
+          return false;
+        }
+        setCanonicalRecoveryFailed(false);
+        setCanonicalPositionRequest((current) => current + 1);
+        reportMutationError(copy.conversations.common.changed, moveErrorFocus);
+        return true;
+      } catch {
+        if (!capture.isCurrent()) {
+          return false;
+        }
+        setCanonicalRecoveryFailed(true);
+        reportMutationError(copy.conversations.common.genericError, moveErrorFocus);
         return false;
+      } finally {
+        if (capture.isCurrent()) {
+          setCanonicalRecoveryPending(false);
+        }
+        capture.release();
       }
-      queryClient.setQueryData<InfiniteData<ConversationDetailResponse>>(
-        conversationQueryKeys.detail(queryScope, conversationId),
-        { pages: [canonical], pageParams: [undefined] },
-      );
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: conversationQueryKeys.histories(queryScope) }),
-        queryClient.invalidateQueries({ queryKey: conversationQueryKeys.searches(queryScope) }),
-      ]);
-      if (!capture.isCurrent()) {
-        return false;
-      }
-      setCanonicalRecoveryFailed(false);
-      setCanonicalPositionRequest((current) => current + 1);
-      setMutationError(copy.conversations.common.changed);
-      return true;
-    } catch {
-      if (!capture.isCurrent()) {
-        return false;
-      }
-      setCanonicalRecoveryFailed(true);
-      setMutationError(copy.conversations.common.genericError);
-      return false;
-    } finally {
-      if (capture.isCurrent()) {
-        setCanonicalRecoveryPending(false);
-      }
-      capture.release();
-    }
-  }, [conversationId, queryClient, queryScope, requestLifetime]);
+    },
+    [conversationId, queryClient, queryScope, reportMutationError, requestLifetime],
+  );
 
   const refreshGenerationState = useCallback(async () => {
     const capture = requestLifetime.capture();
@@ -337,71 +463,36 @@ export function ConversationPage() {
   ]);
 
   useLayoutEffect(() => {
-    if (scrollConversationIdRef.current !== conversationId) {
-      scrollConversationIdRef.current = conversationId;
-      initializedScrollRef.current = false;
-      previousScrollRef.current = undefined;
-      positionedSentUserIdRef.current = undefined;
+    if (currentConversationIdRef.current !== conversationId) {
+      currentConversationIdRef.current = conversationId;
       setCanonicalRecoveryFailed(false);
       setCanonicalRecoveryPending(false);
       setComposerFocusIntent({ conversationId, request: 0 });
       setLifecycleRefreshPending(false);
       setMutationError(undefined);
-    }
-  }, [conversationId]);
-
-  useLayoutEffect(() => {
-    const container = messageScrollRef.current;
-    if (!container || presentedMessageCount === 0) {
-      return;
-    }
-    const canonicalPositionRequested =
-      positionedCanonicalRequestRef.current !== canonicalPositionRequest;
-    if (canonicalPositionRequested) {
-      positionedCanonicalRequestRef.current = canonicalPositionRequest;
-    }
-
-    if (presentedRuntimeUserId && positionedSentUserIdRef.current !== presentedRuntimeUserId) {
-      const sentUser = [...container.querySelectorAll<HTMLElement>("[data-message-id]")].find(
-        (element) => element.dataset.messageId === presentedRuntimeUserId,
-      );
-      if (sentUser) {
-        previousScrollRef.current = undefined;
-        sentUser.scrollIntoView?.({ behavior: "auto", block: "start" });
-        positionedSentUserIdRef.current = presentedRuntimeUserId;
-        initializedScrollRef.current = true;
-        return;
+      setMutationStatus(undefined);
+      setSearchHighlight(undefined);
+      setSearchPositionError(false);
+      setSearchPositionPending(false);
+      setSearchPositionStatus(undefined);
+      setStructuralPendingMessageId(undefined);
+      if (searchPositionIntent?.conversationId !== conversationId) {
+        setSearchPositionIntent(undefined);
       }
     }
+  }, [conversationId, searchPositionIntent?.conversationId]);
 
-    if (canonicalPositionRequested) {
-      previousScrollRef.current = undefined;
-      container.scrollTop = container.scrollHeight;
-      initializedScrollRef.current = true;
+  useLayoutEffect(() => {
+    if (!matchedRouteMessageId || consumedSearchLocationRef.current === location.key) {
       return;
     }
-
-    const previous = previousScrollRef.current;
-    if (previous && previous.conversationId !== conversationId) {
-      previousScrollRef.current = undefined;
-    } else if (previous && pageCount > previous.pageCount) {
-      container.scrollTop = container.scrollHeight - previous.height + previous.top;
-      previousScrollRef.current = undefined;
-      initializedScrollRef.current = true;
-    } else if (previous && !detail.isFetchingNextPage) {
-      previousScrollRef.current = undefined;
-    } else if (!initializedScrollRef.current) {
-      container.scrollTop = container.scrollHeight;
-      initializedScrollRef.current = true;
-    }
-  }, [
-    conversationId,
-    canonicalPositionRequest,
-    detail.isFetchingNextPage,
-    pageCount,
-    presentedMessageCount,
-    presentedRuntimeUserId,
-  ]);
+    consumedSearchLocationRef.current = location.key;
+    handledSearchAttemptRef.current = undefined;
+    setSearchPositionIntent({ attempt: 0, conversationId, messageId: matchedRouteMessageId });
+    setSearchPositionError(false);
+    setSearchPositionStatus(undefined);
+    navigate(location.pathname, { replace: true, state: null });
+  }, [conversationId, location.key, location.pathname, matchedRouteMessageId, navigate]);
 
   useEffect(() => {
     if (conversation && focusedConversationRef.current !== conversation.id) {
@@ -479,20 +570,166 @@ export function ConversationPage() {
   }, [fatalDetailError]);
 
   useEffect(() => {
-    if (mutationError) {
+    if (mutationError && mutationErrorFocusRef.current) {
       alertRef.current?.focus();
     }
   }, [mutationError]);
+
+  useLayoutEffect(() => {
+    if (structuralPendingMessageId || !structuralFocusRestoreRef.current) {
+      return;
+    }
+    const trigger = structuralFocusRestoreRef.current;
+    const focusKey = trigger.dataset.structuralFocusKey;
+    const currentTrigger = focusKey
+      ? [...document.querySelectorAll<HTMLButtonElement>("[data-structural-focus-key]")].find(
+          (candidate) => candidate.dataset.structuralFocusKey === focusKey,
+        )
+      : undefined;
+    if (trigger.isConnected && !trigger.disabled) {
+      structuralFocusRestoreRef.current = undefined;
+      trigger.focus();
+    } else if (currentTrigger && !currentTrigger.disabled) {
+      structuralFocusRestoreRef.current = undefined;
+      currentTrigger.focus();
+    } else if (alternativeContexts.isPending || composerRefreshing) {
+      return;
+    } else {
+      structuralFocusRestoreRef.current = undefined;
+      headingRef.current?.focus();
+    }
+  }, [alternativeContexts.isPending, composerRefreshing, structuralPendingMessageId]);
 
   useEffect(() => {
     if (!branchCursorChanged) {
       return;
     }
-
-    previousScrollRef.current = undefined;
-    initializedScrollRef.current = false;
     void recoverCanonical();
   }, [branchCursorChanged, recoverCanonical]);
+
+  useEffect(() => {
+    if (!alternativeContexts.revisionMismatch || canonicalRecoveryPending) {
+      return;
+    }
+    void recoverCanonical();
+  }, [alternativeContexts.revisionMismatch, canonicalRecoveryPending, recoverCanonical]);
+
+  useEffect(() => {
+    const intent = searchPositionIntent;
+    if (!intent || intent.conversationId !== conversationId || !conversation || !firstPage) {
+      return;
+    }
+    const attemptKey = `${intent.conversationId}:${intent.messageId}:${intent.attempt}:${conversation.revision}`;
+    if (handledSearchAttemptRef.current === attemptKey) {
+      return;
+    }
+    handledSearchAttemptRef.current = attemptKey;
+    const capture = searchRequestLifetime.capture();
+    setSearchPositionPending(true);
+    setSearchPositionError(false);
+    setSearchPositionStatus(undefined);
+
+    void (async () => {
+      try {
+        const detailKey = conversationQueryKeys.detail(queryScope, conversationId);
+        const canonical =
+          queryClient.getQueryData<InfiniteData<ConversationDetailResponse>>(detailKey);
+        let targetPresent = canonical?.pages.some((page) =>
+          page.messages.some((message) => message.id === intent.messageId),
+        );
+        let cursor = canonical?.pages.at(-1)?.nextCursor ?? firstPage.nextCursor;
+
+        while (!targetPresent && cursor) {
+          const page = await fetchConversation(conversationId, cursor, capture.signal);
+          if (!capture.isCurrent() || page.conversation.revision !== conversation.revision) {
+            return;
+          }
+          queryClient.setQueryData<InfiniteData<ConversationDetailResponse>>(
+            detailKey,
+            (current) => {
+              if (
+                !current ||
+                current.pages[0]?.conversation.revision !== conversation.revision ||
+                current.pageParams.includes(cursor)
+              ) {
+                return current;
+              }
+              return {
+                pages: [...current.pages, page],
+                pageParams: [...current.pageParams, cursor],
+              };
+            },
+          );
+          targetPresent = page.messages.some((message) => message.id === intent.messageId);
+          cursor = page.nextCursor;
+        }
+
+        if (!capture.isCurrent()) {
+          return;
+        }
+        if (!targetPresent) {
+          setSearchPositionError(true);
+          return;
+        }
+        setSearchHighlight({ messageId: intent.messageId, phase: "hold" });
+        setSearchPositionStatus(copy.conversations.search.located);
+        setSearchPositionIntent(undefined);
+      } catch (error) {
+        if (!capture.isCurrent()) {
+          return;
+        }
+        if (error instanceof ConversationApiError && error.code === "CONVERSATION_CHANGED") {
+          if (!(await recoverCanonical(false)) && capture.isCurrent()) {
+            setSearchPositionError(true);
+          }
+        } else {
+          setSearchPositionError(true);
+        }
+      } finally {
+        if (capture.isCurrent()) {
+          setSearchPositionPending(false);
+        }
+        capture.release();
+      }
+    })();
+  }, [
+    conversation,
+    conversationId,
+    firstPage,
+    queryClient,
+    queryScope,
+    recoverCanonical,
+    searchPositionIntent,
+    searchRequestLifetime,
+  ]);
+
+  useLayoutEffect(() => {
+    if (messageContentReady && searchHighlight?.phase === "hold") {
+      conversationScroll.positionMessage(searchHighlight.messageId);
+    }
+  }, [conversationScroll.positionMessage, messageContentReady, searchHighlight]);
+
+  useEffect(() => {
+    if (!searchHighlight) {
+      return;
+    }
+    if (searchHighlight.phase === "hold") {
+      const timeout = window.setTimeout(
+        () =>
+          setSearchHighlight((current) =>
+            current?.messageId === searchHighlight.messageId
+              ? conversationScroll.reducedMotion
+                ? undefined
+                : { ...current, phase: "fade" }
+              : current,
+          ),
+        SEARCH_MATCH_HOLD_MS,
+      );
+      return () => window.clearTimeout(timeout);
+    }
+    const timeout = window.setTimeout(() => setSearchHighlight(undefined), SEARCH_MATCH_FADE_MS);
+    return () => window.clearTimeout(timeout);
+  }, [conversationScroll.reducedMotion, searchHighlight]);
 
   function adoptCanonical(summary: ConversationSummary) {
     queryClient.setQueryData<InfiniteData<ConversationDetailResponse>>(
@@ -518,6 +755,196 @@ export function ConversationPage() {
     await recoverCanonical();
   }
 
+  function focusComposerAfterGeneration(): void {
+    if (!conversation || currentConversationIdRef.current !== conversation.id) {
+      return;
+    }
+    setComposerFocusIntent((current) => ({
+      conversationId: conversation.id,
+      request: current.conversationId === conversation.id ? current.request + 1 : 1,
+    }));
+  }
+
+  async function adoptSelection(
+    selection: ConversationSelectionResponse,
+    capture: ConversationRequestCapture,
+    status: string,
+  ): Promise<void> {
+    const canonical = await fetchConversation(selection.conversation.id, undefined, capture.signal);
+    if (!capture.isCurrent()) {
+      return;
+    }
+    queryClient.setQueryData<InfiniteData<ConversationDetailResponse>>(
+      conversationQueryKeys.detail(queryScope, selection.conversation.id),
+      { pages: [canonical], pageParams: [undefined] },
+    );
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: conversationQueryKeys.histories(queryScope) }),
+      queryClient.invalidateQueries({ queryKey: conversationQueryKeys.searches(queryScope) }),
+      queryClient.invalidateQueries({
+        queryKey: conversationQueryKeys.alternativeContexts(queryScope),
+      }),
+      queryClient.invalidateQueries({ queryKey: conversationQueryKeys.responseStates(queryScope) }),
+    ]);
+    if (!capture.isCurrent()) {
+      return;
+    }
+    setCanonicalPositionRequest((current) => current + 1);
+    setMutationError(undefined);
+    setMutationStatus(status);
+    headingRef.current?.focus();
+  }
+
+  async function selectAlternative(
+    messageId: string,
+    leafMessageId: string,
+    trigger: HTMLButtonElement,
+  ): Promise<void> {
+    if (
+      !conversation ||
+      generationActive ||
+      composerIncoherent ||
+      alternativeContexts.revisionMismatch ||
+      structuralPendingMessageId
+    ) {
+      return;
+    }
+    const capture = requestLifetime.capture();
+    setStructuralPendingMessageId(messageId);
+    setMutationError(undefined);
+    setMutationStatus(undefined);
+    try {
+      const selection = await selectConversationLeaf(
+        conversation.id,
+        { leafMessageId, observedRevision: conversation.revision },
+        capture.signal,
+      );
+      await adoptSelection(selection, capture, copy.conversations.messages.branchSelected);
+    } catch (error) {
+      if (capture.isCurrent()) {
+        if (error instanceof ConversationApiError && error.code === "CONVERSATION_CHANGED") {
+          structuralFocusRestoreRef.current = trigger;
+          await recoverCanonical(false);
+        } else {
+          structuralFocusRestoreRef.current = trigger;
+          reportMutationError(copy.conversations.messages.actionFailed, false);
+        }
+      }
+    } finally {
+      if (capture.isCurrent()) {
+        setStructuralPendingMessageId(undefined);
+      }
+      capture.release();
+    }
+  }
+
+  async function undoSelectedTurn(messageId: string, trigger: HTMLButtonElement): Promise<void> {
+    if (!conversation || generationActive || composerIncoherent || structuralPendingMessageId) {
+      return;
+    }
+    const capture = requestLifetime.capture();
+    setStructuralPendingMessageId(messageId);
+    setMutationError(undefined);
+    setMutationStatus(undefined);
+    try {
+      const selection = await undoConversation(
+        conversation.id,
+        { observedRevision: conversation.revision },
+        capture.signal,
+      );
+      await adoptSelection(selection, capture, copy.conversations.messages.turnUndone);
+    } catch (error) {
+      if (capture.isCurrent()) {
+        if (error instanceof ConversationApiError && error.code === "CONVERSATION_CHANGED") {
+          structuralFocusRestoreRef.current = trigger;
+          await recoverCanonical(false);
+        } else {
+          structuralFocusRestoreRef.current = trigger;
+          reportMutationError(copy.conversations.messages.actionFailed, false);
+        }
+      }
+    } finally {
+      if (capture.isCurrent()) {
+        setStructuralPendingMessageId(undefined);
+      }
+      capture.release();
+    }
+  }
+
+  async function editMessage(
+    message: ConversationMessage,
+    content: string,
+    onCommitted: () => void,
+  ): Promise<void> {
+    if (
+      !runtime ||
+      !conversation ||
+      message.role !== "user" ||
+      generationActive ||
+      conversation.isArchived ||
+      composerIncoherent
+    ) {
+      throw new Error("The edit action is not currently available.");
+    }
+    try {
+      await runtime.startResponse(
+        conversation.id,
+        {
+          source: "edit",
+          targetMessageId: message.id,
+          parentMessageId: message.parentMessageId,
+          content: [{ type: "text", text: content }],
+          modelTier: "balanced",
+          observedRevision: conversation.revision,
+        },
+        {
+          onStarted: () => {
+            if (currentConversationIdRef.current === conversation.id) {
+              onCommitted();
+              focusComposerAfterGeneration();
+            }
+          },
+        },
+      );
+    } catch (error) {
+      if (error instanceof ConversationApiError && error.code === "CONVERSATION_CHANGED") {
+        await recoverCanonical();
+      }
+      throw error;
+    }
+  }
+
+  function retryResponse(message: ConversationMessage): void {
+    if (
+      !runtime ||
+      !conversation ||
+      message.role !== "assistant" ||
+      !message.parentMessageId ||
+      generationActive ||
+      conversation.isArchived ||
+      composerIncoherent
+    ) {
+      return;
+    }
+    void runtime
+      .startResponse(
+        conversation.id,
+        {
+          source: "retry",
+          targetMessageId: message.id,
+          parentMessageId: message.parentMessageId,
+          modelTier: "balanced",
+          observedRevision: conversation.revision,
+        },
+        { onStarted: focusComposerAfterGeneration },
+      )
+      .catch((error: unknown) => {
+        if (error instanceof ConversationApiError && error.code === "CONVERSATION_CHANGED") {
+          void recoverCanonical();
+        }
+      });
+  }
+
   function continueResponse(messageId: string): void {
     if (
       !runtime ||
@@ -537,17 +964,7 @@ export function ConversationPage() {
           modelTier: "balanced",
           observedRevision: conversation.revision,
         },
-        {
-          onStarted: () => {
-            if (scrollConversationIdRef.current !== conversation.id) {
-              return;
-            }
-            setComposerFocusIntent((current) => ({
-              conversationId: conversation.id,
-              request: current.conversationId === conversation.id ? current.request + 1 : 1,
-            }));
-          },
-        },
+        { onStarted: focusComposerAfterGeneration },
       )
       .catch(() => undefined);
   }
@@ -594,11 +1011,16 @@ export function ConversationPage() {
         <ConversationActions
           conversation={conversation}
           onCanonical={adoptCanonical}
-          onError={setMutationError}
+          onError={reportMutationError}
           onStale={handleStale}
         />
       </header>
-      {mutationError || generationError || runtimeRecoveryActionRequired ? (
+      {mutationError ||
+      generationError ||
+      runtimeRecoveryActionRequired ||
+      alternativeContexts.isError ||
+      searchPositionError ||
+      mutationStatus ? (
         <div className="conversation-alert">
           {mutationError ? (
             <p className="inline-alert" ref={alertRef} role="alert" tabIndex={-1}>
@@ -643,7 +1065,56 @@ export function ConversationPage() {
               </button>
             </p>
           ) : null}
+          {alternativeContexts.isError ? (
+            <p className="inline-alert" role="alert">
+              <span>{copy.conversations.messages.actionFailed}</span>
+              <button
+                className="text-button"
+                type="button"
+                onClick={() =>
+                  void queryClient.invalidateQueries({
+                    queryKey: conversationQueryKeys.alternativeContexts(queryScope),
+                  })
+                }
+              >
+                {copy.conversations.common.retry}
+              </button>
+            </p>
+          ) : null}
+          {searchPositionError ? (
+            <p className="inline-alert" role="alert">
+              <span>{copy.conversations.search.targetNotFound}</span>
+              <button
+                className="text-button"
+                type="button"
+                onClick={() => {
+                  handledSearchAttemptRef.current = undefined;
+                  setSearchPositionError(false);
+                  setSearchPositionIntent((current) =>
+                    current ? { ...current, attempt: current.attempt + 1 } : current,
+                  );
+                }}
+              >
+                {copy.conversations.search.retryTarget}
+              </button>
+            </p>
+          ) : null}
+          {mutationStatus ? (
+            <p className="conversation-status" role="status">
+              {mutationStatus}
+            </p>
+          ) : null}
         </div>
+      ) : null}
+      {searchPositionPending ? (
+        <p className="visually-hidden" role="status">
+          {copy.conversations.common.loadingMore}
+        </p>
+      ) : null}
+      {searchPositionStatus ? (
+        <p className="visually-hidden" role="status">
+          {searchPositionStatus}
+        </p>
       ) : null}
       {!hasPresentedMessages ? (
         <div className="empty-conversation">
@@ -653,20 +1124,17 @@ export function ConversationPage() {
       ) : (
         <div
           className="message-scroll"
-          ref={messageScrollRef}
+          ref={conversationScroll.containerRef}
           onScroll={(event) => {
+            conversationScroll.onScroll(event);
             if (
               event.currentTarget.scrollTop < 80 &&
               detail.hasNextPage &&
               !detail.isFetchingNextPage &&
-              !detail.isFetchNextPageError
+              !detail.isFetchNextPageError &&
+              !searchPositionPending
             ) {
-              previousScrollRef.current = {
-                conversationId,
-                height: event.currentTarget.scrollHeight,
-                pageCount,
-                top: event.currentTarget.scrollTop,
-              };
+              conversationScroll.captureOlderPageAnchor();
               void detail.fetchNextPage();
             }
           }}
@@ -680,17 +1148,9 @@ export function ConversationPage() {
             <button
               className="message-more text-button"
               type="button"
-              disabled={detail.isFetchingNextPage}
+              disabled={detail.isFetchingNextPage || searchPositionPending}
               onClick={() => {
-                const container = messageScrollRef.current;
-                if (container) {
-                  previousScrollRef.current = {
-                    conversationId,
-                    height: container.scrollHeight,
-                    pageCount,
-                    top: container.scrollTop,
-                  };
-                }
+                conversationScroll.captureOlderPageAnchor();
                 void detail.fetchNextPage();
               }}
             >
@@ -700,9 +1160,13 @@ export function ConversationPage() {
             </button>
           ) : null}
           <ol className="message-list">
-            {messages.map((message) => {
+            {messages.map((message, messageIndex) => {
               const state = responseStates.byMessageId.get(message.id);
               const runtimeMatches = runtimeSnapshot?.messageId === message.id;
+              const source =
+                runtimeMatches && runtimeSnapshot.text.length > 0
+                  ? runtimeSnapshot.text
+                  : (message.content[0]?.text ?? "");
               const terminalLabel =
                 responseTerminalLabel(state) ??
                 (runtimeMatches && runtimeSnapshot.phase === "output-limit"
@@ -716,9 +1180,24 @@ export function ConversationPage() {
                 message.id === firstPage?.selectedLeafId &&
                 state?.status === "completed" &&
                 state.reason === "length";
+              const canUndo =
+                message.id === firstPage?.selectedLeafId &&
+                message.role === "assistant" &&
+                messages.slice(0, messageIndex).some((candidate) => candidate.role === "assistant");
+              const alternative = alternativeContexts.byMessageId.get(message.id);
+              const highlighted = searchHighlight?.messageId === message.id;
+              const contentStable =
+                !(runtimeMatches && runtimeSnapshot !== undefined) &&
+                (message.role === "user" || (!composerIncoherent && state?.status !== "active"));
+              const structuralBlocked = Boolean(
+                generationActive ||
+                  composerIncoherent ||
+                  alternativeContexts.revisionMismatch ||
+                  structuralPendingMessageId,
+              );
               return (
                 <li
-                  className={`message message-${message.role}`}
+                  className={`message message-${message.role}${highlighted ? ` search-match search-match-${searchHighlight.phase}` : ""}`}
                   data-message-id={message.id}
                   key={message.id}
                 >
@@ -727,23 +1206,51 @@ export function ConversationPage() {
                       ? copy.conversations.conversation.userLabel
                       : copy.conversations.conversation.assistantLabel}
                   </p>
-                  <div className="message-content">
-                    {runtimeMatches && runtimeSnapshot.text.length > 0
-                      ? runtimeSnapshot.text
-                      : message.content[0]?.text}
-                  </div>
+                  <MessageActions
+                    alternative={alternative}
+                    canContinue={
+                      canContinue &&
+                      !generationActive &&
+                      !conversation.isArchived &&
+                      !composerIncoherent
+                    }
+                    canCopy={contentStable}
+                    canEdit={
+                      message.role === "user" &&
+                      !generationActive &&
+                      !conversation.isArchived &&
+                      !composerIncoherent
+                    }
+                    canRetry={
+                      message.role === "assistant" &&
+                      message.parentMessageId !== null &&
+                      !generationActive &&
+                      !conversation.isArchived &&
+                      !composerIncoherent
+                    }
+                    canUndo={canUndo}
+                    message={message}
+                    pending={structuralBlocked}
+                    onContinue={() => continueResponse(message.id)}
+                    onEdit={(content, onCommitted) => editMessage(message, content, onCommitted)}
+                    onRetry={() => retryResponse(message)}
+                    onSelectAlternative={(leafMessageId, trigger) =>
+                      void selectAlternative(message.id, leafMessageId, trigger)
+                    }
+                    onUndo={(trigger) => void undoSelectedTurn(message.id, trigger)}
+                  >
+                    <Suspense fallback={null}>
+                      <DeferredMessageContent
+                        source={source}
+                        fallback={copy.conversations.messages.markdownFallback}
+                        onReady={markMessageContentReady}
+                        overflowLabel={copy.conversations.messages.overflowLabel}
+                        {...(contentStable ? { renderCodeAction: renderCodeCopyAction } : {})}
+                      />
+                    </Suspense>
+                  </MessageActions>
                   {terminalLabel ? <p className="response-outcome">{terminalLabel}</p> : null}
-                  {canContinue ? (
-                    <button
-                      className="secondary-button compact-button response-continue"
-                      type="button"
-                      disabled={generationActive || conversation.isArchived || composerIncoherent}
-                      onClick={() => continueResponse(message.id)}
-                    >
-                      {copy.conversations.generation.actions.continue}
-                    </button>
-                  ) : null}
-                  {message.siblingCount > 0 ? (
+                  {message.siblingCount > 0 && !alternative ? (
                     <p className="message-alternatives">
                       {copy.conversations.conversation.alternatives(message.siblingCount)}
                     </p>
@@ -758,7 +1265,14 @@ export function ConversationPage() {
                 key={runtimeUserId}
               >
                 <p className="message-role">{copy.conversations.conversation.userLabel}</p>
-                <div className="message-content">{runtimeSnapshot?.committedUserText}</div>
+                <Suspense fallback={null}>
+                  <DeferredMessageContent
+                    source={runtimeSnapshot?.committedUserText ?? ""}
+                    fallback={copy.conversations.messages.markdownFallback}
+                    onReady={markMessageContentReady}
+                    overflowLabel={copy.conversations.messages.overflowLabel}
+                  />
+                </Suspense>
               </li>
             ) : null}
             {presentsRuntimeAssistant && runtimeSnapshot?.messageId ? (
@@ -768,12 +1282,31 @@ export function ConversationPage() {
                 key={runtimeSnapshot.messageId}
               >
                 <p className="message-role">{copy.conversations.conversation.assistantLabel}</p>
-                <div className="message-content">{runtimeSnapshot.text}</div>
+                <Suspense fallback={null}>
+                  <DeferredMessageContent
+                    source={runtimeSnapshot.text}
+                    fallback={copy.conversations.messages.markdownFallback}
+                    onReady={markMessageContentReady}
+                    overflowLabel={copy.conversations.messages.overflowLabel}
+                  />
+                </Suspense>
               </li>
             ) : null}
           </ol>
         </div>
       )}
+      {conversationScroll.unseen ? (
+        <button
+          className="secondary-button jump-to-latest"
+          type="button"
+          onClick={conversationScroll.jumpToLatest}
+        >
+          {copy.conversations.scroll.jumpToLatest}
+          <span className="visually-hidden" role="status">
+            {copy.conversations.scroll.newContent}
+          </span>
+        </button>
+      ) : null}
       <div className="conversation-draft-dock" data-empty={!hasPresentedMessages}>
         <DraftEditor
           scope={{ kind: "conversation", conversationId }}

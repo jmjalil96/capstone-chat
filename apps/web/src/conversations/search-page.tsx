@@ -136,7 +136,7 @@ export function SearchPage() {
       return selection;
     },
     onMutate: () => setOpeningError(undefined),
-    onSuccess: async (selection, { capture }) => {
+    onSuccess: async (selection, { capture, result }) => {
       if (!capture.isCurrent()) {
         return;
       }
@@ -147,7 +147,10 @@ export function SearchPage() {
       if (!capture.isCurrent()) {
         return;
       }
-      navigate(`/c/${selection.conversation.id}`);
+      navigate(`/c/${selection.conversation.id}`, {
+        state:
+          result.matchedMessageId === null ? null : { matchedMessageId: result.matchedMessageId },
+      });
     },
     onError: async (error, { capture, result }) => {
       if (!capture.isCurrent()) {

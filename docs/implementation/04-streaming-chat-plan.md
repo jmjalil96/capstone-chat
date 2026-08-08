@@ -1,6 +1,6 @@
 # Phase 4 — Streaming Chat Implementation Plan
 
-Status: implemented; verification complete; pending user acceptance
+Status: implemented and accepted
 
 Code authorization: granted by the user on 2026-08-07
 

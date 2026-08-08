@@ -987,4 +987,137 @@ describe("ChatRuntime", () => {
     expect(runtime.getSnapshot(conversationId)).toBeUndefined();
     expect(listener).not.toHaveBeenCalled();
   });
+
+  it("publishes the edit branch anchor, target, and browser-authored replacement", async () => {
+    const source = controlledStream();
+    const editRequest: CreateResponseRequest = {
+      source: "edit",
+      targetMessageId: userMessageId,
+      parentMessageId: null,
+      content: [{ type: "text", text: "Pregunta editada" }],
+      modelTier: "balanced",
+      observedRevision: 2,
+    };
+    const { runtime } = createRuntime({ openResponse: vi.fn(async () => source.stream) });
+    const pending = runtime.startResponse(conversationId, editRequest);
+    source.controller.enqueue(line(started()));
+    await pending;
+
+    expect(runtime.getSnapshot(conversationId)).toMatchObject({
+      branchAnchorMessageId: null,
+      committedUserText: "Pregunta editada",
+      messageId,
+      requestSource: "edit",
+      targetMessageId: userMessageId,
+    });
+    runtime.dispose();
+  });
+
+  it("publishes retry as a sibling assistant without browser-authored user text", async () => {
+    const source = controlledStream();
+    const retryRequest: CreateResponseRequest = {
+      source: "retry",
+      targetMessageId: messageId,
+      parentMessageId: userMessageId,
+      modelTier: "balanced",
+      observedRevision: 2,
+    };
+    const { runtime } = createRuntime({ openResponse: vi.fn(async () => source.stream) });
+    const pending = runtime.startResponse(conversationId, retryRequest);
+    source.controller.enqueue(
+      line({
+        ...started(),
+        messageId: "66666666-6666-4666-8666-666666666666",
+        revision: 3,
+      }),
+    );
+    await pending;
+
+    expect(runtime.getSnapshot(conversationId)).toMatchObject({
+      branchAnchorMessageId: userMessageId,
+      committedUserText: undefined,
+      requestSource: "retry",
+      targetMessageId: messageId,
+    });
+    runtime.dispose();
+  });
+
+  it("proves an ambiguous edit only from a distinct replacement user branch", async () => {
+    const replacementUserId = "66666666-6666-4666-8666-666666666666";
+    const replacementAssistantId = "77777777-7777-4777-8777-777777777777";
+    const editRequest: CreateResponseRequest = {
+      source: "edit",
+      targetMessageId: userMessageId,
+      parentMessageId: null,
+      content: [{ type: "text", text: "Pregunta editada" }],
+      modelTier: "balanced",
+      observedRevision: 2,
+    };
+    const committed = canonical();
+    committed.conversation.revision = 3;
+    committed.selectedLeafId = replacementAssistantId;
+    committed.messages = [
+      {
+        id: replacementUserId,
+        parentMessageId: null,
+        role: "user",
+        content: editRequest.content,
+        createdAt: "2026-08-07T12:00:00.000Z",
+        siblingCount: 1,
+      },
+      {
+        id: replacementAssistantId,
+        parentMessageId: replacementUserId,
+        role: "assistant",
+        content: [{ type: "text", text: "Respuesta editada" }],
+        createdAt: "2026-08-07T12:00:01.000Z",
+        siblingCount: 0,
+      },
+    ];
+    const onStarted = vi.fn();
+    const { queryClient, runtime } = createRuntime({
+      fetchConversation: vi.fn(async () => committed),
+      openResponse: vi.fn(async () => {
+        throw new TypeError("status unknown");
+      }),
+    });
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+
+    await expect(
+      runtime.startResponse(conversationId, editRequest, { onStarted }),
+    ).rejects.toMatchObject({ code: "STREAM_INTERRUPTED" });
+
+    expect(onStarted).toHaveBeenCalledOnce();
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: conversationQueryKeys.alternativeContexts(queryScope),
+    });
+    runtime.dispose();
+  });
+
+  it("does not mistake the original assistant for an ambiguous retry commit", async () => {
+    const retryRequest: CreateResponseRequest = {
+      source: "retry",
+      targetMessageId: messageId,
+      parentMessageId: userMessageId,
+      modelTier: "balanced",
+      observedRevision: 1,
+    };
+    const unchanged = canonical();
+    unchanged.conversation.revision = 2;
+    const onStarted = vi.fn();
+    const { runtime } = createRuntime({
+      fetchConversation: vi.fn(async () => unchanged),
+      openResponse: vi.fn(async () => {
+        throw new TypeError("status unknown");
+      }),
+    });
+
+    await expect(
+      runtime.startResponse(conversationId, retryRequest, { onStarted }),
+    ).rejects.toMatchObject({ code: "STREAM_INTERRUPTED" });
+
+    expect(onStarted).not.toHaveBeenCalled();
+    expect(runtime.getSnapshot(conversationId)).toMatchObject({ awaitingCanonical: true });
+    runtime.dispose();
+  });
 });

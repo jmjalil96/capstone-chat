@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { Pool } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { type ApiApplication, createApplication } from "../src/app.js";
@@ -541,6 +541,345 @@ describe.sequential("conversation core integration", () => {
     expect((await restarted.getDraft(primary, scope)).revision).toBe(1);
   });
 
+  it("resolves adjacent alternatives from the selected path without returning content", async () => {
+    const conversation = await service.create(primary);
+    const selectedRoot = await service.insertImmutableMessage(primary, {
+      content: text("raíz elegida"),
+      conversationId: conversation.id,
+      parentMessageId: null,
+      role: "user",
+    });
+    const previousAssistant = await service.insertImmutableMessage(primary, {
+      content: text("respuesta anterior"),
+      conversationId: conversation.id,
+      parentMessageId: selectedRoot.id,
+      role: "assistant",
+    });
+    const previousUser = await service.insertImmutableMessage(primary, {
+      content: text("seguimiento anterior"),
+      conversationId: conversation.id,
+      parentMessageId: previousAssistant.id,
+      role: "user",
+    });
+    const previousLeaves = [
+      await service.insertImmutableMessage(primary, {
+        content: text("hoja anterior uno"),
+        conversationId: conversation.id,
+        parentMessageId: previousUser.id,
+        role: "assistant",
+      }),
+      await service.insertImmutableMessage(primary, {
+        content: text("hoja anterior dos"),
+        conversationId: conversation.id,
+        parentMessageId: previousUser.id,
+        role: "assistant",
+      }),
+    ];
+    const selectedAssistant = await service.insertImmutableMessage(primary, {
+      content: text("respuesta elegida"),
+      conversationId: conversation.id,
+      parentMessageId: selectedRoot.id,
+      role: "assistant",
+    });
+    const selectedUser = await service.insertImmutableMessage(primary, {
+      content: text("seguimiento elegido"),
+      conversationId: conversation.id,
+      parentMessageId: selectedAssistant.id,
+      role: "user",
+    });
+    const selectedLeaf = await service.insertImmutableMessage(primary, {
+      content: text("hoja elegida"),
+      conversationId: conversation.id,
+      parentMessageId: selectedUser.id,
+      role: "assistant",
+    });
+    const nextAssistant = await service.insertImmutableMessage(primary, {
+      content: text("respuesta siguiente"),
+      conversationId: conversation.id,
+      parentMessageId: selectedRoot.id,
+      role: "assistant",
+    });
+    const nextUser = await service.insertImmutableMessage(primary, {
+      content: text("seguimiento siguiente"),
+      conversationId: conversation.id,
+      parentMessageId: nextAssistant.id,
+      role: "user",
+    });
+    const nextLeaf = await service.insertImmutableMessage(primary, {
+      content: text("hoja siguiente"),
+      conversationId: conversation.id,
+      parentMessageId: nextUser.id,
+      role: "assistant",
+    });
+    const rootAlternativeRows = await database
+      .insert(messages)
+      .values({
+        content: text("raíz alternativa"),
+        conversationId: conversation.id,
+        parentMessageId: null,
+        role: "user",
+      })
+      .returning();
+    const rootAlternative = rootAlternativeRows[0];
+    if (rootAlternative === undefined) throw new Error("missing root alternative");
+    const rootAlternativeLeaf = await service.insertImmutableMessage(primary, {
+      content: text("respuesta de raíz alternativa"),
+      conversationId: conversation.id,
+      parentMessageId: rootAlternative.id,
+      role: "assistant",
+    });
+    const sharedCreationTime = new Date("2026-08-07T20:00:00.000Z");
+    await database
+      .update(messages)
+      .set({ createdAt: sharedCreationTime })
+      .where(
+        inArray(messages.id, [
+          selectedRoot.id,
+          rootAlternative.id,
+          previousAssistant.id,
+          selectedAssistant.id,
+          nextAssistant.id,
+          ...previousLeaves.map((message) => message.id),
+        ]),
+      );
+    await service.selectLeaf(primary, conversation.id, selectedLeaf.id, 0);
+
+    const siblingRows = await database
+      .select()
+      .from(messages)
+      .where(eq(messages.parentMessageId, selectedRoot.id));
+    const orderedSiblings = siblingRows.toSorted(
+      (left, right) =>
+        left.createdAt.getTime() - right.createdAt.getTime() || left.id.localeCompare(right.id),
+    );
+    expect(orderedSiblings.map((message) => message.id)).toEqual(
+      [previousAssistant.id, selectedAssistant.id, nextAssistant.id].toSorted((left, right) =>
+        left.localeCompare(right),
+      ),
+    );
+    const selectedPosition = orderedSiblings.findIndex(
+      (message) => message.id === selectedAssistant.id,
+    );
+    const expectedPreviousRoot = orderedSiblings[selectedPosition - 1];
+    const expectedNextRoot = orderedSiblings[selectedPosition + 1];
+    const newestLeafByRoot = new Map([
+      [
+        previousAssistant.id,
+        previousLeaves.toSorted((left, right) => right.id.localeCompare(left.id))[0]?.id,
+      ],
+      [nextAssistant.id, nextLeaf.id],
+    ]);
+
+    const result = await service.getAlternativeContexts(primary, conversation.id, [
+      selectedAssistant.id,
+      selectedRoot.id,
+    ]);
+    expect(result).toMatchObject({ conversationId: conversation.id, revision: 1 });
+    expect(result.contexts[0]).toEqual({
+      messageId: selectedAssistant.id,
+      nextLeafMessageId:
+        expectedNextRoot === undefined ? null : newestLeafByRoot.get(expectedNextRoot.id),
+      position: selectedPosition + 1,
+      previousLeafMessageId:
+        expectedPreviousRoot === undefined ? null : newestLeafByRoot.get(expectedPreviousRoot.id),
+      total: orderedSiblings.length,
+    });
+    const orderedRoots = [selectedRoot, rootAlternative].toSorted((left, right) =>
+      left.id.localeCompare(right.id),
+    );
+    const selectedRootPosition = orderedRoots.findIndex(
+      (message) => message.id === selectedRoot.id,
+    );
+    expect(result.contexts[1]).toEqual({
+      messageId: selectedRoot.id,
+      nextLeafMessageId: selectedRootPosition === 0 ? rootAlternativeLeaf.id : null,
+      position: selectedRootPosition + 1,
+      previousLeafMessageId: selectedRootPosition === 1 ? rootAlternativeLeaf.id : null,
+      total: 2,
+    });
+    for (const context of result.contexts) {
+      expect(Object.keys(context).toSorted()).toEqual(
+        ["messageId", "nextLeafMessageId", "position", "previousLeafMessageId", "total"].toSorted(),
+      );
+    }
+
+    const otherConversation = await service.create(primary);
+    const otherRoot = await service.insertImmutableMessage(primary, {
+      content: text("otra conversación"),
+      conversationId: otherConversation.id,
+      parentMessageId: null,
+      role: "user",
+    });
+    for (const messageIds of [
+      [],
+      [selectedAssistant.id, selectedAssistant.id],
+      [previousAssistant.id],
+      [otherRoot.id],
+    ]) {
+      await expectApplicationError(
+        service.getAlternativeContexts(primary, conversation.id, messageIds),
+        { code: "BAD_REQUEST", statusCode: 400 },
+      );
+    }
+    await expectApplicationError(
+      service.getAlternativeContexts(otherEmployee, conversation.id, [selectedAssistant.id]),
+      { code: "NOT_FOUND", statusCode: 404 },
+    );
+  });
+
+  it("undoes to an internal assistant and keeps search and selection coherent", async () => {
+    const conversation = await service.create(primary);
+    const root = await service.insertImmutableMessage(primary, {
+      content: text("hallazgo raíz seleccionada"),
+      conversationId: conversation.id,
+      parentMessageId: null,
+      role: "user",
+    });
+    const firstAssistant = await service.insertImmutableMessage(primary, {
+      content: text("hallazgo asistente interno"),
+      conversationId: conversation.id,
+      parentMessageId: root.id,
+      role: "assistant",
+    });
+    const secondUser = await service.insertImmutableMessage(primary, {
+      content: text("hallazgo descendiente oculto"),
+      conversationId: conversation.id,
+      parentMessageId: firstAssistant.id,
+      role: "user",
+    });
+    const secondAssistant = await service.insertImmutableMessage(primary, {
+      content: text("respuesta descendiente"),
+      conversationId: conversation.id,
+      parentMessageId: secondUser.id,
+      role: "assistant",
+    });
+    await service.selectLeaf(primary, conversation.id, secondAssistant.id, 0);
+    const draft = await service.saveDraft(
+      primary,
+      { conversationId: conversation.id, kind: "conversation" },
+      "borrador preservado por Undo",
+      0,
+    );
+
+    await expectApplicationError(service.undo(primary, conversation.id, 0), {
+      code: "CONVERSATION_CHANGED",
+      statusCode: 409,
+    });
+    const undone = await service.undo(primary, conversation.id, 1);
+    expect(undone).toMatchObject({
+      conversation: { revision: 2 },
+      selectedLeafId: firstAssistant.id,
+    });
+    const detail = await service.get(primary, conversation.id);
+    expect(detail.messages.map((message) => message.id)).toEqual([root.id, firstAssistant.id]);
+    expect(
+      await database.select().from(messages).where(eq(messages.conversationId, conversation.id)),
+    ).toHaveLength(4);
+    expect(
+      await service.getDraft(primary, { conversationId: conversation.id, kind: "conversation" }),
+    ).toMatchObject(draft);
+
+    for (const query of ["hallazgo raiz", "hallazgo asistente"]) {
+      const hit = (await service.search(primary, query)).results.find(
+        (result) => result.conversation.id === conversation.id,
+      );
+      expect(hit?.leafMessageId).toBe(firstAssistant.id);
+      const noOp = await service.selectLeaf(primary, conversation.id, hit?.leafMessageId ?? "", 0);
+      expect(noOp).toMatchObject({
+        conversation: { revision: 2 },
+        selectedLeafId: firstAssistant.id,
+      });
+    }
+    const hiddenHit = (await service.search(primary, "hallazgo descendiente")).results.find(
+      (result) => result.conversation.id === conversation.id,
+    );
+    expect(hiddenHit?.leafMessageId).toBe(secondAssistant.id);
+    const restored = await service.selectLeaf(
+      primary,
+      conversation.id,
+      hiddenHit?.leafMessageId ?? "",
+      2,
+    );
+    expect(restored.conversation.revision).toBe(3);
+    const archived = await service.setArchived(primary, conversation.id, true, 3);
+    const concurrentUndo = await Promise.allSettled([
+      service.undo(primary, conversation.id, archived.revision),
+      service.undo(primary, conversation.id, archived.revision),
+    ]);
+    expect(concurrentUndo.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const archivedUndo = concurrentUndo.find((result) => result.status === "fulfilled");
+    if (archivedUndo?.status !== "fulfilled") throw new Error("Undo did not produce a winner");
+    expect(concurrentUndo.find((result) => result.status === "rejected")).toMatchObject({
+      reason: { code: "CONVERSATION_CHANGED" },
+      status: "rejected",
+    });
+    expect(archivedUndo.value).toMatchObject({
+      conversation: { isArchived: true, revision: 5 },
+      selectedLeafId: firstAssistant.id,
+    });
+
+    const firstTurn = await service.create(primary);
+    const firstUser = await service.insertImmutableMessage(primary, {
+      content: text("sin Undo"),
+      conversationId: firstTurn.id,
+      parentMessageId: null,
+      role: "user",
+    });
+    const firstAnswer = await service.insertImmutableMessage(primary, {
+      content: text("primera respuesta"),
+      conversationId: firstTurn.id,
+      parentMessageId: firstUser.id,
+      role: "assistant",
+    });
+    await service.selectLeaf(primary, firstTurn.id, firstAnswer.id, 0);
+    await expectApplicationError(service.undo(primary, firstTurn.id, 1), {
+      code: "BAD_REQUEST",
+      statusCode: 400,
+    });
+    await expectApplicationError(service.undo(otherEmployee, conversation.id, 5), {
+      code: "NOT_FOUND",
+      statusCode: 404,
+    });
+
+    const activeConversation = await service.create(primary);
+    const activeUser = await service.insertImmutableMessage(primary, {
+      content: text("pregunta activa"),
+      conversationId: activeConversation.id,
+      parentMessageId: null,
+      role: "user",
+    });
+    const activeAssistant = await service.insertImmutableMessage(primary, {
+      content: text("respuesta activa previa"),
+      conversationId: activeConversation.id,
+      parentMessageId: activeUser.id,
+      role: "assistant",
+    });
+    const activeSecondUser = await service.insertImmutableMessage(primary, {
+      content: text("seguimiento activo"),
+      conversationId: activeConversation.id,
+      parentMessageId: activeAssistant.id,
+      role: "user",
+    });
+    const activeSecondAssistant = await service.insertImmutableMessage(primary, {
+      content: text("respuesta reintentable"),
+      conversationId: activeConversation.id,
+      parentMessageId: activeSecondUser.id,
+      role: "assistant",
+    });
+    await service.selectLeaf(primary, activeConversation.id, activeSecondAssistant.id, 0);
+    await generationService.startResponse(primary, activeConversation.id, randomUUID(), {
+      modelTier: "balanced",
+      observedRevision: 1,
+      parentMessageId: activeSecondUser.id,
+      source: "retry",
+      targetMessageId: activeSecondAssistant.id,
+    });
+    await expectApplicationError(service.undo(primary, activeConversation.id, 2), {
+      code: "GENERATION_ACTIVE",
+      statusCode: 409,
+    });
+  });
+
   it("searches safely across accents, archives, and alternatives with deterministic ranking", async () => {
     const titleConversation = await service.create(primary);
     await service.rename(primary, titleConversation.id, "Árbol Azul", 0);
@@ -965,6 +1304,82 @@ describe.sequential("conversation core integration", () => {
       loggedMessage.id,
       loggedRenamed.revision,
     );
+    const routeConversation = await application.conversations.create(primary);
+    const routeRoot = await application.conversations.insertImmutableMessage(primary, {
+      content: text("route root"),
+      conversationId: routeConversation.id,
+      parentMessageId: null,
+      role: "user",
+    });
+    const routeFirstAssistant = await application.conversations.insertImmutableMessage(primary, {
+      content: text("route first assistant"),
+      conversationId: routeConversation.id,
+      parentMessageId: routeRoot.id,
+      role: "assistant",
+    });
+    const routeSecondUser = await application.conversations.insertImmutableMessage(primary, {
+      content: text("route second user"),
+      conversationId: routeConversation.id,
+      parentMessageId: routeFirstAssistant.id,
+      role: "user",
+    });
+    const routeSecondAssistant = await application.conversations.insertImmutableMessage(primary, {
+      content: text("route second assistant"),
+      conversationId: routeConversation.id,
+      parentMessageId: routeSecondUser.id,
+      role: "assistant",
+    });
+    await application.conversations.selectLeaf(
+      primary,
+      routeConversation.id,
+      routeSecondAssistant.id,
+      0,
+    );
+    const alternativeContexts = await application.server.inject({
+      headers: { "content-type": "application/json", origin: publicOrigin },
+      method: "POST",
+      payload: { messageIds: [routeFirstAssistant.id] },
+      url: `/api/conversations/${routeConversation.id}/alternative-contexts`,
+    });
+    expect(alternativeContexts.statusCode, alternativeContexts.body).toBe(200);
+    expect(alternativeContexts.json()).toMatchObject({
+      contexts: [
+        {
+          messageId: routeFirstAssistant.id,
+          nextLeafMessageId: null,
+          position: 1,
+          previousLeafMessageId: null,
+          total: 1,
+        },
+      ],
+      revision: 1,
+    });
+    const invalidAlternativeContexts = await application.server.inject({
+      headers: { "content-type": "application/json", origin: publicOrigin },
+      method: "POST",
+      payload: { messageIds: [routeFirstAssistant.id, routeFirstAssistant.id] },
+      url: `/api/conversations/${routeConversation.id}/alternative-contexts`,
+    });
+    expect(invalidAlternativeContexts.statusCode).toBe(400);
+    const undo = await application.server.inject({
+      headers: { "content-type": "application/json", origin: publicOrigin },
+      method: "POST",
+      payload: { observedRevision: 1 },
+      url: `/api/conversations/${routeConversation.id}/undo`,
+    });
+    expect(undo.statusCode, undo.body).toBe(200);
+    expect(undo.json()).toMatchObject({
+      conversation: { revision: 2 },
+      selectedLeafId: routeFirstAssistant.id,
+    });
+    const staleUndo = await application.server.inject({
+      headers: { "content-type": "application/json", origin: publicOrigin },
+      method: "POST",
+      payload: { observedRevision: 1 },
+      url: `/api/conversations/${routeConversation.id}/undo`,
+    });
+    expect(staleUndo.statusCode).toBe(409);
+    expect(staleUndo.json()).toMatchObject({ code: "CONVERSATION_CHANGED" });
     const loggedSearch = await application.server.inject({
       headers: { "content-type": "application/json", origin: publicOrigin },
       method: "POST",

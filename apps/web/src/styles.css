@@ -1131,6 +1131,119 @@ select:focus-visible,
   white-space: pre-wrap;
 }
 
+.message-actions {
+  min-inline-size: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--capstone-space-1) var(--capstone-space-3);
+  margin: var(--capstone-space-3) 0 0;
+  padding: 0;
+  border: 0;
+}
+
+.message-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.copy-action,
+.message-alternative-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--capstone-space-2);
+}
+
+.message-alternative-controls {
+  color: var(--app-text-muted);
+  font-family: var(--capstone-font-data);
+  font-size: var(--capstone-type-label);
+}
+
+.message-action-error {
+  color: var(--app-danger);
+  font-size: var(--capstone-type-small);
+  font-weight: var(--capstone-weight-medium);
+}
+
+.message-inline-edit {
+  min-width: 0;
+  display: grid;
+  gap: var(--capstone-space-2);
+}
+
+.message-inline-edit label {
+  font-size: var(--capstone-type-small);
+  font-weight: var(--capstone-weight-semibold);
+}
+
+.message-inline-edit textarea {
+  width: 100%;
+  min-height: 8rem;
+  resize: vertical;
+  padding: var(--capstone-space-3) var(--capstone-space-4);
+  background: var(--app-panel);
+  border: 1px solid var(--app-control-border);
+  border-radius: var(--capstone-radius-sm);
+  color: var(--app-text);
+  line-height: 1.55;
+}
+
+.message-inline-edit textarea[aria-invalid="true"] {
+  border-color: var(--app-danger);
+}
+
+.message-inline-edit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--capstone-space-2);
+}
+
+.search-match {
+  outline: 2px solid var(--app-accent);
+  outline-offset: var(--capstone-space-2);
+  background: rgb(226 171 51 / 18%);
+  transition:
+    background-color 520ms var(--capstone-ease-standard),
+    outline-color 520ms var(--capstone-ease-standard);
+}
+
+.search-match-fade {
+  outline-color: transparent;
+  background: transparent;
+}
+
+.jump-to-latest {
+  z-index: 2;
+  grid-area: content;
+  align-self: end;
+  justify-self: center;
+  margin: 0 var(--capstone-space-4) var(--capstone-space-4);
+  background: var(--app-panel);
+  box-shadow: 0 0.25rem 1rem rgb(12 43 56 / 16%);
+}
+
+.conversation-status {
+  margin: 0;
+  color: var(--app-text-muted);
+  font-size: var(--capstone-type-small);
+  font-weight: var(--capstone-weight-medium);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .message-actions {
+    opacity: 0.68;
+    transition: opacity var(--capstone-duration-fast) var(--capstone-ease-standard);
+  }
+
+  .message:hover .message-actions,
+  .message-actions:focus-within,
+  .message:has(.response-outcome) .message-actions {
+    opacity: 1;
+  }
+}
+
 .message-alternatives {
   margin: var(--capstone-space-3) 0 0;
 }
@@ -1368,6 +1481,11 @@ select:focus-visible,
   }
 
   .conversation-shell {
+    transition: none;
+  }
+
+  .message-actions,
+  .search-match {
     transition: none;
   }
 

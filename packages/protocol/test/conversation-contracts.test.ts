@@ -1,6 +1,9 @@
 import Value from "typebox/value";
 import { describe, expect, it } from "vitest";
 import {
+  ALTERNATIVE_CONTEXT_MAX_MESSAGE_IDS,
+  AlternativeContextRequestSchema,
+  AlternativeContextResponseSchema,
   API_ERROR_CODES,
   ApiErrorSchema,
   CONVERSATION_DRAFT_MAX_UTF8_BYTES,
@@ -24,11 +27,14 @@ import {
   RenameConversationRequestSchema,
   SaveDraftRequestSchema,
   SelectConversationLeafRequestSchema,
+  UndoConversationRequestSchema,
+  UndoConversationResponseSchema,
 } from "../src/index.js";
 
 const conversationId = "aaedb175-c593-4d66-87d6-636fca2aa4fa";
 const messageId = "7c917de8-79f1-4787-a752-71ff2c1f7d96";
 const parentMessageId = "ca40adf0-8ee4-4805-bceb-d69a0da23b55";
+const nextMessageId = "7ba4acfa-4967-46a9-a66b-28e4b6fd207c";
 const cursor = "eyJ2IjoxLCJraW5kIjoiaGlzdG9yeSJ9.c2lnbmF0dXJl";
 const createdAt = "2026-08-06T12:00:00.000Z";
 const updatedAt = "2026-08-06T12:30:00.000Z";
@@ -259,6 +265,115 @@ describe("conversation mutation contracts", () => {
     { leafMessageId: messageId, observedRevision: 4, conversationId },
   ])("rejects invalid selection requests and scope widening", (request) => {
     expect(Value.Check(SelectConversationLeafRequestSchema, request)).toBe(false);
+  });
+
+  it("bounds and deduplicates alternative-context requests", () => {
+    const messageIds = Array.from(
+      { length: ALTERNATIVE_CONTEXT_MAX_MESSAGE_IDS },
+      (_, index) => `00000000-0000-4000-8000-${index.toString(16).padStart(12, "0")}`,
+    );
+    expect(Value.Check(AlternativeContextRequestSchema, { messageIds })).toBe(true);
+    expect(Value.Check(AlternativeContextRequestSchema, { messageIds: [] })).toBe(false);
+    expect(
+      Value.Check(AlternativeContextRequestSchema, { messageIds: [messageId, messageId] }),
+    ).toBe(false);
+    expect(
+      Value.Check(AlternativeContextRequestSchema, { messageIds: ["message-not-a-uuid"] }),
+    ).toBe(false);
+    expect(
+      Value.Check(AlternativeContextRequestSchema, {
+        messageIds: [...messageIds, "00000000-0000-4000-8000-ffffffffffff"],
+      }),
+    ).toBe(false);
+    expect(
+      Value.Check(AlternativeContextRequestSchema, {
+        messageIds: [messageId],
+        includeContent: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("accepts coherent positional alternative metadata without content", () => {
+    const response = {
+      conversationId,
+      revision: 4,
+      contexts: [
+        {
+          messageId,
+          position: 2,
+          total: 3,
+          previousLeafMessageId: parentMessageId,
+          nextLeafMessageId: nextMessageId,
+        },
+      ],
+    };
+    expect(Value.Check(AlternativeContextResponseSchema, response)).toBe(true);
+    expect(
+      Value.Check(AlternativeContextResponseSchema, {
+        ...response,
+        contexts: [{ ...response.contexts[0], position: 4 }],
+      }),
+    ).toBe(false);
+    expect(
+      Value.Check(AlternativeContextResponseSchema, {
+        ...response,
+        contexts: [
+          { ...response.contexts[0], position: 1, previousLeafMessageId: parentMessageId },
+        ],
+      }),
+    ).toBe(false);
+    expect(
+      Value.Check(AlternativeContextResponseSchema, {
+        ...response,
+        contexts: [{ ...response.contexts[0], previousLeafMessageId: null }],
+      }),
+    ).toBe(false);
+    expect(
+      Value.Check(AlternativeContextResponseSchema, {
+        ...response,
+        contexts: [{ ...response.contexts[0], nextLeafMessageId: null }],
+      }),
+    ).toBe(false);
+    expect(
+      Value.Check(AlternativeContextResponseSchema, {
+        ...response,
+        contexts: [{ ...response.contexts[0], position: 3, nextLeafMessageId: nextMessageId }],
+      }),
+    ).toBe(false);
+    expect(
+      Value.Check(AlternativeContextResponseSchema, {
+        conversationId,
+        revision: 4,
+        contexts: [
+          {
+            messageId,
+            position: 1,
+            total: 1,
+            previousLeafMessageId: null,
+            nextLeafMessageId: null,
+          },
+        ],
+      }),
+    ).toBe(true);
+    expect(
+      Value.Check(AlternativeContextResponseSchema, {
+        ...response,
+        contexts: [{ ...response.contexts[0], content: [{ type: "text", text: "private" }] }],
+      }),
+    ).toBe(false);
+  });
+
+  it("reuses revision and selection contracts for Undo", () => {
+    expect(Value.Check(UndoConversationRequestSchema, { observedRevision: 4 })).toBe(true);
+    expect(Value.Check(UndoConversationRequestSchema, { observedRevision: 4, steps: 2 })).toBe(
+      false,
+    );
+    expect(
+      Value.Check(UndoConversationResponseSchema, {
+        conversation: conversationSummary,
+        selectedLeafId: messageId,
+      }),
+    ).toBe(true);
   });
 });
 

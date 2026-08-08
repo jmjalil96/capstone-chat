@@ -33,6 +33,7 @@ export type ChatRuntimePhase =
 
 export interface ChatRuntimeSnapshot {
   readonly awaitingCanonical: boolean;
+  readonly branchAnchorMessageId?: string | null;
   readonly committedUserText: string | undefined;
   readonly conversationId: string;
   readonly consumesDraft: boolean;
@@ -43,8 +44,10 @@ export interface ChatRuntimeSnapshot {
   readonly phase: ChatRuntimePhase;
   readonly reason: string | undefined;
   readonly recoveryRequired: boolean;
+  readonly requestSource?: CreateResponseRequest["source"];
   readonly revision: number | undefined;
   readonly text: string;
+  readonly targetMessageId?: string;
   readonly userMessageId: string | undefined;
 }
 
@@ -519,6 +522,9 @@ export class ChatRuntime {
         this.queryClient.invalidateQueries({
           queryKey: conversationQueryKeys.responseStates(this.queryScope),
         }),
+        this.queryClient.invalidateQueries({
+          queryKey: conversationQueryKeys.alternativeContexts(this.queryScope),
+        }),
       ]);
     } catch {
       // The active stream remains authoritative presentation until the next reconciliation.
@@ -650,6 +656,9 @@ export class ChatRuntime {
       this.queryClient.invalidateQueries({
         queryKey: conversationQueryKeys.responseStates(this.queryScope),
       }),
+      this.queryClient.invalidateQueries({
+        queryKey: conversationQueryKeys.alternativeContexts(this.queryScope),
+      }),
     ]);
     return outcome;
   }
@@ -669,16 +678,26 @@ export class ChatRuntime {
     }
 
     const assistant = canonical.messages.find((message) => message.id === canonical.selectedLeafId);
-    const user = canonical.messages.find((message) => message.id === assistant?.parentMessageId);
-    if (
-      assistant?.role !== "assistant" ||
-      user?.role !== "user" ||
-      user.parentMessageId !== request.parentMessageId
-    ) {
+    if (assistant?.role !== "assistant") {
+      return false;
+    }
+
+    if (request.source === "retry") {
+      return (
+        assistant.id !== request.targetMessageId &&
+        assistant.parentMessageId === request.parentMessageId
+      );
+    }
+
+    const user = canonical.messages.find((message) => message.id === assistant.parentMessageId);
+    if (user?.role !== "user" || user.parentMessageId !== request.parentMessageId) {
       return false;
     }
     if (request.source === "continue") {
       return true;
+    }
+    if (request.source === "edit" && user.id === request.targetMessageId) {
+      return false;
     }
     return user.content[0]?.text === request.content[0]?.text;
   }
@@ -853,6 +872,9 @@ export class ChatRuntime {
       this.queryClient.invalidateQueries({
         queryKey: conversationQueryKeys.responseStates(this.queryScope),
       }),
+      this.queryClient.invalidateQueries({
+        queryKey: conversationQueryKeys.alternativeContexts(this.queryScope),
+      }),
     ]);
   }
 
@@ -919,8 +941,15 @@ export class ChatRuntime {
     }
     this.snapshots.set(entry.conversationId, {
       awaitingCanonical: entry.awaitingCanonical,
+      ...(entry.request
+        ? {
+            branchAnchorMessageId: entry.request.parentMessageId,
+            requestSource: entry.request.source,
+          }
+        : {}),
       committedUserText:
-        entry.userMessageId && entry.request?.source === "draft"
+        entry.userMessageId &&
+        (entry.request?.source === "draft" || entry.request?.source === "edit")
           ? entry.request.content[0]?.text
           : undefined,
       conversationId: entry.conversationId,
@@ -934,6 +963,9 @@ export class ChatRuntime {
       recoveryRequired: entry.recoveryRequired,
       revision: entry.revision,
       text: entry.text,
+      ...(entry.request && "targetMessageId" in entry.request
+        ? { targetMessageId: entry.request.targetMessageId }
+        : {}),
       userMessageId: entry.userMessageId,
     });
     this.emit();

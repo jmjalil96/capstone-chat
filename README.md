@@ -1,16 +1,17 @@
 # Capstone Chat
 
-Capstone Chat is an internal AI chat product. The repository currently implements the Phase 4
-streaming-chat checkpoint: an approved employee can create and verify an account, sign in with a
-database-backed session, keep server-side drafts, manage and search owned conversation history,
-send a draft, see an incremental simulated answer, stop it, and continue an answer that reached its
-output limit. Operators manage the first workspace, employee approvals, and deactivation through
-explicit commands.
+Capstone Chat is an internal AI chat product. The repository currently implements the Phase 5
+conversation-controls checkpoint: an approved employee can create and verify an account, sign in
+with a database-backed session, keep server-side drafts, manage and search owned conversation
+history, stream and stop simulated answers, edit or retry preserved turns, navigate immutable
+branches, safely read Markdown and mathematics, copy source, and control streaming scroll behavior.
+Operators manage the first workspace, employee approvals, and deactivation through explicit
+commands.
 
-Phase 4 deliberately uses a deterministic local `FakeModelGateway`; it makes no external model
-request and is prohibited in production. Real model access, tier selection, cost and budget policy,
-edit/retry/branch controls, Markdown rendering, web administration, and production deployment
-remain outside this milestone.
+Phase 5 deliberately uses a deterministic local `FakeModelGateway`; it makes no external model
+request and is prohibited in production. Real model access, the functional Fast/Balanced/Pro picker,
+cost and budget policy, context compaction, web administration, and production deployment remain
+outside this milestone.
 
 ## Prerequisites
 
@@ -71,7 +72,8 @@ streams this clearly simulated answer in three deterministic chunks about 400 ms
 
 > Esta es una respuesta simulada de Capstone Chat para desarrollo local.
 
-No OpenRouter key or model configuration is used in Phase 4.
+No OpenRouter key or model configuration is used in Phase 5. Send, Continue, Edit, and Try again all
+use the temporary fixed Balanced request tier until Phase 6 supplies real model policy.
 
 The development fake sender is process-local. The bootstrap and approval commands therefore report
 the safe `signUpPath` in their JSON result; open [http://localhost:5173/sign-up](http://localhost:5173/sign-up)
@@ -105,7 +107,7 @@ Deactivate an employee and revoke their database sessions:
 pnpm identity:deactivate --workspace capstone --email employee@example.test
 ```
 
-Deactivation blocks authorization before session cleanup and is safe to retry. Phase 4 has no web
+Deactivation blocks authorization before session cleanup and is safe to retry. Phase 5 has no web
 administration surface.
 
 ## Identity and recovery flow
@@ -152,12 +154,12 @@ replace it using the newest observed revision. A failed or conflicted save never
 localStorage or IndexedDB. Reloading or closing a tab can therefore lose text that never reached
 Fastify. The only persisted browser preference is the desktop sidebar's collapsed state.
 
-## Streaming chat checkpoint
+## Conversation experience checkpoint
 
 Sending first confirms the server draft, then atomically creates one user message, an assistant
 placeholder, and one active generation. Fastify constructs prior context from the selected owned
-branch; the browser cannot supply history. The response is newline-delimited JSON and is rendered as
-safe plain text with preserved line breaks.
+branch; the browser cannot supply history. The response is newline-delimited JSON and is rendered
+incrementally through the same safe Markdown path as persisted messages.
 
 - One conversation can have only one active response; separate conversations may stream at the
   same time, including while navigating between them.
@@ -172,6 +174,30 @@ safe plain text with preserved line breaks.
   messages and lifecycle state; explicit employee action is required to generate again.
 - User messages are limited to 32,768 UTF-8 bytes. Assistant accumulation and selected-branch
   context are each bounded at 1 MiB.
+
+Immutable conversation controls preserve every prior branch:
+
+- **Editar** is available on owned user messages. Saving creates a user sibling and immediately
+  starts a new assistant child without changing the original message, title, or ordinary draft.
+- **Volver a intentar** creates only a new assistant sibling from the backend-stored user message.
+- **Deshacer último turno** moves the selected endpoint back one complete turn without deleting
+  descendants.
+- Previous/next alternative controls persistently select a complete branch. Metadata is fetched in
+  bounded revision-scoped chunks; sibling content is loaded only after selection.
+- Edit, retry, Undo, and branch selection are blocked while a response is active. Composer typing
+  and draft autosave continue throughout streaming.
+
+User and assistant text share one local renderer for CommonMark, GitHub-flavored tables and task
+lists, fenced code, and inline/block mathematics. Raw HTML and Markdown images never mount; links
+allow only `http`, `https`, and `mailto`, and syntax highlighting uses only the committed grammar
+set. Copy answer/user writes the original normalized Markdown source, while code copy writes the
+exact fenced payload without its markers. No renderer asset or grammar is fetched at runtime.
+
+Streaming follows only while the employee remains near the bottom. Scrolling upward or selecting
+text disengages following and exposes **Ir a lo más reciente** when more streamed content arrives.
+Completion, cancellation, and failure never force a final scroll. Opening a message search result
+selects its preserved branch, loads ancestors until the exact match is present, positions once, and
+marks it briefly without placing the query or message content in the URL.
 
 The committed migration history includes the Phase 3 conversation tables and PostgreSQL `unaccent`
 search extension plus the Phase 4 durable generation lifecycle. Apply the complete history with
@@ -243,8 +269,9 @@ pnpm test:e2e
 The Playwright command starts its own migrated PostgreSQL container, seeds synthetic conversation
 trees before the API listens, and starts the fake-email API harness, deterministic fake model, and
 Vite server. It does not use the local development database, expose a test-only application route,
-or contact a real email or model provider. The broad suite remains Chromium-first; tagged Send,
-Stop, navigation, reload, and mobile composer cases also run in Firefox and WebKit.
+or contact a real email or model provider. The broad suite remains Chromium-first; critical stream,
+scroll, Markdown-overflow, copy, and branch interactions also run in Firefox and WebKit with isolated
+mutable fixture conversations.
 
 GitHub Actions runs formatting/linting, type checking, clean migrations, unit and PostgreSQL
 integration tests, production builds, and the non-root API image as named steps in one quality job.
@@ -322,7 +349,7 @@ docker build --file apps/api/Dockerfile --tag capstone-chat-api .
 
 The Vite output is static content in `apps/web/dist`; no production static host has been selected.
 The API image runs as the non-root `node` user and includes the compiled runtime and committed
-migrations. Building the image verifies the artifact, but Phase 4 does not ship a production model
+migrations. Building the image verifies the artifact, but Phase 5 does not ship a production model
 gateway.
 
 The migration job receives only `NODE_ENV` and `DATABASE_URL`; it does not receive the Better Auth
@@ -339,7 +366,7 @@ docker run --rm \
 
 `EMAIL_DELIVERY=disabled` is an honest Phase 2 validation mode, not a launch-capable email setup:
 verification and password-recovery sends fail safely. `EMAIL_DELIVERY=fake` is rejected during
-production startup. Likewise, the Phase 4 fake model gateway is rejected in production and no
+production startup. Likewise, the Phase 4–5 fake model gateway is rejected in production and no
 environment variable can enable or script it. Consequently the server image is not a deployable AI
 service in this milestone. A real model gateway arrives with Phase 6; a transactional email
 provider, secret wiring, deployment venue, static host, and edge configuration remain deliberately

@@ -1,13 +1,19 @@
+import { randomUUID } from "node:crypto";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { type ApiApplication, createApplication } from "../../src/app.js";
 import { loadConfig } from "../../src/config.js";
+import { session as authenticationSessions } from "../../src/database/auth-schema.generated.js";
+import { generations } from "../../src/database/generation-schema.js";
 import { migrateDatabase } from "../../src/database/migrate.js";
 import type { RequestActor } from "../../src/identity/authorization.js";
 import { FakeEmailSender } from "../../src/identity/email.js";
 import { createInvitationEmail } from "../../src/identity/email-templates.js";
 import {
+  conversationBrowserAuthentication,
   conversationBrowserEmployee,
   conversationBrowserFixtures,
+  phaseFiveBrowserFixtures,
+  responseGalleryAssistantMarkdown,
 } from "./conversation-e2e-fixtures.js";
 
 const apiPort = 3011;
@@ -31,6 +37,217 @@ async function stop(): Promise<void> {
   return stopping;
 }
 
+async function seedTerminalResponse(
+  currentApplication: ApiApplication,
+  actor: RequestActor,
+  conversationId: string,
+  assistantMessageId: string,
+  outcome:
+    | { readonly status: "completed"; readonly reason: "stop" }
+    | {
+        readonly status: "incomplete";
+        readonly reason: "error";
+        readonly errorCode: "STREAM_INTERRUPTED";
+      },
+): Promise<void> {
+  const timestamp = new Date();
+  await currentApplication.database.insert(generations).values({
+    assistantMessageId,
+    completedAt: timestamp,
+    conversationId,
+    createdAt: timestamp,
+    effectiveParameters: {},
+    errorCode: outcome.status === "incomplete" ? outcome.errorCode : null,
+    firstTokenAt: timestamp,
+    idempotencyKey: randomUUID(),
+    requestedTier: "balanced",
+    startedAt: timestamp,
+    status: outcome.status,
+    systemPromptVersion: "capstone-chat-v1",
+    terminalReason: outcome.reason,
+    updatedAt: timestamp,
+    userId: actor.employee.id,
+    workspaceId: actor.workspace.id,
+  });
+}
+
+async function seedResponseGallery(
+  currentApplication: ApiApplication,
+  actor: RequestActor,
+): Promise<void> {
+  const conversation = await currentApplication.conversations.create(actor);
+  const renamed = await currentApplication.conversations.rename(
+    actor,
+    conversation.id,
+    phaseFiveBrowserFixtures.galleryTitle,
+    conversation.revision,
+  );
+  const root = await currentApplication.conversations.insertImmutableMessage(actor, {
+    content: [{ type: "text", text: phaseFiveBrowserFixtures.galleryUser }],
+    conversationId: conversation.id,
+    parentMessageId: null,
+    role: "user",
+  });
+  const gallery = await currentApplication.conversations.insertImmutableMessage(actor, {
+    content: [{ type: "text", text: responseGalleryAssistantMarkdown }],
+    conversationId: conversation.id,
+    parentMessageId: root.id,
+    role: "assistant",
+  });
+  const secondUser = await currentApplication.conversations.insertImmutableMessage(actor, {
+    content: [{ type: "text", text: phaseFiveBrowserFixtures.gallerySecondUser }],
+    conversationId: conversation.id,
+    parentMessageId: gallery.id,
+    role: "user",
+  });
+  const partial = await currentApplication.conversations.insertImmutableMessage(actor, {
+    content: [{ type: "text", text: phaseFiveBrowserFixtures.galleryPartial }],
+    conversationId: conversation.id,
+    parentMessageId: secondUser.id,
+    role: "assistant",
+  });
+  await new Promise<void>((resolve) => setTimeout(resolve, 2));
+  const alternative = await currentApplication.conversations.insertImmutableMessage(actor, {
+    content: [{ type: "text", text: phaseFiveBrowserFixtures.galleryAlternative }],
+    conversationId: conversation.id,
+    parentMessageId: secondUser.id,
+    role: "assistant",
+  });
+  await currentApplication.conversations.selectLeaf(
+    actor,
+    conversation.id,
+    partial.id,
+    renamed.revision,
+  );
+  await Promise.all([
+    seedTerminalResponse(currentApplication, actor, conversation.id, gallery.id, {
+      status: "completed",
+      reason: "stop",
+    }),
+    seedTerminalResponse(currentApplication, actor, conversation.id, partial.id, {
+      status: "incomplete",
+      reason: "error",
+      errorCode: "STREAM_INTERRUPTED",
+    }),
+    seedTerminalResponse(currentApplication, actor, conversation.id, alternative.id, {
+      status: "completed",
+      reason: "stop",
+    }),
+  ]);
+}
+
+async function seedControlConversation(
+  currentApplication: ApiApplication,
+  actor: RequestActor,
+  title: string,
+): Promise<void> {
+  const conversation = await currentApplication.conversations.create(actor);
+  const renamed = await currentApplication.conversations.rename(
+    actor,
+    conversation.id,
+    title,
+    conversation.revision,
+  );
+  const root = await currentApplication.conversations.insertImmutableMessage(actor, {
+    content: [{ type: "text", text: phaseFiveBrowserFixtures.controlsOriginalRoot }],
+    conversationId: conversation.id,
+    parentMessageId: null,
+    role: "user",
+  });
+  const firstAnswer = await currentApplication.conversations.insertImmutableMessage(actor, {
+    content: [{ type: "text", text: "Primera respuesta preservada." }],
+    conversationId: conversation.id,
+    parentMessageId: root.id,
+    role: "assistant",
+  });
+  await new Promise<void>((resolve) => setTimeout(resolve, 2));
+  const secondAnswer = await currentApplication.conversations.insertImmutableMessage(actor, {
+    content: [{ type: "text", text: "Segunda respuesta preservada." }],
+    conversationId: conversation.id,
+    parentMessageId: root.id,
+    role: "assistant",
+  });
+  const firstFollowUp = await currentApplication.conversations.insertImmutableMessage(actor, {
+    content: [{ type: "text", text: "Seguimiento de la primera alternativa." }],
+    conversationId: conversation.id,
+    parentMessageId: firstAnswer.id,
+    role: "user",
+  });
+  const firstLeaf = await currentApplication.conversations.insertImmutableMessage(actor, {
+    content: [{ type: "text", text: phaseFiveBrowserFixtures.controlsOriginalBranchText }],
+    conversationId: conversation.id,
+    parentMessageId: firstFollowUp.id,
+    role: "assistant",
+  });
+  const secondFollowUp = await currentApplication.conversations.insertImmutableMessage(actor, {
+    content: [{ type: "text", text: "Seguimiento de la segunda alternativa." }],
+    conversationId: conversation.id,
+    parentMessageId: secondAnswer.id,
+    role: "user",
+  });
+  await currentApplication.conversations.insertImmutableMessage(actor, {
+    content: [{ type: "text", text: phaseFiveBrowserFixtures.controlsNextBranchText }],
+    conversationId: conversation.id,
+    parentMessageId: secondFollowUp.id,
+    role: "assistant",
+  });
+  await currentApplication.conversations.selectLeaf(
+    actor,
+    conversation.id,
+    firstLeaf.id,
+    renamed.revision,
+  );
+  await currentApplication.conversations.saveDraft(
+    actor,
+    { conversationId: conversation.id, kind: "conversation" },
+    phaseFiveBrowserFixtures.controlsDraft,
+    0,
+  );
+}
+
+async function seedDeepSearchConversation(
+  currentApplication: ApiApplication,
+  actor: RequestActor,
+): Promise<void> {
+  const conversation = await currentApplication.conversations.create(actor);
+  const renamed = await currentApplication.conversations.rename(
+    actor,
+    conversation.id,
+    phaseFiveBrowserFixtures.searchTitle,
+    conversation.revision,
+  );
+  let parentMessageId: string | null = null;
+  let selectedLeafId: string | undefined;
+  for (let index = 0; index < 42; index += 1) {
+    const role = index % 2 === 0 ? "user" : "assistant";
+    const message = await currentApplication.conversations.insertImmutableMessage(actor, {
+      content: [
+        {
+          type: "text",
+          text:
+            index === 0
+              ? phaseFiveBrowserFixtures.searchRootText
+              : `${role === "user" ? "Pregunta" : "Respuesta"} histórica ${index + 1}.`,
+        },
+      ],
+      conversationId: conversation.id,
+      parentMessageId,
+      role,
+    });
+    parentMessageId = message.id;
+    selectedLeafId = message.id;
+  }
+  if (selectedLeafId === undefined) {
+    throw new Error("The deep-search browser fixture has no selected message");
+  }
+  await currentApplication.conversations.selectLeaf(
+    actor,
+    conversation.id,
+    selectedLeafId,
+    renamed.revision,
+  );
+}
+
 async function main(): Promise<void> {
   container = await new PostgreSqlContainer("postgres:18.4-alpine")
     .withDatabase("capstone_browser")
@@ -43,7 +260,7 @@ async function main(): Promise<void> {
   const emailSender = new FakeEmailSender();
   application = createApplication(
     loadConfig({
-      BETTER_AUTH_SECRET: "capstone-browser-test-secret-with-more-than-thirty-two-characters",
+      BETTER_AUTH_SECRET: conversationBrowserAuthentication.secret,
       DATABASE_URL: databaseUrl,
       EMAIL_DELIVERY: "fake",
       HOST: "127.0.0.1",
@@ -107,6 +324,15 @@ async function main(): Promise<void> {
   if (employee === undefined || employeeRows.length !== 1) {
     throw new Error("The browser conversation employee is missing or ambiguous");
   }
+  const browserSessionTimestamp = new Date();
+  await application.database.insert(authenticationSessions).values({
+    createdAt: browserSessionTimestamp,
+    expiresAt: new Date(browserSessionTimestamp.getTime() + 7 * 24 * 60 * 60 * 1_000),
+    id: randomUUID(),
+    token: conversationBrowserAuthentication.sessionToken,
+    updatedAt: browserSessionTimestamp,
+    userId: employee.id,
+  });
   const fixtureActor: RequestActor = {
     employee: {
       email: employee.email,
@@ -158,6 +384,12 @@ async function main(): Promise<void> {
     conversationBrowserFixtures.conversationDraft,
     0,
   );
+
+  await seedResponseGallery(application, fixtureActor);
+  await seedDeepSearchConversation(application, fixtureActor);
+  for (const title of Object.values(phaseFiveBrowserFixtures.controlsTitles)) {
+    await seedControlConversation(application, fixtureActor, title);
+  }
 
   const archived = await application.conversations.create(fixtureActor);
   const archivedRenamed = await application.conversations.rename(

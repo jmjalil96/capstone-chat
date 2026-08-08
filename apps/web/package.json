@@ -16,9 +16,15 @@
     "@capstone/protocol": "workspace:*",
     "@tanstack/react-query": "5.101.4",
     "better-auth": "1.6.26",
+    "highlight.js": "11.11.1",
     "react": "19.2.8",
     "react-dom": "19.2.8",
+    "react-markdown": "10.1.0",
     "react-router": "8.3.0",
+    "rehype-highlight": "7.0.2",
+    "rehype-katex": "7.0.1",
+    "remark-gfm": "4.0.1",
+    "remark-math": "6.0.0",
     "typebox": "1.3.11"
   },
   "devDependencies": {

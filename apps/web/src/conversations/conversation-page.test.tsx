@@ -1091,7 +1091,7 @@ describe("conversation page", () => {
               id: assistantMessageId,
               parentMessageId: userMessageId,
               role: "assistant",
-              content: [{ type: "text", text: "Parcial" }],
+              content: [{ type: "text", text: "```ts\nconst parcial = true;\n```" }],
               createdAt: "2026-08-06T12:00:01.000Z",
               siblingCount: 0,
             },
@@ -1145,6 +1145,138 @@ describe("conversation page", () => {
     expect(
       await screen.findByRole("button", { name: copy.conversations.generation.actions.stop }),
     ).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: copy.conversations.messages.copyAnswer }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: copy.conversations.messages.copyCode }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("restores the invoked branch and Undo controls after action errors", async () => {
+    const firstUserId = "22222222-2222-4222-8222-222222222222";
+    const firstAssistantId = "33333333-3333-4333-8333-333333333333";
+    const currentUserId = "44444444-4444-4444-8444-444444444444";
+    const currentAssistantId = "55555555-5555-4555-8555-555555555555";
+    const previousAlternativeId = "66666666-6666-4666-8666-666666666666";
+    let currentRevision = 4;
+    const conversation = () => ({
+      id: conversationId,
+      title: "Controles de rama",
+      isArchived: false,
+      revision: currentRevision,
+      createdAt: "2026-08-06T12:00:00.000Z",
+      updatedAt: "2026-08-06T12:00:04.000Z",
+    });
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = init?.method ?? "GET";
+
+      if (url.endsWith(`/api/conversations/${conversationId}/draft`) && method === "GET") {
+        return json({
+          scope: { kind: "conversation", conversationId },
+          content: "",
+          revision: 0,
+          updatedAt: null,
+        });
+      }
+      if (url.endsWith(`/api/conversations/${conversationId}/response-states`)) {
+        return json({ conversationId, revision: currentRevision, responses: [] });
+      }
+      if (
+        url.endsWith(`/api/conversations/${conversationId}/alternative-contexts`) &&
+        method === "POST"
+      ) {
+        return json({
+          conversationId,
+          revision: currentRevision,
+          contexts: [
+            {
+              messageId: currentAssistantId,
+              position: 2,
+              total: 2,
+              previousLeafMessageId: previousAlternativeId,
+              nextLeafMessageId: null,
+            },
+          ],
+        });
+      }
+      if (url.endsWith(`/api/conversations/${conversationId}/selection`) && method === "PUT") {
+        currentRevision = 5;
+        return json(
+          {
+            code: "CONVERSATION_CHANGED",
+            message: "Conversation changed",
+            requestId: "request-stale-action",
+          },
+          409,
+        );
+      }
+      if (url.endsWith(`/api/conversations/${conversationId}/undo`) && method === "POST") {
+        return json(
+          { code: "INTERNAL_ERROR", message: "Action failed", requestId: "request-action" },
+          500,
+        );
+      }
+      if (url.endsWith(`/api/conversations/${conversationId}`) && method === "GET") {
+        return json({
+          conversation: conversation(),
+          selectedLeafId: currentAssistantId,
+          messages: [
+            conversationMessage(firstUserId, null, "user", "Primera pregunta"),
+            conversationMessage(firstAssistantId, firstUserId, "assistant", "Primera respuesta"),
+            conversationMessage(currentUserId, firstAssistantId, "user", "Pregunta actual"),
+            {
+              ...conversationMessage(
+                currentAssistantId,
+                currentUserId,
+                "assistant",
+                "Respuesta actual",
+              ),
+              siblingCount: 1,
+            },
+          ],
+          nextCursor: null,
+        });
+      }
+      throw new Error(`Unexpected request: ${method} ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const router = createMemoryRouter(
+      [
+        {
+          Component: TestLayout,
+          children: [{ path: "/c/:conversationId", Component: ConversationPage }],
+        },
+      ],
+      { initialEntries: [`/c/${conversationId}`] },
+    );
+    const user = userEvent.setup();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>,
+    );
+
+    const previous = await screen.findByRole("button", {
+      name: copy.conversations.messages.previousAlternative,
+    });
+    previous.focus();
+    await user.keyboard("{Enter}");
+    expect(await screen.findByRole("alert")).toHaveTextContent(copy.conversations.common.changed);
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", {
+          name: copy.conversations.messages.previousAlternative,
+        }),
+      ).toHaveFocus(),
+    );
+
+    const undo = screen.getByRole("button", { name: copy.conversations.messages.undo });
+    undo.focus();
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(undo).toHaveFocus());
   });
 
   it("abandons canonical recovery when the conversation route changes", async () => {
