@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApplication } from "../src/app.js";
 import { loadConfig } from "../src/config.js";
 import { ActiveStreamRegistry } from "../src/generations/active-streams.js";
+import { compactionPrompt } from "../src/generations/compaction-prompt.js";
 import { FakeModelGateway } from "../src/generations/fake-model-gateway.js";
 import { continueMessage, systemPrompt } from "../src/generations/prompt.js";
 import {
@@ -270,6 +271,7 @@ describe("FakeModelGateway", () => {
     history: [],
     message: { role: "user" as const, text: "Mensaje sintético" },
     modelTier: "balanced" as const,
+    purpose: "chat" as const,
     systemPrompt,
   };
 
@@ -313,6 +315,33 @@ describe("FakeModelGateway", () => {
     })();
     controller.abort();
     await expect(collecting).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("selects deterministic fixtures by generation purpose", async () => {
+    const gateway = new FakeModelGateway({
+      chat: [{ event: { text: "chat fixture", type: "content.delta" } }],
+      compaction: [{ event: { text: "compaction fixture", type: "content.delta" } }],
+    });
+    const chatEvents = [];
+    for await (const event of gateway.stream(request, new AbortController().signal)) {
+      chatEvents.push(event);
+    }
+    const compactionEvents = [];
+    for await (const event of gateway.stream(
+      {
+        history: [],
+        message: { role: "user", text: "{}" },
+        modelTier: "fast",
+        purpose: "compaction",
+        systemPrompt: compactionPrompt,
+      },
+      new AbortController().signal,
+    )) {
+      compactionEvents.push(event);
+    }
+
+    expect(chatEvents).toEqual([{ text: "chat fixture", type: "content.delta" }]);
+    expect(compactionEvents).toEqual([{ text: "compaction fixture", type: "content.delta" }]);
   });
 });
 

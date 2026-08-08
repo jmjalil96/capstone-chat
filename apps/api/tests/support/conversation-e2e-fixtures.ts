@@ -18,6 +18,10 @@ export const conversationBrowserFixtures = Object.freeze({
   selectedText: "Resumen seleccionado del proyecto Faro.",
 });
 
+export const phaseSevenBrowserFixtures = Object.freeze({
+  compactionTitle: "Contexto extenso para compactar",
+});
+
 export const responseGalleryTypeScriptCode = [
   "type Resultado = {",
   "  readonly mensaje: string;",

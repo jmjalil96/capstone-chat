@@ -103,6 +103,24 @@ function responseState(
   };
 }
 
+function compactionTerminalState(status: "cancelled" | "failed"): ResponseStateResponse {
+  return {
+    conversationId,
+    revision: 2,
+    responses: [
+      status === "cancelled"
+        ? { errorCode: null, generationId, messageId, reason: "cancelled", status }
+        : {
+            errorCode: "GENERATION_FAILED",
+            generationId,
+            messageId,
+            reason: "error",
+            status,
+          },
+    ],
+  };
+}
+
 function completedEvent() {
   return {
     type: "response.completed",
@@ -194,6 +212,77 @@ describe("ChatRuntime", () => {
 
     expect(listener).toHaveBeenCalledTimes(1);
     expect(runtime.getSnapshot(conversationId)?.text).toBe("Respuesta");
+    runtime.dispose();
+  });
+
+  it("retains a direct admission fallback warning while ordinary generation continues", async () => {
+    const source = controlledStream();
+    const { runtime } = createRuntime({ openResponse: vi.fn().mockResolvedValue(source.stream) });
+    const startPromise = runtime.startResponse(conversationId, request);
+    source.controller.enqueue(line(started()));
+    await startPromise;
+
+    source.controller.enqueue(
+      line({ code: "CONTEXT_COMPACTION_FALLBACK", type: "context.warning" }),
+    );
+    await vi.waitFor(() =>
+      expect(runtime.getSnapshot(conversationId)).toMatchObject({
+        contextWarning: true,
+        phase: "generating",
+      }),
+    );
+
+    source.controller.enqueue(line({ text: "Respuesta", type: "content.delta" }));
+    await vi.waitFor(() =>
+      expect(runtime.getSnapshot(conversationId)).toMatchObject({
+        contextWarning: true,
+        text: "Respuesta",
+      }),
+    );
+    runtime.dispose();
+  });
+
+  it.each([
+    [
+      "cancellation",
+      { messageId, revision: 2, type: "response.cancelled" } as const,
+      "cancelled" as const,
+    ],
+    [
+      "failure",
+      {
+        errorCode: "GENERATION_FAILED",
+        messageId,
+        partial: false,
+        revision: 2,
+        type: "response.failed",
+      } as const,
+      "failed" as const,
+    ],
+  ])("accepts terminal %s directly from compaction", async (_label, terminal, status) => {
+    const source = controlledStream();
+    const canonicalPending = Promise.withResolvers<ConversationDetailResponse>();
+    const fetchConversation = vi.fn(() => canonicalPending.promise);
+    const fetchResponseStates = vi.fn(async () => compactionTerminalState(status));
+    const { runtime } = createRuntime({
+      fetchConversation,
+      fetchResponseStates,
+      openResponse: vi.fn(async () => source.stream),
+    });
+    const startPromise = runtime.startResponse(conversationId, request);
+    source.controller.enqueue(line(started()));
+    await startPromise;
+    source.controller.enqueue(line({ type: "context.compacting" }));
+    await vi.waitFor(() => expect(runtime.getSnapshot(conversationId)?.phase).toBe("compacting"));
+
+    source.controller.enqueue(line(terminal));
+    source.controller.close();
+    await vi.waitFor(() => expect(fetchConversation).toHaveBeenCalledOnce());
+    expect(runtime.getSnapshot(conversationId)).toMatchObject({ phase: status });
+
+    canonicalPending.resolve(canonical());
+    await vi.waitFor(() => expect(runtime.getSnapshot(conversationId)).toBeUndefined());
+    expect(fetchResponseStates).toHaveBeenCalledOnce();
     runtime.dispose();
   });
 

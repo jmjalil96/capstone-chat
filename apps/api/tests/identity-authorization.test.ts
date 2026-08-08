@@ -3,6 +3,8 @@ import { ApplicationError } from "../src/errors.js";
 import {
   type RequestActor,
   requireAdministratorActor,
+  requireAdministratorRole,
+  requireFreshAdministratorActor,
   requireMemberActor,
 } from "../src/identity/authorization.js";
 import { identitySecurity } from "../src/identity/security.js";
@@ -121,6 +123,50 @@ describe("requireAdministratorActor", () => {
     const stale = new Date(now.getTime() - identitySecurity.freshSessionSeconds * 1_000 - 1);
 
     expectApplicationError(() => requireAdministratorActor(actor("admin", stale), now), {
+      code: "SESSION_REFRESH_REQUIRED",
+      message: "Vuelve a iniciar sesi\u00f3n antes de realizar esta acci\u00f3n.",
+      statusCode: 403,
+    });
+  });
+});
+
+describe("requireAdministratorRole", () => {
+  it("allows an administrator without applying mutation freshness", () => {
+    const stale = new Date(now.getTime() - identitySecurity.freshSessionSeconds * 1_000 - 1);
+    const administrator = actor("admin", stale);
+
+    expect(requireAdministratorRole(administrator)).toBe(administrator);
+  });
+
+  it("preserves the authentication-required failure for a missing actor", () => {
+    expectApplicationError(() => requireAdministratorRole(null), {
+      code: "AUTHENTICATION_REQUIRED",
+      message: "Inicia sesi\u00f3n para continuar.",
+      statusCode: 401,
+    });
+  });
+
+  it("returns the explicit administrator-only failure to a member", () => {
+    expectApplicationError(() => requireAdministratorRole(actor("member")), {
+      code: "ADMIN_ACCESS_REQUIRED",
+      message: "Necesitas permisos de administraci\u00f3n para continuar.",
+      statusCode: 403,
+    });
+  });
+});
+
+describe("requireFreshAdministratorActor", () => {
+  it("accepts an administrator exactly at the freshness threshold", () => {
+    const threshold = new Date(now.getTime() - identitySecurity.freshSessionSeconds * 1_000);
+    const administrator = actor("admin", threshold);
+
+    expect(requireFreshAdministratorActor(administrator, now)).toBe(administrator);
+  });
+
+  it("requires a fresh session for administrator mutations", () => {
+    const stale = new Date(now.getTime() - identitySecurity.freshSessionSeconds * 1_000 - 1);
+
+    expectApplicationError(() => requireFreshAdministratorActor(actor("admin", stale), now), {
       code: "SESSION_REFRESH_REQUIRED",
       message: "Vuelve a iniciar sesi\u00f3n antes de realizar esta acci\u00f3n.",
       statusCode: 403,

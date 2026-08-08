@@ -93,6 +93,32 @@ test("completes the real approved identity lifecycle through the browser", async
   ).toBeVisible();
 
   await desktopSidebar.getByText(administrator.name, { exact: true }).click();
+  await desktopSidebar.getByRole("link", { name: copy.administration.navigation.label }).click();
+  await expect(
+    page.getByRole("heading", { level: 1, name: copy.administration.employees.title }),
+  ).toBeVisible();
+  const pendingEmployeeEmail = "phase7.pending@example.test";
+  await page.getByLabel(copy.administration.employees.email).fill(pendingEmployeeEmail);
+  await page.getByLabel(copy.administration.employees.role).selectOption("member");
+  await page.getByRole("button", { name: copy.administration.employees.approve }).click();
+  await expect(page.getByText(copy.administration.employees.invitationSent)).toBeVisible();
+  await expect(page.getByRole("rowheader", { name: pendingEmployeeEmail })).toBeVisible();
+
+  await page.getByRole("link", { name: copy.administration.navigation.models }).click();
+  await expect(
+    page.getByRole("heading", { level: 1, name: copy.administration.models.title }),
+  ).toBeVisible();
+  await expect(page.getByLabel(copy.administration.models.monthlyBudget)).toHaveValue("100");
+  await page.getByRole("link", { name: copy.administration.navigation.usage }).click();
+  await expect(
+    page.getByRole("heading", { level: 1, name: copy.administration.usage.title }),
+  ).toBeVisible();
+  await page.getByRole("link", { name: copy.administration.navigation.backToChat }).click();
+  await expect(
+    page.getByRole("heading", { level: 1, name: copy.conversations.newChat.title }),
+  ).toBeVisible();
+
+  await desktopSidebar.getByText(administrator.name, { exact: true }).click();
   await desktopSidebar.getByRole("link", { name: copy.conversations.navigation.security }).click();
   await page.getByLabel(copy.identity.common.currentPasswordLabel).fill(originalPassword);
   await page.getByLabel(copy.identity.common.newPasswordLabel).fill(changedPassword);

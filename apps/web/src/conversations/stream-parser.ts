@@ -158,8 +158,13 @@ export async function* parseResponseStream(
             throw new StreamReadError("STREAM_PROTOCOL_ERROR");
           }
           compaction = "compacting";
-        } else if (event.type === "context.compacted" || event.type === "context.warning") {
+        } else if (event.type === "context.compacted") {
           if (compaction !== "compacting") {
+            throw new StreamReadError("STREAM_PROTOCOL_ERROR");
+          }
+          compaction = "settled";
+        } else if (event.type === "context.warning") {
+          if (compaction === "settled" || contentSeen) {
             throw new StreamReadError("STREAM_PROTOCOL_ERROR");
           }
           compaction = "settled";
@@ -171,8 +176,10 @@ export async function* parseResponseStream(
         }
 
         if (terminalEventTypes.has(event.type)) {
+          const mayTerminateWhileCompacting =
+            event.type === "response.cancelled" || event.type === "response.failed";
           if (
-            compaction === "compacting" ||
+            (compaction === "compacting" && !mayTerminateWhileCompacting) ||
             !("messageId" in event) ||
             event.messageId !== startedMessageId
           ) {

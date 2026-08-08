@@ -2,6 +2,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createBrowserRouter, Navigate, type RouteObject } from "react-router";
 import { RouterProvider } from "react-router/dom";
 
+import { AdminGuard } from "./administration/admin-guard";
+import { AdminShell } from "./administration/admin-shell";
+import { EmployeesPage } from "./administration/employees-page";
+import { ModelsPage } from "./administration/models-page";
+import { UsagePage } from "./administration/usage-page";
 import { ArchivedPage } from "./conversations/archived-page";
 import { ConversationPage } from "./conversations/conversation-page";
 import { ConversationShell } from "./conversations/conversation-shell";
@@ -59,6 +64,21 @@ export const appRoutes = [
                 <AccountSecurityPage />
               </IdentityFrame>
             ),
+          },
+          {
+            path: "/admin",
+            Component: AdminGuard,
+            children: [
+              {
+                Component: AdminShell,
+                children: [
+                  { index: true, element: <Navigate to="/admin/employees" replace /> },
+                  { path: "employees", Component: EmployeesPage },
+                  { path: "models", Component: ModelsPage },
+                  { path: "usage", Component: UsagePage },
+                ],
+              },
+            ],
           },
         ],
       },

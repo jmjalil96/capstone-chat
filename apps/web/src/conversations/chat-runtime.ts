@@ -35,6 +35,7 @@ export interface ChatRuntimeSnapshot {
   readonly awaitingCanonical: boolean;
   readonly branchAnchorMessageId?: string | null;
   readonly committedUserText: string | undefined;
+  readonly contextWarning: boolean;
   readonly conversationId: string;
   readonly consumesDraft: boolean;
   readonly errorCode: string | undefined;
@@ -66,6 +67,7 @@ interface ChatRuntimeEntry {
   awaitingCanonical: boolean;
   cancelController: AbortController | undefined;
   commitNotified: boolean;
+  contextWarning: boolean;
   errorCode: string | undefined;
   frame: number | undefined;
   generationId: string | undefined;
@@ -202,6 +204,7 @@ export class ChatRuntime {
       awaitingCanonical: false,
       cancelController: undefined,
       commitNotified: false,
+      contextWarning: false,
       conversationId,
       consumesDraft: request.source === "draft",
       errorCode: undefined,
@@ -471,6 +474,7 @@ export class ChatRuntime {
       return;
     }
     if (event.type === "context.compacted" || event.type === "context.warning") {
+      entry.contextWarning ||= event.type === "context.warning";
       if (entry.phase !== "stopping") {
         entry.phase = "generating";
       }
@@ -887,6 +891,7 @@ export class ChatRuntime {
       awaitingCanonical: false,
       cancelController: undefined,
       commitNotified: true,
+      contextWarning: false,
       conversationId,
       consumesDraft: false,
       errorCode: undefined,
@@ -952,6 +957,7 @@ export class ChatRuntime {
         (entry.request?.source === "draft" || entry.request?.source === "edit")
           ? entry.request.content[0]?.text
           : undefined,
+      contextWarning: entry.contextWarning,
       conversationId: entry.conversationId,
       consumesDraft: entry.consumesDraft,
       errorCode: entry.errorCode,

@@ -24,6 +24,7 @@ const started: StartedResponse = {
     history: [],
     message: { role: "user", text: "Synthetic request" },
     modelTier: "balanced",
+    purpose: "chat",
     systemPrompt,
   },
   revision: 1,
@@ -44,6 +45,15 @@ const routedStarted: StartedResponse = {
   },
 };
 
+const pendingStarted: StartedResponse = {
+  ...started,
+  compaction: {} as NonNullable<StartedResponse["compaction"]>,
+};
+
+type CompactionDependency = NonNullable<
+  Parameters<typeof createResponseStreamCoordinator>[0]["compactions"]
+>;
+
 interface MemoryGenerationService {
   service: GenerationService;
   content: string;
@@ -54,7 +64,9 @@ interface MemoryGenerationService {
   terminalizeInputs: Parameters<GenerationService["terminalize"]>[1][];
 }
 
-function memoryGenerationService(): MemoryGenerationService {
+function memoryGenerationService(
+  status: DurableGenerationState["status"] = "active",
+): MemoryGenerationService {
   const memory: MemoryGenerationService = {
     content: "",
     failTerminalPersistence: false,
@@ -67,7 +79,7 @@ function memoryGenerationService(): MemoryGenerationService {
       errorCode: null,
       reason: null,
       revision: 1,
-      status: "active",
+      status,
     },
     terminalizeInputs: [],
   };
@@ -121,10 +133,12 @@ async function streamUrl(
   registry = new ActiveStreamRegistry(),
   prepareReply?: (reply: FastifyReply) => void,
   response = started,
+  compactions?: CompactionDependency,
 ): Promise<string> {
   const server = Fastify();
   servers.push(server);
   const coordinator = createResponseStreamCoordinator({
+    ...(compactions === undefined ? {} : { compactions }),
     gateway,
     generations: memory.service,
     registry,
@@ -243,6 +257,142 @@ afterEach(async () => {
 });
 
 describe("response stream normalization", () => {
+  it("warns before chat output when admission selected direct context fallback", async () => {
+    const memory = memoryGenerationService();
+    const events = await eventsFrom(
+      await fetch(
+        await streamUrl(
+          new FakeModelGateway([
+            { event: { text: "Respuesta acotada", type: "content.delta" } },
+            {
+              event: {
+                reason: "stop",
+                type: "response.completed",
+                usage: { inputTokens: 12, outputTokens: 3 },
+              },
+            },
+          ]),
+          memory,
+          undefined,
+          undefined,
+          { ...started, contextWarning: true },
+        ),
+        { method: "POST" },
+      ),
+    );
+
+    expect(events.map((event) => event.type)).toEqual([
+      "response.started",
+      "context.warning",
+      "content.delta",
+      "response.completed",
+    ]);
+    expect(events[1]).toEqual({
+      code: "CONTEXT_COMPACTION_FALLBACK",
+      type: "context.warning",
+    });
+  });
+
+  it.each([
+    { kind: "compacted" as const, settledEvent: "context.compacted" },
+    { kind: "fallback" as const, settledEvent: "context.warning" },
+  ])(
+    "orders $kind compaction before the one ordinary chat call",
+    async ({ kind, settledEvent }) => {
+      const memory = memoryGenerationService("preparing");
+      const gatewayStream = vi.fn(async function* () {
+        yield { text: "Respuesta compactada", type: "content.delta" } as const;
+        yield {
+          reason: "stop",
+          type: "response.completed",
+          usage: { inputTokens: 18, outputTokens: 4 },
+        } as const;
+      });
+      const compactions = {
+        cancel: vi.fn(async () => undefined),
+        execute: vi.fn(async () => {
+          memory.state = { ...memory.state, status: "active" };
+          return { chat: { request: started.request }, kind };
+        }),
+      } as unknown as CompactionDependency;
+      const events = await eventsFrom(
+        await fetch(
+          await streamUrl(
+            { stream: gatewayStream },
+            memory,
+            undefined,
+            undefined,
+            pendingStarted,
+            compactions,
+          ),
+          { method: "POST" },
+        ),
+      );
+
+      expect(events.map((event) => event.type)).toEqual([
+        "response.started",
+        "context.compacting",
+        settledEvent,
+        "content.delta",
+        "response.completed",
+      ]);
+      if (kind === "fallback") {
+        expect(events[2]).toEqual({
+          code: "CONTEXT_COMPACTION_FALLBACK",
+          type: "context.warning",
+        });
+      }
+      expect(compactions.execute).toHaveBeenCalledOnce();
+      expect(gatewayStream).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("recovers cancellation directly while compaction is pending without calling chat", async () => {
+    const memory = memoryGenerationService("preparing");
+    const compactionStarted = Promise.withResolvers<void>();
+    const releaseCompaction = Promise.withResolvers<void>();
+    const gatewayStream = vi.fn(() => {
+      throw new Error("Chat must not start after compaction cancellation");
+    });
+    const compactions = {
+      cancel: vi.fn(async () => undefined),
+      execute: vi.fn(async () => {
+        compactionStarted.resolve();
+        await releaseCompaction.promise;
+        return { kind: "cancelled" as const };
+      }),
+    } as unknown as CompactionDependency;
+    const response = fetch(
+      await streamUrl(
+        { stream: gatewayStream },
+        memory,
+        undefined,
+        undefined,
+        pendingStarted,
+        compactions,
+      ),
+      { method: "POST" },
+    );
+    await compactionStarted.promise;
+    memory.state = {
+      ...memory.state,
+      errorCode: null,
+      reason: "cancelled",
+      revision: 2,
+      status: "cancelled",
+    };
+    releaseCompaction.resolve();
+
+    const events = await eventsFrom(await response);
+
+    expect(events.map((event) => event.type)).toEqual([
+      "response.started",
+      "context.compacting",
+      "response.cancelled",
+    ]);
+    expect(gatewayStream).not.toHaveBeenCalled();
+  });
+
   it.each([
     {
       expectedCode: "GENERATION_FAILED",
@@ -817,6 +967,57 @@ describe("response stream normalization", () => {
     expect(stateReads).toBeGreaterThanOrEqual(2);
     expect(gatewaySignal?.aborted).toBe(true);
     expect(events.map((event) => event.type)).toEqual(["response.started", "response.cancelled"]);
+  });
+
+  it("emits a durable remote failure while a routed gateway is stalled", async () => {
+    const memory = memoryGenerationService();
+    let stateReads = 0;
+    const originalReadState = memory.service.readState.bind(memory.service);
+    memory.service = {
+      ...memory.service,
+      readState: async (generationId: string) => {
+        stateReads += 1;
+        return originalReadState(generationId);
+      },
+    } as GenerationService;
+    const gateway: ModelGateway = {
+      async *stream(_request, signal) {
+        await new Promise<void>((_resolve, reject) => {
+          const aborted = (): void => reject(new DOMException("aborted", "AbortError"));
+          if (signal.aborted) {
+            aborted();
+            return;
+          }
+          signal.addEventListener("abort", aborted, { once: true });
+        });
+      },
+    };
+    const response = await fetch(
+      await streamUrl(gateway, memory, new ActiveStreamRegistry(), undefined, routedStarted),
+      { method: "POST" },
+    );
+    for (let attempt = 0; attempt < 100 && stateReads === 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    memory.state = {
+      ...memory.state,
+      errorCode: "GENERATION_FAILED",
+      reason: "error",
+      revision: 2,
+      status: "failed",
+    };
+
+    const events = await eventsFrom(response);
+
+    expect(events).toEqual([
+      expect.objectContaining({ type: "response.started" }),
+      expect.objectContaining({
+        errorCode: "GENERATION_FAILED",
+        partial: false,
+        revision: 2,
+        type: "response.failed",
+      }),
+    ]);
   });
 
   it("fences local cancellation and enqueues its backpressured terminal exactly once", async () => {

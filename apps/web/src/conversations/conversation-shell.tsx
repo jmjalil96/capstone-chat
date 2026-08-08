@@ -96,6 +96,12 @@ function SidebarContents({
           <div className="account-menu-panel">
             <p className="account-email">{session.employee.email}</p>
             <p className="account-role">{copy.identity.roles[session.workspace.role]}</p>
+            {session.workspace.role === "admin" ? (
+              <Link to="/admin/employees" onClick={onNavigate}>
+                <Icon name="settings" />
+                {copy.administration.navigation.label}
+              </Link>
+            ) : null}
             <Link to="/account/security" onClick={onNavigate}>
               <Icon name="settings" />
               {copy.conversations.navigation.security}

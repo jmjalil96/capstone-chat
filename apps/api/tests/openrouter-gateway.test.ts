@@ -1,4 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  compactionPrompt,
+  serializeCompactionInput,
+  serializeSummaryFrame,
+} from "../src/generations/compaction-prompt.js";
 import type { GatewayEvent, GenerationRequest } from "../src/generations/model-gateway.js";
 import { type OpenRouterFetch, OpenRouterGateway } from "../src/openrouter/openrouter-gateway.js";
 
@@ -6,6 +11,7 @@ const request: GenerationRequest = {
   history: [{ role: "user", text: "[synthetic-history]" }],
   message: { role: "user", text: "[synthetic-request]" },
   modelTier: "balanced",
+  purpose: "chat",
   route: {
     completionPriceCeilingUsdPerToken: "0.000003",
     maximumOutputTokens: 512,
@@ -70,8 +76,16 @@ async function collect(
   gateway: OpenRouterGateway,
   signal: AbortSignal = new AbortController().signal,
 ): Promise<readonly GatewayEvent[]> {
+  return collectRequest(gateway, request, signal);
+}
+
+async function collectRequest(
+  gateway: OpenRouterGateway,
+  generationRequest: GenerationRequest,
+  signal: AbortSignal = new AbortController().signal,
+): Promise<readonly GatewayEvent[]> {
   const events: GatewayEvent[] = [];
-  for await (const event of gateway.stream(request, signal)) {
+  for await (const event of gateway.stream(generationRequest, signal)) {
     events.push(event);
   }
   return events;
@@ -161,6 +175,78 @@ describe("OpenRouterGateway", () => {
       },
     ]);
     expect(JSON.stringify(events)).not.toContain("never-observed");
+  });
+
+  it("serializes typed derived context in its exact chat wire position", async () => {
+    let capturedBody: { readonly messages?: unknown } | undefined;
+    const sse = [
+      'data: {"id":"gen-derived","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"cost":"0"}}\n\n',
+      "data: [DONE]\n\n",
+    ].join("");
+    const derivedRequest: GenerationRequest = {
+      ...request,
+      derivedContext: { kind: "compaction-summary", summary: 'Prior "summary"' },
+      history: [
+        { role: "user", text: "Recent question" },
+        { role: "assistant", text: "Recent answer" },
+      ],
+    };
+    await collectRequest(
+      new OpenRouterGateway({
+        apiKey: "test-key-never-sent",
+        fetch: async (_input, init) => {
+          capturedBody = JSON.parse(String(init?.body)) as { readonly messages?: unknown };
+          return streamResponse([new TextEncoder().encode(sse)]);
+        },
+      }),
+      derivedRequest,
+    );
+
+    expect(capturedBody?.messages).toEqual([
+      { content: "[synthetic-system]", role: "system" },
+      { content: serializeSummaryFrame('Prior "summary"'), role: "user" },
+      { content: "Recent question", role: "user" },
+      { content: "Recent answer", role: "assistant" },
+      { content: "[synthetic-request]", role: "user" },
+    ]);
+  });
+
+  it("serializes compaction as exactly one system and one deterministic JSON user message", async () => {
+    let capturedBody: { readonly messages?: unknown } | undefined;
+    const input = serializeCompactionInput({
+      messages: [
+        { role: "user", text: "Earlier question" },
+        { role: "assistant", text: "Earlier answer" },
+      ],
+      previousSummary: null,
+    });
+    const compactionRequest: GenerationRequest = {
+      history: [],
+      message: { role: "user", text: input },
+      modelTier: "fast",
+      purpose: "compaction",
+      ...(request.route === undefined ? {} : { route: request.route }),
+      systemPrompt: compactionPrompt,
+    };
+    const sse = [
+      'data: {"id":"gen-compaction","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"cost":"0"}}\n\n',
+      "data: [DONE]\n\n",
+    ].join("");
+    await collectRequest(
+      new OpenRouterGateway({
+        apiKey: "test-key-never-sent",
+        fetch: async (_request, init) => {
+          capturedBody = JSON.parse(String(init?.body)) as { readonly messages?: unknown };
+          return streamResponse([new TextEncoder().encode(sse)]);
+        },
+      }),
+      compactionRequest,
+    );
+
+    expect(capturedBody?.messages).toEqual([
+      { content: compactionPrompt.text, role: "system" },
+      { content: input, role: "user" },
+    ]);
   });
 
   it("cancels an open upstream body after protocol completion", async () => {

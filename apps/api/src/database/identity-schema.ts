@@ -2,6 +2,7 @@ import { relations, sql } from "drizzle-orm";
 import {
   check,
   index,
+  numeric,
   pgEnum,
   pgTable,
   text,
@@ -73,6 +74,10 @@ export const workspaceMemberships = pgTable(
       .references(() => user.id, { onDelete: "cascade" }),
     role: workspaceRole("role").notNull(),
     status: membershipStatus("status").default("active").notNull(),
+    monthlySoftBudgetUsd: numeric("monthly_soft_budget_usd", {
+      precision: 38,
+      scale: 18,
+    }),
     activatedAt: timestamp("activated_at", { withTimezone: true }).defaultNow().notNull(),
     deactivatedAt: timestamp("deactivated_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
@@ -85,6 +90,10 @@ export const workspaceMemberships = pgTable(
       "workspace_memberships_lifecycle_check",
       sql`(${table.status} = 'active' AND ${table.deactivatedAt} IS NULL)
         OR (${table.status} = 'deactivated' AND ${table.deactivatedAt} IS NOT NULL)`,
+    ),
+    check(
+      "workspace_memberships_soft_budget_check",
+      sql`${table.monthlySoftBudgetUsd} IS NULL OR ${table.monthlySoftBudgetUsd} >= 0`,
     ),
   ],
 );

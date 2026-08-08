@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { Pool } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { type ApiApplication, createApplication } from "../src/app.js";
@@ -17,7 +17,11 @@ import { type AppDatabase, createDatabase } from "../src/database/database.js";
 import { generations } from "../src/database/generation-schema.js";
 import { workspaceMemberships, workspaces } from "../src/database/identity-schema.js";
 import { migrateDatabase } from "../src/database/migrate.js";
-import { modelCatalog } from "../src/database/model-policy-schema.js";
+import {
+  modelCatalog,
+  workspaceCatalogApprovals,
+  workspaceModelPolicies,
+} from "../src/database/model-policy-schema.js";
 import { ApplicationError } from "../src/errors.js";
 import { FakeModelGateway } from "../src/generations/fake-model-gateway.js";
 import type { GenerationRequest, ModelGateway } from "../src/generations/model-gateway.js";
@@ -166,6 +170,45 @@ describe.sequential("generation lifecycle integration", () => {
     return { conversation, draft };
   }
 
+  async function longConversationDraft() {
+    const conversation = await conversationsService.create(actor);
+    let parentMessageId: string | null = null;
+    const padding = "x".repeat(780);
+    for (let turn = 0; turn < 9; turn += 1) {
+      const userMessage = await conversationsService.insertImmutableMessage(actor, {
+        content: [{ text: `Pregunta histórica ${turn} ${padding}`, type: "text" }],
+        conversationId: conversation.id,
+        parentMessageId,
+        role: "user",
+      });
+      const assistantMessage = await conversationsService.insertImmutableMessage(actor, {
+        content: [{ text: `Respuesta histórica ${turn} ${padding}`, type: "text" }],
+        conversationId: conversation.id,
+        parentMessageId: userMessage.id,
+        role: "assistant",
+      });
+      parentMessageId = assistantMessage.id;
+    }
+    await database
+      .update(conversations)
+      .set({ selectedLeafMessageId: parentMessageId })
+      .where(eq(conversations.id, conversation.id));
+    const draft = await conversationsService.saveDraft(
+      actor,
+      { conversationId: conversation.id, kind: "conversation" },
+      "Pregunta nueva con historial extenso",
+      0,
+    );
+    return { conversation, draft, parentMessageId };
+  }
+
+  async function setTierContextLength(tier: ModelTier, contextLength: number): Promise<void> {
+    await database
+      .update(modelCatalog)
+      .set({ contextLength })
+      .where(eq(modelCatalog.openRouterModelId, initialTierModels[tier]));
+  }
+
   async function useOpenRouterPolicy(): Promise<void> {
     await pool.query(
       'TRUNCATE TABLE "workspace_cost_policies", "model_catalog" RESTART IDENTITY CASCADE',
@@ -201,10 +244,22 @@ describe.sequential("generation lifecycle integration", () => {
   }
 
   it("preserves the conversation and draft when its mapped tier is no longer approved", async () => {
-    await database
-      .update(modelCatalog)
-      .set({ approved: false })
+    const catalogRows = await database
+      .select({ id: modelCatalog.id })
+      .from(modelCatalog)
       .where(eq(modelCatalog.openRouterModelId, initialTierModels.balanced));
+    const catalogId = catalogRows[0]?.id;
+    if (catalogId === undefined) {
+      throw new Error("Mapped catalog row is unavailable");
+    }
+    await database
+      .delete(workspaceCatalogApprovals)
+      .where(
+        and(
+          eq(workspaceCatalogApprovals.workspaceId, actor.workspace.id),
+          eq(workspaceCatalogApprovals.modelCatalogId, catalogId),
+        ),
+      );
     const policy = createModelPolicyService(database);
     await expect(policy.readEmployeeTierPolicy(actor.workspace.id, "simulated")).resolves.toEqual({
       defaultTier: "balanced",
@@ -243,6 +298,93 @@ describe.sequential("generation lifecycle integration", () => {
       scope: { conversationId: conversation.id, kind: "conversation" },
     });
     await expect(database.select().from(generations)).resolves.toEqual([]);
+  });
+
+  it("admits a preparing response through the valid internal Fast route when Fast is employee-disabled", async () => {
+    await setTierContextLength("fast", 20_000);
+    await database
+      .update(workspaceModelPolicies)
+      .set({ enabled: false })
+      .where(
+        and(
+          eq(workspaceModelPolicies.workspaceId, actor.workspace.id),
+          eq(workspaceModelPolicies.tier, "fast"),
+        ),
+      );
+    const { conversation, draft, parentMessageId } = await longConversationDraft();
+
+    const started = await generationService.startResponse(actor, conversation.id, randomUUID(), {
+      content: [{ text: draft.content, type: "text" }],
+      draftRevision: draft.revision,
+      modelTier: "balanced",
+      observedRevision: 0,
+      parentMessageId,
+      source: "draft",
+    });
+
+    expect(started.contextWarning).toBeUndefined();
+    expect(started.compaction).toMatchObject({
+      fastPolicy: { contextLength: 20_000, tier: "fast" },
+      plan: { mode: "pending" },
+    });
+    await expect(
+      database
+        .select({
+          effectiveParameters: generations.effectiveParameters,
+          status: generations.status,
+        })
+        .from(generations)
+        .where(eq(generations.id, started.generationId)),
+    ).resolves.toMatchObject([
+      { effectiveParameters: { context: { mode: "pending" } }, status: "preparing" },
+    ]);
+  });
+
+  it("marks admission fallback for an employee-visible warning when internal Fast is unavailable", async () => {
+    await setTierContextLength("balanced", 24_000);
+    const catalogRows = await database
+      .select({ id: modelCatalog.id })
+      .from(modelCatalog)
+      .where(eq(modelCatalog.openRouterModelId, initialTierModels.fast));
+    const fastCatalogId = catalogRows[0]?.id;
+    if (fastCatalogId === undefined) {
+      throw new Error("Fast catalog row is unavailable");
+    }
+    await database
+      .delete(workspaceCatalogApprovals)
+      .where(
+        and(
+          eq(workspaceCatalogApprovals.workspaceId, actor.workspace.id),
+          eq(workspaceCatalogApprovals.modelCatalogId, fastCatalogId),
+        ),
+      );
+    const { conversation, draft, parentMessageId } = await longConversationDraft();
+
+    const started = await generationService.startResponse(actor, conversation.id, randomUUID(), {
+      content: [{ text: draft.content, type: "text" }],
+      draftRevision: draft.revision,
+      modelTier: "balanced",
+      observedRevision: 0,
+      parentMessageId,
+      source: "draft",
+    });
+
+    expect(started).toMatchObject({ contextWarning: true });
+    expect(started.compaction).toBeUndefined();
+    await expect(
+      database
+        .select({
+          effectiveParameters: generations.effectiveParameters,
+          status: generations.status,
+        })
+        .from(generations)
+        .where(eq(generations.id, started.generationId)),
+    ).resolves.toMatchObject([
+      {
+        effectiveParameters: { context: { mode: "fallback", reason: "fast-unavailable" } },
+        status: "active",
+      },
+    ]);
   });
 
   it.each([
@@ -497,6 +639,7 @@ describe.sequential("generation lifecycle integration", () => {
       history: [],
       message: { role: "user", text: "Primera pregunta" },
       modelTier: "balanced",
+      purpose: "chat",
       systemPrompt,
     });
     expect(

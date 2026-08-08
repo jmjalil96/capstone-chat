@@ -19,6 +19,7 @@ import { conversations, messages } from "./conversation-schema.js";
 import { workspaces } from "./identity-schema.js";
 
 export const generationStatus = pgEnum("generation_status", [
+  "preparing",
   "active",
   "completed",
   "cancelled",
@@ -120,6 +121,13 @@ export const generations = pgTable(
     uniqueIndex("generations_active_conversation_unique")
       .on(table.conversationId)
       .where(sql`${table.status} = 'active' AND ${table.conversationId} IS NOT NULL`),
+    uniqueIndex("generations_chat_workflow_conversation_unique")
+      .on(table.conversationId)
+      .where(
+        sql`${table.status} IN ('preparing', 'active')
+          AND ${table.conversationId} IS NOT NULL
+          AND ${table.assistantMessageId} IS NOT NULL`,
+      ),
     uniqueIndex("generations_openrouter_generation_id_unique")
       .on(table.openRouterGenerationId)
       .where(sql`${table.openRouterGenerationId} IS NOT NULL`),
@@ -134,7 +142,17 @@ export const generations = pgTable(
     check(
       "generations_content_references_check",
       sql`(${table.conversationId} IS NULL AND ${table.assistantMessageId} IS NULL)
-        OR (${table.conversationId} IS NOT NULL AND ${table.assistantMessageId} IS NOT NULL)`,
+        OR (
+          ${table.conversationId} IS NOT NULL
+          AND ${table.assistantMessageId} IS NOT NULL
+          AND (${table.purpose} IS NULL OR ${table.purpose} = 'chat')
+        )
+        OR (
+          ${table.conversationId} IS NOT NULL
+          AND ${table.assistantMessageId} IS NULL
+          AND ${table.purpose} IS NOT NULL
+          AND ${table.purpose} = 'compaction'
+        )`,
     ),
     check(
       "generations_requested_tier_check",
@@ -142,7 +160,14 @@ export const generations = pgTable(
     ),
     check(
       "generations_system_prompt_version_check",
-      sql`${table.systemPromptVersion} = 'capstone-chat-v1'`,
+      sql`(
+          ${table.purpose} IS NOT NULL
+          AND ${table.purpose} = 'compaction'
+          AND ${table.systemPromptVersion} = 'capstone-compaction-v1'
+        ) OR (
+          (${table.purpose} IS NULL OR ${table.purpose} = 'chat')
+          AND ${table.systemPromptVersion} = 'capstone-chat-v1'
+        )`,
     ),
     check(
       "generations_effective_parameters_check",
@@ -152,7 +177,11 @@ export const generations = pgTable(
       "generations_accounting_check",
       sql`(
           ${table.accountingStatus} IS NULL
-          AND ${table.purpose} IS NULL
+          AND (
+            ${table.purpose} IS NULL
+            OR ${table.purpose} = 'chat'
+            OR ${table.purpose} = 'compaction'
+          )
           AND ${table.requestedModel} IS NULL
           AND ${table.resolvedModel} IS NULL
           AND ${table.provider} IS NULL
@@ -227,25 +256,49 @@ export const generations = pgTable(
     check(
       "generations_lifecycle_check",
       sql`(
+          ${table.status} = 'preparing'
+          AND ${table.purpose} IS NOT NULL
+          AND ${table.purpose} = 'chat'
+          AND ${table.terminalReason} IS NULL
+          AND ${table.errorCode} IS NULL
+          AND ${table.firstTokenAt} IS NULL
+          AND ${table.completedAt} IS NULL
+          AND ${table.conversationId} IS NOT NULL
+          AND ${table.assistantMessageId} IS NOT NULL
+        ) OR (
           ${table.status} = 'active'
           AND ${table.terminalReason} IS NULL
           AND ${table.errorCode} IS NULL
           AND ${table.completedAt} IS NULL
           AND ${table.conversationId} IS NOT NULL
-          AND ${table.assistantMessageId} IS NOT NULL
+          AND (
+            (
+              ${table.assistantMessageId} IS NOT NULL
+              AND (${table.purpose} IS NULL OR ${table.purpose} = 'chat')
+            )
+            OR (
+              ${table.assistantMessageId} IS NULL
+              AND ${table.purpose} IS NOT NULL
+              AND ${table.purpose} = 'compaction'
+            )
+          )
         ) OR (
           ${table.status} = 'completed'
+          AND ${table.terminalReason} IS NOT NULL
           AND ${table.terminalReason} IN ('stop', 'length', 'refusal', 'content_filter')
           AND ${table.errorCode} IS NULL
           AND ${table.completedAt} IS NOT NULL
         ) OR (
           ${table.status} = 'cancelled'
+          AND ${table.terminalReason} IS NOT NULL
           AND ${table.terminalReason} = 'cancelled'
           AND ${table.errorCode} IS NULL
           AND ${table.completedAt} IS NOT NULL
         ) OR (
           ${table.status} IN ('incomplete', 'failed')
+          AND ${table.terminalReason} IS NOT NULL
           AND ${table.terminalReason} = 'error'
+          AND ${table.errorCode} IS NOT NULL
           AND ${table.errorCode} IN (
             'EMPTY_RESPONSE',
             'GENERATION_FAILED',

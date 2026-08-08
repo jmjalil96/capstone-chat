@@ -14,6 +14,7 @@ import type {
   GenerationRequest,
   ModelGateway,
 } from "../generations/model-gateway.js";
+import { generationRequestMessages } from "../generations/model-gateway.js";
 import { canonicalUsd, unitPricePerMillion } from "../model-policy/money.js";
 import {
   canonicalProviderDecimal,
@@ -229,11 +230,7 @@ function normalizeRoute(route: GenerationModelRoute | undefined): RequestRoute {
 }
 
 function requestBody(request: GenerationRequest, route: RequestRoute): Record<string, unknown> {
-  const messages = [
-    { content: request.systemPrompt.text, role: "system" },
-    ...request.history.map((message) => ({ content: message.text, role: message.role })),
-    { content: request.message.text, role: "user" },
-  ];
+  const messages = generationRequestMessages(request);
   if (
     messages.some(
       (message) =>

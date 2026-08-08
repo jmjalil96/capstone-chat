@@ -261,7 +261,7 @@ describe.sequential("identity operator commands", () => {
     expect(await database.select().from(employeeApprovals)).toHaveLength(1);
   });
 
-  it("makes exact concurrent approvals idempotent and rejects role or workspace conflicts", async () => {
+  it("makes exact concurrent approvals idempotent, corrects pending roles, and rejects workspace conflicts", async () => {
     expect((await bootstrap()).code).toBe(0);
     const approvalArguments = [
       "approve",
@@ -304,7 +304,7 @@ describe.sequential("identity operator commands", () => {
       }),
     ]);
 
-    const roleConflict = await runOperator([
+    const roleCorrection = await runOperator([
       "approve",
       "--workspace",
       "capstone-ecuador",
@@ -323,14 +323,23 @@ describe.sequential("identity operator commands", () => {
       "member",
     ]);
 
-    for (const conflict of [roleConflict, workspaceConflict]) {
-      expect(conflict.code).toBe(1);
-      expect(parseOperatorOutput(conflict.stderr)).toEqual({
-        errorName: "IdentityConflictError",
-        outcome: "conflict",
-      });
-    }
+    expect(roleCorrection.code).toBe(0);
+    expect(parseOperatorOutput(roleCorrection.stdout)).toMatchObject({
+      command: "approve",
+      repeated: true,
+      role: "admin",
+    });
+    expect(workspaceConflict.code).toBe(1);
+    expect(parseOperatorOutput(workspaceConflict.stderr)).toEqual({
+      errorName: "IdentityConflictError",
+      outcome: "conflict",
+    });
     expect(await database.select().from(employeeApprovals)).toHaveLength(2);
+    expect(
+      (await database.select().from(employeeApprovals)).find(
+        ({ normalizedEmail }) => normalizedEmail === "member.operator@example.test",
+      )?.role,
+    ).toBe("admin");
   });
 
   it("makes concurrent deactivation retries block access before revoking every session", async () => {

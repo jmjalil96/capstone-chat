@@ -96,6 +96,59 @@ afterEach(() => {
 });
 
 describe("streaming composer", () => {
+  it("keeps the compaction fallback warning visible while generation continues", async () => {
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        streamController = controller;
+      },
+    });
+    const fetchMock = vi.fn(async (url: string, options?: RequestInit) => {
+      if (url.endsWith("/draft") && options?.method === "PUT") {
+        return json(draft("Pregunta extensa", 1));
+      }
+      if (url.endsWith("/draft")) {
+        return json(draft("", 0));
+      }
+      if (url.endsWith("/responses")) {
+        return new Response(stream, {
+          headers: { "content-type": "application/x-ndjson" },
+          status: 200,
+        });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderComposer();
+
+    const editor = await screen.findByRole("textbox", { name: copy.conversations.draft.label });
+    await waitFor(() => expect(editor).toBeEnabled());
+    fireEvent.change(editor, { target: { value: "Pregunta extensa" } });
+    fireEvent.click(
+      screen.getByRole("button", { name: copy.conversations.generation.actions.send }),
+    );
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/responses"))).toBe(true),
+    );
+
+    await act(async () => {
+      streamController.enqueue(responseStarted());
+      streamController.enqueue(
+        new TextEncoder().encode(
+          `${JSON.stringify({ type: "context.compacting" })}\n${JSON.stringify({
+            code: "CONTEXT_COMPACTION_FALLBACK",
+            type: "context.warning",
+          })}\n`,
+        ),
+      );
+    });
+
+    expect(
+      await screen.findByText(copy.conversations.generation.status.contextFallback),
+    ).toHaveAttribute("role", "status");
+    expect(screen.getByText(copy.conversations.generation.status.generating)).toBeInTheDocument();
+  });
+
   it("sends on desktop Enter, fences the confirmed draft, and resets only after start", async () => {
     let resolveResponse!: (response: Response) => void;
     const responseRequest = new Promise<Response>((resolve) => {

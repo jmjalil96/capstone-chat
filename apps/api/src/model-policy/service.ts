@@ -1,19 +1,27 @@
 import { and, eq, isNull, lte, or, sql } from "drizzle-orm";
+import type { CursorCodec } from "../conversations/cursor.js";
 import { conversations } from "../database/conversation-schema.js";
 import type { AppDatabase, AppDatabaseExecutor, AppTransaction } from "../database/database.js";
 import { workspaces } from "../database/identity-schema.js";
 import {
   modelCatalog,
   openRouterPrivacyAttestations,
+  workspaceCatalogApprovals,
   workspaceCostPolicies,
   workspaceModelPolicies,
 } from "../database/model-policy-schema.js";
+import { createModelPolicyAdministration } from "./administration.js";
 import {
   type CatalogModelSnapshot,
   type ModelTier,
   modelTiers,
   type VerifiedPrivacyAttestation,
 } from "./catalog.js";
+import {
+  ModelPolicyConflictError,
+  ModelPolicyNotFoundError,
+  ModelPolicyUnavailableError,
+} from "./errors.js";
 import {
   applyReservationMarginToUnitPrice,
   applyReservationMarginToUsd,
@@ -22,28 +30,15 @@ import {
 } from "./money.js";
 import { costControlTuning } from "./settings.js";
 
+export {
+  CatalogRefreshActiveError,
+  ModelPolicyChangedError,
+  ModelPolicyConflictError,
+  ModelPolicyNotFoundError,
+  ModelPolicyUnavailableError,
+} from "./errors.js";
+
 export type ModelPolicyMode = "openrouter" | "simulated";
-
-export class ModelPolicyConflictError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "ModelPolicyConflictError";
-  }
-}
-
-export class ModelPolicyUnavailableError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "ModelPolicyUnavailableError";
-  }
-}
-
-export class ModelPolicyNotFoundError extends Error {
-  constructor() {
-    super("Owned conversation was not found");
-    this.name = "ModelPolicyNotFoundError";
-  }
-}
 
 export interface TierAvailability {
   readonly available: boolean;
@@ -97,6 +92,7 @@ export interface ModelPolicyAttestationResult {
 }
 
 export interface ModelPolicyServiceOptions {
+  readonly cursorCodec?: CursorCodec;
   readonly now?: () => Date;
 }
 
@@ -166,7 +162,7 @@ async function policyRows(
 ): Promise<ExistingPolicyRow[]> {
   const rows = await database
     .select({
-      catalogApproved: modelCatalog.approved,
+      catalogApproved: sql<boolean>`${workspaceCatalogApprovals.modelCatalogId} IS NOT NULL`,
       catalogAvailable: modelCatalog.available,
       catalogContextLength: modelCatalog.contextLength,
       catalogMaximumOutputTokens: modelCatalog.maximumOutputTokens,
@@ -181,6 +177,13 @@ async function policyRows(
     })
     .from(workspaceModelPolicies)
     .innerJoin(modelCatalog, eq(modelCatalog.id, workspaceModelPolicies.modelCatalogId))
+    .leftJoin(
+      workspaceCatalogApprovals,
+      and(
+        eq(workspaceCatalogApprovals.workspaceId, workspaceModelPolicies.workspaceId),
+        eq(workspaceCatalogApprovals.modelCatalogId, workspaceModelPolicies.modelCatalogId),
+      ),
+    )
     .where(eq(workspaceModelPolicies.workspaceId, workspaceId));
   return rows.map((row) => {
     if (row.catalogSource !== "openrouter" && row.catalogSource !== "simulated") {
@@ -307,6 +310,11 @@ export function createModelPolicyService(
   options: ModelPolicyServiceOptions = {},
 ) {
   const now = options.now ?? (() => new Date());
+  const administration = createModelPolicyAdministration(database, {
+    ...(options.cursorCodec === undefined ? {} : { cursorCodec: options.cursorCodec }),
+    now,
+    privacyIsVerified,
+  });
 
   async function assertRuntimeMode(mode: ModelPolicyMode): Promise<void> {
     const checkedAt = now();
@@ -318,18 +326,29 @@ export function createModelPolicyService(
     }
     const rows = await database
       .select({
+        approvedCatalogId: workspaceCatalogApprovals.modelCatalogId,
         metadataSource: modelCatalog.metadataSource,
         tier: workspaceModelPolicies.tier,
         workspaceId: workspaceModelPolicies.workspaceId,
       })
       .from(workspaceModelPolicies)
-      .innerJoin(modelCatalog, eq(modelCatalog.id, workspaceModelPolicies.modelCatalogId));
+      .innerJoin(modelCatalog, eq(modelCatalog.id, workspaceModelPolicies.modelCatalogId))
+      .leftJoin(
+        workspaceCatalogApprovals,
+        and(
+          eq(workspaceCatalogApprovals.workspaceId, workspaceModelPolicies.workspaceId),
+          eq(workspaceCatalogApprovals.modelCatalogId, workspaceModelPolicies.modelCatalogId),
+        ),
+      );
 
     for (const { workspaceId } of costRows) {
       const mappings = rows.filter((row) => row.workspaceId === workspaceId);
       const complete = modelTiers.every((tier) =>
         mappings.some(
-          (mapping) => mapping.tier === tier && mapping.metadataSource === expectedSource(mode),
+          (mapping) =>
+            mapping.tier === tier &&
+            mapping.approvedCatalogId !== null &&
+            mapping.metadataSource === expectedSource(mode),
         ),
       );
       if (
@@ -383,7 +402,7 @@ export function createModelPolicyService(
         const existingCatalog = existingCatalogRows[0];
         if (existingCatalog !== undefined) {
           const comparable: ExistingPolicyRow = {
-            catalogApproved: existingCatalog.approved,
+            catalogApproved: true,
             catalogAvailable: existingCatalog.available,
             catalogContextLength: existingCatalog.contextLength,
             catalogMaximumOutputTokens: existingCatalog.maximumOutputTokens,
@@ -432,6 +451,22 @@ export function createModelPolicyService(
         }
         catalogIds.set(tier, catalog.id);
       }
+
+      const approvedCatalogIds = new Set<string>();
+      for (const tier of modelTiers) {
+        const modelCatalogId = catalogIds.get(tier);
+        if (modelCatalogId === undefined) {
+          throw new Error("Catalog mapping disappeared during bootstrap");
+        }
+        approvedCatalogIds.add(modelCatalogId);
+      }
+      await transaction.insert(workspaceCatalogApprovals).values(
+        [...approvedCatalogIds].map((modelCatalogId) => ({
+          createdAt: bootstrapAt,
+          modelCatalogId,
+          workspaceId: workspace.id,
+        })),
+      );
 
       await transaction.insert(workspaceCostPolicies).values({
         defaultTier: "balanced",
@@ -590,8 +625,12 @@ export function createModelPolicyService(
         .from(modelCatalog)
         .where(
           and(
-            eq(modelCatalog.approved, true),
             eq(modelCatalog.metadataSource, "openrouter"),
+            sql<boolean>`EXISTS (
+              SELECT 1
+              FROM ${workspaceCatalogApprovals}
+              WHERE ${workspaceCatalogApprovals.modelCatalogId} = ${modelCatalog.id}
+            )`,
             or(
               isNull(modelCatalog.refreshLeaseExpiresAt),
               lte(modelCatalog.refreshLeaseExpiresAt, at),
@@ -604,7 +643,7 @@ export function createModelPolicyService(
                 ),
           ),
         )
-        .limit(modelTiers.length)
+        .limit(costControlTuning.catalogAdministrationBatchSize)
         .for("update", { skipLocked: true });
       const leaseExpiresAt = new Date(at.getTime() + costControlTuning.catalogRefreshLeaseMs);
       for (const row of rows) {
@@ -702,16 +741,17 @@ export function createModelPolicyService(
     return updated.length;
   }
 
-  async function resolveTier(
+  async function resolveTierPolicy(
     executor: AppDatabaseExecutor,
     workspaceId: string,
     tier: ModelTier,
     mode: ModelPolicyMode,
+    requireEmployeeEnabled: boolean,
   ): Promise<ResolvedTierPolicy> {
     const checkedAt = now();
     const rows = await executor
       .select({
-        approved: modelCatalog.approved,
+        approvedCatalogId: workspaceCatalogApprovals.modelCatalogId,
         available: modelCatalog.available,
         catalogMaximumOutputTokens: modelCatalog.maximumOutputTokens,
         completionPricePerToken: modelCatalog.completionPricePerToken,
@@ -732,6 +772,13 @@ export function createModelPolicyService(
         eq(workspaceCostPolicies.workspaceId, workspaceModelPolicies.workspaceId),
       )
       .innerJoin(modelCatalog, eq(modelCatalog.id, workspaceModelPolicies.modelCatalogId))
+      .innerJoin(
+        workspaceCatalogApprovals,
+        and(
+          eq(workspaceCatalogApprovals.workspaceId, workspaceModelPolicies.workspaceId),
+          eq(workspaceCatalogApprovals.modelCatalogId, workspaceModelPolicies.modelCatalogId),
+        ),
+      )
       .where(
         and(
           eq(workspaceModelPolicies.workspaceId, workspaceId),
@@ -743,8 +790,8 @@ export function createModelPolicyService(
     const row = rows[0];
     if (
       row === undefined ||
-      !row.enabled ||
-      !row.approved ||
+      (requireEmployeeEnabled && !row.enabled) ||
+      row.approvedCatalogId === null ||
       !row.available ||
       row.metadataSource !== expectedSource(mode) ||
       row.maximumOutputTokens > row.catalogMaximumOutputTokens ||
@@ -774,6 +821,23 @@ export function createModelPolicyService(
       resolvedModel: row.resolvedModel,
       tier,
     });
+  }
+
+  async function resolveTier(
+    executor: AppDatabaseExecutor,
+    workspaceId: string,
+    tier: ModelTier,
+    mode: ModelPolicyMode,
+  ): Promise<ResolvedTierPolicy> {
+    return resolveTierPolicy(executor, workspaceId, tier, mode, true);
+  }
+
+  async function resolveCompactionTier(
+    executor: AppDatabaseExecutor,
+    workspaceId: string,
+    mode: ModelPolicyMode,
+  ): Promise<ResolvedTierPolicy> {
+    return resolveTierPolicy(executor, workspaceId, "fast", mode, false);
   }
 
   async function getPreferredTier(owner: ConversationOwner): Promise<ModelTier | null> {
@@ -826,6 +890,7 @@ export function createModelPolicyService(
   }
 
   return Object.freeze({
+    ...administration,
     assertRuntimeMode,
     attestPrivacy,
     bootstrap,
@@ -834,6 +899,7 @@ export function createModelPolicyService(
     getPreferredTier,
     readEmployeeTierPolicy,
     releaseCatalogRefresh,
+    resolveCompactionTier,
     resolveTier,
     setPreferredTier,
   });

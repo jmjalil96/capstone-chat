@@ -10,6 +10,14 @@ import { type AppDatabase, createDatabase } from "./database/database.js";
 import { createDatabasePool, type DatabasePool } from "./database/pool.js";
 import { registerErrorHandling } from "./errors.js";
 import { ActiveStreamRegistry } from "./generations/active-streams.js";
+import {
+  createGenerationAdministrationService,
+  type GenerationAdministrationService,
+} from "./generations/administration.js";
+import {
+  type CompactionService,
+  createCompactionService,
+} from "./generations/compaction-service.js";
 import { FakeModelGateway } from "./generations/fake-model-gateway.js";
 import type { ModelGateway } from "./generations/model-gateway.js";
 import {
@@ -18,6 +26,10 @@ import {
 } from "./generations/response-stream.js";
 import { createGenerationService, type GenerationService } from "./generations/service.js";
 import { generationTuning } from "./generations/settings.js";
+import {
+  createEmployeeAdministrationService,
+  type EmployeeAdministrationService,
+} from "./identity/administration.js";
 import { createActorResolver } from "./identity/authorization.js";
 import { createEmailSender, type EmailSender, FakeEmailSender } from "./identity/email.js";
 import { createIdentityService, type IdentityService } from "./identity/service.js";
@@ -29,9 +41,12 @@ import {
   createCostControlMaintenance,
 } from "./model-policy/maintenance.js";
 import { createModelPolicyService, type ModelPolicyService } from "./model-policy/service.js";
+import { createUsageService, type UsageService } from "./model-policy/usage-service.js";
 import { OpenRouterCatalogClient } from "./openrouter/catalog-client.js";
 import { OpenRouterGateway } from "./openrouter/openrouter-gateway.js";
 import { operationalErrorMetadata } from "./operator-error.js";
+import { registerAdminEmployeeRoutes } from "./routes/admin.js";
+import { registerAdminModelRoutes } from "./routes/admin-models.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerConversationRoutes } from "./routes/conversations.js";
 import { registerDevelopmentMailboxRoute } from "./routes/development-mailbox.js";
@@ -44,9 +59,12 @@ import { applySecurityHeaders, enforceCapstoneMutationBoundary } from "./securit
 export interface ApplicationDependencies {
   readonly authentication?: Authentication;
   readonly budget?: BudgetService;
+  readonly compactions?: CompactionService;
   readonly conversations?: ConversationService;
   readonly database?: AppDatabase;
   readonly emailSender?: EmailSender;
+  readonly employeeAdministration?: EmployeeAdministrationService;
+  readonly generationAdministration?: GenerationAdministrationService;
   readonly generations?: GenerationService;
   readonly identity?: IdentityService;
   readonly loggerStream?: { write(message: string): void };
@@ -57,6 +75,7 @@ export interface ApplicationDependencies {
   readonly requestIdFactory?: () => string;
   readonly responseStreams?: ResponseStreamCoordinator;
   readonly streamRegistry?: ActiveStreamRegistry;
+  readonly usage?: UsageService;
 }
 
 export function createApplication(config: ApiConfig, dependencies: ApplicationDependencies = {}) {
@@ -112,16 +131,13 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
       identity,
     });
   const resolveActor = createActorResolver(authentication, identity);
+  const cursorCodec = createCursorCodec(config.authSecret);
   const budget = dependencies.budget ?? createBudgetService(database);
-  const modelPolicy = dependencies.modelPolicy ?? createModelPolicyService(database);
+  const modelPolicy =
+    dependencies.modelPolicy ?? createModelPolicyService(database, { cursorCodec });
   const conversations =
     dependencies.conversations ??
-    createConversationService(
-      database,
-      createCursorCodec(config.authSecret),
-      config.modelGateway,
-      modelPolicy,
-    );
+    createConversationService(database, cursorCodec, config.modelGateway, modelPolicy);
   const generations =
     dependencies.generations ??
     createGenerationService(database, {
@@ -129,10 +145,26 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
       mode: config.modelGateway === "openrouter" ? "openrouter" : "simulated",
       modelPolicy,
     });
+  const compactions =
+    dependencies.compactions ??
+    createCompactionService({
+      budget,
+      database,
+      gateway: modelGateway,
+      mode: config.modelGateway === "openrouter" ? "openrouter" : "simulated",
+    });
   const streamRegistry = dependencies.streamRegistry ?? new ActiveStreamRegistry();
+  const employeeAdministration =
+    dependencies.employeeAdministration ??
+    createEmployeeAdministrationService(database, cursorCodec);
+  const generationAdministration =
+    dependencies.generationAdministration ??
+    createGenerationAdministrationService(database, budget);
+  const usage = dependencies.usage ?? createUsageService(database, cursorCodec);
   const responseStreams =
     dependencies.responseStreams ??
     createResponseStreamCoordinator({
+      compactions,
       gateway: modelGateway,
       generations,
       registry: streamRegistry,
@@ -176,7 +208,8 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
     if (
       request.url.startsWith("/api/conversations") ||
       request.url.startsWith("/api/drafts") ||
-      request.url.startsWith("/api/model-tiers")
+      request.url.startsWith("/api/model-tiers") ||
+      request.url.startsWith("/api/admin")
     ) {
       void reply.header("cache-control", "no-store");
     }
@@ -201,6 +234,28 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
   registerHealthRoutes(server, lifecycle);
   registerAuthRoutes(server, { authentication, config });
   registerSessionRoute(server, resolveActor);
+  registerAdminEmployeeRoutes(server, {
+    authentication,
+    employees: employeeAdministration,
+    emailSender,
+    generationAdministration,
+    identity,
+    publicOrigin: config.publicOrigin,
+    resolveActor,
+    streamRegistry,
+    usage,
+  });
+  registerAdminModelRoutes(server, {
+    ...(catalogClient === undefined
+      ? {}
+      : {
+          loadCatalogSnapshots: (modelIds, signal) => catalogClient.loadSnapshots(modelIds, signal),
+        }),
+    modelGateway: config.modelGateway,
+    modelPolicy,
+    ownerIdFactory: randomUUID,
+    resolveActor,
+  });
   registerModelTierRoutes(server, {
     modelGateway: config.modelGateway,
     modelPolicy,
@@ -260,9 +315,12 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
   return {
     authentication,
     budget,
+    compactions,
     conversations,
     database,
     emailSender,
+    employeeAdministration,
+    generationAdministration,
     generations,
     identity,
     lifecycle,
@@ -274,6 +332,7 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
     server,
     shutdown,
     streamRegistry,
+    usage,
   } as const;
 }
 

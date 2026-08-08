@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
+import type { AdminUpdateModelPolicyRequest } from "@capstone/protocol";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { createCursorCodec } from "../src/conversations/cursor.js";
 import { user } from "../src/database/auth-schema.generated.js";
 import { conversations, messages } from "../src/database/conversation-schema.js";
 import { type AppDatabase, createDatabase } from "../src/database/database.js";
@@ -12,6 +14,7 @@ import { migrateDatabase } from "../src/database/migrate.js";
 import {
   modelCatalog,
   openRouterPrivacyAttestations,
+  workspaceCatalogApprovals,
   workspaceCostPolicies,
 } from "../src/database/model-policy-schema.js";
 import { createGenerationService } from "../src/generations/service.js";
@@ -29,7 +32,9 @@ import {
   verifyPrivacyAttestation,
 } from "../src/model-policy/catalog.js";
 import {
+  CatalogRefreshActiveError,
   createModelPolicyService,
+  ModelPolicyChangedError,
   ModelPolicyConflictError,
   ModelPolicyUnavailableError,
 } from "../src/model-policy/service.js";
@@ -77,6 +82,9 @@ const modelPolicyTestNow = new Date("2026-08-08T12:10:00.000Z");
 
 function fixedModelPolicyService(database: AppDatabase) {
   return createModelPolicyService(database, {
+    cursorCodec: createCursorCodec(
+      "model-policy-administration-test-secret-with-sufficient-length",
+    ),
     now: () => new Date(modelPolicyTestNow.getTime()),
   });
 }
@@ -118,6 +126,65 @@ describe.sequential("model policy and budget persistence", () => {
       throw new Error("Workspace insert failed");
     }
     return id;
+  }
+
+  function catalogFixture(
+    modelId: string,
+    source: "openrouter" | "simulated" = "openrouter",
+  ): CatalogModelSnapshot {
+    return Object.freeze({
+      available: true,
+      canonicalSlug: modelId,
+      completionPricePerToken: source === "simulated" ? "0" : "0.000002",
+      contextLength: 128_000,
+      displayName: `Model ${modelId}`,
+      inputModalities: Object.freeze(["text"]),
+      maximumOutputTokens: 8_192,
+      metadataSource: source,
+      modelId,
+      outputModalities: Object.freeze(["text"]),
+      promptPricePerToken: source === "simulated" ? "0" : "0.000001",
+      requestPriceUsd: "0",
+      supportedParameters: Object.freeze(["max_tokens", "reasoning"]),
+      validatedAt: new Date("2026-08-08T12:00:00.000Z"),
+    });
+  }
+
+  async function insertApprovedCatalogFixtures(
+    workspaceId: string,
+    count: number,
+  ): Promise<readonly { readonly id: string; readonly modelId: string }[]> {
+    const createdAt = new Date("2026-08-08T12:00:00.000Z");
+    const inserted = await database
+      .insert(modelCatalog)
+      .values(
+        Array.from({ length: count }, (_, index) => {
+          const snapshot = catalogFixture(`fixture/model-${index.toString().padStart(3, "0")}`);
+          return {
+            available: snapshot.available,
+            canonicalSlug: snapshot.canonicalSlug,
+            completionPricePerToken: snapshot.completionPricePerToken,
+            contextLength: snapshot.contextLength,
+            createdAt,
+            displayName: snapshot.displayName,
+            inputModalities: snapshot.inputModalities,
+            maximumOutputTokens: snapshot.maximumOutputTokens,
+            metadataSource: snapshot.metadataSource,
+            openRouterModelId: snapshot.modelId,
+            outputModalities: snapshot.outputModalities,
+            promptPricePerToken: snapshot.promptPricePerToken,
+            requestPriceUsd: snapshot.requestPriceUsd,
+            supportedParameters: snapshot.supportedParameters,
+            updatedAt: createdAt,
+            validatedAt: snapshot.validatedAt,
+          };
+        }),
+      )
+      .returning({ id: modelCatalog.id, modelId: modelCatalog.openRouterModelId });
+    await database
+      .insert(workspaceCatalogApprovals)
+      .values(inserted.map(({ id }) => ({ createdAt, modelCatalogId: id, workspaceId })));
+    return inserted;
   }
 
   it("rejects a simulated policy when the runtime is configured for OpenRouter", async () => {
@@ -401,10 +468,22 @@ describe.sequential("model policy and budget persistence", () => {
       reservationMarginBasisPoints: 2_000,
       workspaceIdentity: "revoked-catalog-approval",
     });
-    await database
-      .update(modelCatalog)
-      .set({ approved: false })
+    const catalogRows = await database
+      .select({ id: modelCatalog.id })
+      .from(modelCatalog)
       .where(eq(modelCatalog.openRouterModelId, initialTierModels.balanced));
+    const catalogId = catalogRows[0]?.id;
+    if (catalogId === undefined) {
+      throw new Error("Mapped catalog row is unavailable");
+    }
+    await database
+      .delete(workspaceCatalogApprovals)
+      .where(
+        and(
+          eq(workspaceCatalogApprovals.workspaceId, workspaceId),
+          eq(workspaceCatalogApprovals.modelCatalogId, catalogId),
+        ),
+      );
 
     await expect(service.readEmployeeTierPolicy(workspaceId, "openrouter")).resolves.toEqual({
       defaultTier: "balanced",
@@ -417,6 +496,383 @@ describe.sequential("model policy and budget persistence", () => {
     await expect(
       service.resolveTier(database, workspaceId, "balanced", "openrouter"),
     ).rejects.toBeInstanceOf(ModelPolicyUnavailableError);
+  });
+
+  it("keeps catalog approval workspace-scoped and paginates the curated list", async () => {
+    const firstWorkspaceId = await insertWorkspace("catalog-admin-first", "America/Guayaquil");
+    const secondWorkspaceId = await insertWorkspace("catalog-admin-second", "America/Guayaquil");
+    const service = fixedModelPolicyService(database);
+    const approved = await service.approveCatalogSnapshot(
+      firstWorkspaceId,
+      "openrouter",
+      catalogFixture("approved/exact-model"),
+    );
+    expect(approved).toMatchObject({
+      available: true,
+      modelId: "approved/exact-model",
+    });
+    await database
+      .update(modelCatalog)
+      .set({
+        refreshAttemptedAt: new Date("2026-08-08T12:11:00.000Z"),
+        updatedAt: new Date("2026-08-08T12:11:00.000Z"),
+      })
+      .where(eq(modelCatalog.id, approved.catalogId));
+    const laterService = createModelPolicyService(database, {
+      cursorCodec: createCursorCodec(
+        "model-policy-administration-test-secret-with-sufficient-length",
+      ),
+      now: () => new Date("2026-08-08T12:20:00.000Z"),
+    });
+    await expect(
+      laterService.approveCatalogSnapshot(firstWorkspaceId, "openrouter", {
+        ...catalogFixture("approved/exact-model"),
+        validatedAt: new Date("2026-08-08T12:19:00.000Z"),
+      }),
+    ).resolves.toMatchObject({ catalogId: approved.catalogId });
+    await insertApprovedCatalogFixtures(firstWorkspaceId, 51);
+
+    const firstPage = await service.listAdminCatalog(firstWorkspaceId);
+    expect(firstPage.items).toHaveLength(50);
+    expect(firstPage.nextCursor).not.toBeNull();
+    expect(firstPage.items.map(({ modelId }) => modelId)).toEqual(
+      [...firstPage.items.map(({ modelId }) => modelId)].sort(),
+    );
+    if (firstPage.nextCursor === null) {
+      throw new Error("Expected a second catalog page");
+    }
+    const secondPage = await service.listAdminCatalog(firstWorkspaceId, firstPage.nextCursor);
+    expect(secondPage.items).toHaveLength(2);
+    expect(secondPage.nextCursor).toBeNull();
+    await expect(service.listAdminCatalog(secondWorkspaceId)).resolves.toEqual({
+      items: [],
+      nextCursor: null,
+    });
+    await expect(
+      service.listAdminCatalog(secondWorkspaceId, firstPage.nextCursor),
+    ).rejects.toMatchObject({ code: "INVALID_CURSOR" });
+  });
+
+  it("claims manual refreshes in atomic workspace-bounded batches", async () => {
+    const workspaceId = await insertWorkspace("catalog-refresh-admin", "America/Guayaquil");
+    const rows = await insertApprovedCatalogFixtures(workspaceId, 51);
+    const liveLease = rows.find(({ modelId }) => modelId === "fixture/model-010");
+    if (liveLease === undefined) {
+      throw new Error("Refresh lease fixture is unavailable");
+    }
+    const existingOwner = randomUUID();
+    await database
+      .update(modelCatalog)
+      .set({
+        refreshLeaseExpiresAt: new Date("2026-08-08T12:11:00.000Z"),
+        refreshLeaseOwner: existingOwner,
+      })
+      .where(eq(modelCatalog.id, liveLease.id));
+    const service = fixedModelPolicyService(database);
+
+    await expect(
+      service.claimAdminCatalogRefresh(workspaceId, "openrouter", randomUUID(), null),
+    ).rejects.toBeInstanceOf(CatalogRefreshActiveError);
+    expect(
+      (await database.select().from(modelCatalog)).filter(
+        ({ refreshLeaseOwner }) => refreshLeaseOwner !== null,
+      ),
+    ).toEqual([expect.objectContaining({ id: liveLease.id, refreshLeaseOwner: existingOwner })]);
+
+    await database
+      .update(modelCatalog)
+      .set({ refreshLeaseExpiresAt: null, refreshLeaseOwner: null })
+      .where(eq(modelCatalog.id, liveLease.id));
+    const firstClaim = await service.claimAdminCatalogRefresh(
+      workspaceId,
+      "openrouter",
+      randomUUID(),
+      null,
+    );
+    expect(firstClaim.modelIds).toHaveLength(50);
+    expect(firstClaim.nextCursor).not.toBeNull();
+    await expect(service.releaseCatalogRefresh(firstClaim)).resolves.toBe(50);
+    if (firstClaim.nextCursor === null) {
+      throw new Error("Expected a second refresh page");
+    }
+    const secondClaim = await service.claimAdminCatalogRefresh(
+      workspaceId,
+      "openrouter",
+      randomUUID(),
+      firstClaim.nextCursor,
+    );
+    expect(secondClaim.modelIds).toHaveLength(1);
+    expect(secondClaim.nextCursor).toBeNull();
+    await expect(service.releaseCatalogRefresh(secondClaim)).resolves.toBe(1);
+  });
+
+  it("applies revisioned policy changes while tolerating unchanged unavailable mappings", async () => {
+    const workspaceId = await insertWorkspace("policy-administration", "America/Guayaquil");
+    const service = fixedModelPolicyService(database);
+    await service.bootstrap({
+      catalog: Object.freeze(
+        Object.fromEntries(
+          modelTiers.map((tier) => [
+            tier,
+            buildSimulatedCatalogSnapshot(
+              initialTierModels[tier],
+              limits[tier],
+              modelPolicyTestNow,
+            ),
+          ]),
+        ) as Record<ModelTier, CatalogModelSnapshot>,
+      ),
+      employeeActiveGenerationLimit: 2,
+      maximumOutputTokens: limits,
+      mode: "simulated",
+      monthlyBudgetUsd: "100",
+      privacyAttestation: null,
+      reservationMarginBasisPoints: 2_000,
+      workspaceIdentity: "policy-administration",
+    });
+    const initial = await service.readAdminPolicy(workspaceId, "simulated");
+    expect(initial).toMatchObject({
+      currency: "USD",
+      defaultTier: "balanced",
+      monthlyBudgetUsd: "100",
+      revision: 1,
+    });
+    expect(initial.tiers.map(({ available, tier }) => ({ available, tier }))).toEqual([
+      { available: true, tier: "fast" },
+      { available: true, tier: "balanced" },
+      { available: true, tier: "pro" },
+    ]);
+
+    await database
+      .update(modelCatalog)
+      .set({ available: false })
+      .where(eq(modelCatalog.id, initial.tiers[1].catalogId));
+    const changed = await service.replaceAdminPolicy(workspaceId, "simulated", {
+      defaultTier: "fast",
+      monthlyBudgetUsd: "101",
+      observedRevision: initial.revision,
+      tiers: [
+        {
+          catalogId: initial.tiers[0].catalogId,
+          enabled: true,
+          maximumOutputTokens: initial.tiers[0].maximumOutputTokens,
+          tier: "fast",
+        },
+        {
+          catalogId: initial.tiers[1].catalogId,
+          enabled: true,
+          maximumOutputTokens: initial.tiers[1].maximumOutputTokens,
+          tier: "balanced",
+        },
+        {
+          catalogId: initial.tiers[2].catalogId,
+          enabled: false,
+          maximumOutputTokens: initial.tiers[2].maximumOutputTokens,
+          tier: "pro",
+        },
+      ],
+    });
+    expect(changed).toMatchObject({ defaultTier: "fast", revision: 2 });
+    expect(changed.tiers[1]?.available).toBe(false);
+
+    await expect(
+      service.replaceAdminPolicy(workspaceId, "simulated", {
+        defaultTier: "fast",
+        monthlyBudgetUsd: "102",
+        observedRevision: initial.revision,
+        tiers: changed.tiers.map(({ catalogId, enabled, maximumOutputTokens, tier }) => ({
+          catalogId,
+          enabled,
+          maximumOutputTokens,
+          tier,
+        })) as typeof initial.tiers,
+      }),
+    ).rejects.toBeInstanceOf(ModelPolicyChangedError);
+
+    const decreased = await service.replaceAdminPolicy(workspaceId, "simulated", {
+      defaultTier: "fast",
+      monthlyBudgetUsd: "102",
+      observedRevision: changed.revision,
+      tiers: [
+        {
+          catalogId: changed.tiers[0].catalogId,
+          enabled: true,
+          maximumOutputTokens: changed.tiers[0].maximumOutputTokens,
+          tier: "fast",
+        },
+        {
+          catalogId: changed.tiers[1].catalogId,
+          enabled: true,
+          maximumOutputTokens: changed.tiers[1].maximumOutputTokens - 1,
+          tier: "balanced",
+        },
+        {
+          catalogId: changed.tiers[2].catalogId,
+          enabled: false,
+          maximumOutputTokens: changed.tiers[2].maximumOutputTokens,
+          tier: "pro",
+        },
+      ],
+    });
+    expect(decreased).toMatchObject({ monthlyBudgetUsd: "102", revision: 3 });
+
+    const unchangedTiers: AdminUpdateModelPolicyRequest["tiers"] = [
+      {
+        catalogId: decreased.tiers[0].catalogId,
+        enabled: decreased.tiers[0].enabled,
+        maximumOutputTokens: decreased.tiers[0].maximumOutputTokens,
+        tier: "fast",
+      },
+      {
+        catalogId: decreased.tiers[1].catalogId,
+        enabled: decreased.tiers[1].enabled,
+        maximumOutputTokens: decreased.tiers[1].maximumOutputTokens,
+        tier: "balanced",
+      },
+      {
+        catalogId: decreased.tiers[2].catalogId,
+        enabled: decreased.tiers[2].enabled,
+        maximumOutputTokens: decreased.tiers[2].maximumOutputTokens,
+        tier: "pro",
+      },
+    ];
+    await expect(
+      service.replaceAdminPolicy(workspaceId, "simulated", {
+        defaultTier: "balanced",
+        monthlyBudgetUsd: decreased.monthlyBudgetUsd,
+        observedRevision: decreased.revision,
+        tiers: unchangedTiers,
+      }),
+    ).rejects.toBeInstanceOf(ModelPolicyConflictError);
+    await expect(
+      service.replaceAdminPolicy(workspaceId, "simulated", {
+        defaultTier: decreased.defaultTier,
+        monthlyBudgetUsd: decreased.monthlyBudgetUsd,
+        observedRevision: decreased.revision,
+        tiers: [
+          unchangedTiers[0],
+          {
+            ...unchangedTiers[1],
+            maximumOutputTokens: unchangedTiers[1].maximumOutputTokens + 1,
+          },
+          unchangedTiers[2],
+        ],
+      }),
+    ).rejects.toBeInstanceOf(ModelPolicyConflictError);
+    await database
+      .update(modelCatalog)
+      .set({ available: false })
+      .where(eq(modelCatalog.id, unchangedTiers[2].catalogId));
+    await expect(
+      service.replaceAdminPolicy(workspaceId, "simulated", {
+        defaultTier: decreased.defaultTier,
+        monthlyBudgetUsd: decreased.monthlyBudgetUsd,
+        observedRevision: decreased.revision,
+        tiers: [unchangedTiers[0], unchangedTiers[1], { ...unchangedTiers[2], enabled: true }],
+      }),
+    ).rejects.toBeInstanceOf(ModelPolicyConflictError);
+    await expect(
+      service.replaceAdminPolicy(workspaceId, "simulated", {
+        defaultTier: decreased.defaultTier,
+        monthlyBudgetUsd: decreased.monthlyBudgetUsd,
+        observedRevision: decreased.revision,
+        tiers: [
+          { ...unchangedTiers[0], catalogId: unchangedTiers[1].catalogId },
+          unchangedTiers[1],
+          unchangedTiers[2],
+        ],
+      }),
+    ).rejects.toBeInstanceOf(ModelPolicyConflictError);
+    await expect(service.readAdminPolicy(workspaceId, "simulated")).resolves.toMatchObject({
+      revision: 3,
+    });
+  });
+
+  it("rejects a hard-budget decrease below current reservations without a partial write", async () => {
+    const workspaceId = await insertWorkspace("budget-administration", "America/Guayaquil");
+    const userId = `budget-admin-user-${randomUUID()}`;
+    await database.insert(user).values({
+      email: "budget-admin@example.test",
+      emailVerified: true,
+      id: userId,
+      name: "Budget Employee",
+    });
+    await database.insert(workspaceMemberships).values({
+      role: "member",
+      status: "active",
+      userId,
+      workspaceId,
+    });
+    const service = fixedModelPolicyService(database);
+    await service.bootstrap({
+      catalog: Object.freeze(
+        Object.fromEntries(
+          modelTiers.map((tier) => [
+            tier,
+            buildSimulatedCatalogSnapshot(
+              initialTierModels[tier],
+              limits[tier],
+              modelPolicyTestNow,
+            ),
+          ]),
+        ) as Record<ModelTier, CatalogModelSnapshot>,
+      ),
+      employeeActiveGenerationLimit: 2,
+      maximumOutputTokens: limits,
+      mode: "simulated",
+      monthlyBudgetUsd: "100",
+      privacyAttestation: null,
+      reservationMarginBasisPoints: 2_000,
+      workspaceIdentity: "budget-administration",
+    });
+    await insertExpiredReservedGeneration({
+      reservationExpiresAt: new Date("2026-08-08T12:20:00.000Z"),
+      reservedCostUsd: "10",
+      startedAt: new Date("2026-08-08T12:00:00.000Z"),
+      userId,
+      workspaceId,
+    });
+    const policy = await service.readAdminPolicy(workspaceId, "simulated");
+    const tiers: AdminUpdateModelPolicyRequest["tiers"] = [
+      {
+        catalogId: policy.tiers[0].catalogId,
+        enabled: policy.tiers[0].enabled,
+        maximumOutputTokens: policy.tiers[0].maximumOutputTokens,
+        tier: "fast",
+      },
+      {
+        catalogId: policy.tiers[1].catalogId,
+        enabled: policy.tiers[1].enabled,
+        maximumOutputTokens: policy.tiers[1].maximumOutputTokens,
+        tier: "balanced",
+      },
+      {
+        catalogId: policy.tiers[2].catalogId,
+        enabled: policy.tiers[2].enabled,
+        maximumOutputTokens: policy.tiers[2].maximumOutputTokens,
+        tier: "pro",
+      },
+    ];
+    await expect(
+      service.replaceAdminPolicy(workspaceId, "simulated", {
+        defaultTier: policy.defaultTier,
+        monthlyBudgetUsd: "9.999999999999999999",
+        observedRevision: policy.revision,
+        tiers,
+      }),
+    ).rejects.toBeInstanceOf(ModelPolicyConflictError);
+    await expect(service.readAdminPolicy(workspaceId, "simulated")).resolves.toMatchObject({
+      monthlyBudgetUsd: "100",
+      revision: 1,
+    });
+    await expect(
+      service.replaceAdminPolicy(workspaceId, "simulated", {
+        defaultTier: policy.defaultTier,
+        monthlyBudgetUsd: "10",
+        observedRevision: policy.revision,
+        tiers,
+      }),
+    ).resolves.toMatchObject({ monthlyBudgetUsd: "10", revision: 2 });
   });
 
   it("derives workspace-local monthly boundaries across daylight-saving changes", async () => {
@@ -611,6 +1067,9 @@ describe.sequential("model policy and budget persistence", () => {
       );
       const reservation = budget.reserveResolvedTier(admission, policy, 1_000n, startedAt);
       expect(reservation.reservedCostUsd).toBe("0.005");
+      expect(reservation.reservationExpiresAt).toEqual(
+        new Date(startedAt.getTime() + 6 * 60 * 1_000),
+      );
       const inserted = await transaction
         .insert(generations)
         .values({

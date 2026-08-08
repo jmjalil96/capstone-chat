@@ -11,6 +11,7 @@ import { createDatabasePool } from "../src/database/pool.js";
 
 const productTableNames = [
   "account",
+  "conversation_compactions",
   "conversations",
   "drafts",
   "employee_approvals",
@@ -22,6 +23,7 @@ const productTableNames = [
   "session",
   "user",
   "verification",
+  "workspace_catalog_approvals",
   "workspace_cost_policies",
   "workspace_memberships",
   "workspace_model_policies",
@@ -116,7 +118,7 @@ describe("PostgreSQL application schema", () => {
         "SELECT table_name AS \"tableName\" FROM information_schema.tables WHERE table_schema = 'public'",
       );
 
-      expect(appliedMigrations.rows).toHaveLength(4);
+      expect(appliedMigrations.rows).toHaveLength(5);
       expect(appliedMigrations.rows[0]?.hash).toMatch(/^[a-f0-9]{64}$/u);
       expect(Number(appliedMigrations.rows[0]?.createdAt)).toBeGreaterThan(0);
       expect(productTables.rows.map(({ tableName }) => tableName).sort()).toEqual(
@@ -182,7 +184,7 @@ describe("PostgreSQL application schema", () => {
         "SELECT table_name AS \"tableName\" FROM information_schema.tables WHERE table_schema = 'public' AND table_name IN ('conversations', 'drafts', 'messages') ORDER BY table_name",
       );
 
-      expect(migrations.rows).toHaveLength(4);
+      expect(migrations.rows).toHaveLength(5);
       expect(workspace.rows).toEqual([{ displayName: "Phase Two Preserved" }]);
       expect(phaseThreeTables.rows.map((row) => row.tableName)).toEqual([
         "conversations",
@@ -322,7 +324,7 @@ describe("PostgreSQL application schema", () => {
         "SELECT count(*)::text AS count FROM generations",
       );
 
-      expect(migrations.rows).toHaveLength(4);
+      expect(migrations.rows).toHaveLength(5);
       expect(preserved.rows).toEqual([
         {
           draftContent: "Borrador preservado",
@@ -563,7 +565,7 @@ describe("PostgreSQL application schema", () => {
     }
   });
 
-  it("installs the additive Phase 6 generation accounting shape", async () => {
+  it("installs generation accounting with the Phase 7 workflow guards", async () => {
     const verificationPool = new Pool({ connectionString: databaseUrl });
     try {
       const columns = await verificationPool.query<{ columnName: string }>(`
@@ -609,6 +611,7 @@ describe("PostgreSQL application schema", () => {
         WHERE schemaname = 'public' AND indexname IN (
           'generations_active_conversation_unique',
           'generations_assistant_message_unique',
+          'generations_chat_workflow_conversation_unique',
           'generations_openrouter_generation_id_unique',
           'generations_reserved_expiry_idx',
           'generations_scoped_idempotency_unique',
@@ -660,6 +663,7 @@ describe("PostgreSQL application schema", () => {
         "accounting_settled_at",
       ]);
       expect(enumValues.rows).toEqual([
+        { enumName: "generation_status", value: "preparing" },
         { enumName: "generation_status", value: "active" },
         { enumName: "generation_status", value: "completed" },
         { enumName: "generation_status", value: "cancelled" },
@@ -682,6 +686,7 @@ describe("PostgreSQL application schema", () => {
       expect(indexes.rows.map((row) => row.indexName)).toEqual([
         "generations_active_conversation_unique",
         "generations_assistant_message_unique",
+        "generations_chat_workflow_conversation_unique",
         "generations_openrouter_generation_id_unique",
         "generations_reserved_expiry_idx",
         "generations_scoped_idempotency_unique",

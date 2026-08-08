@@ -1,15 +1,17 @@
 # Capstone Chat
 
-Capstone Chat is an internal AI chat product. The repository currently implements the Phase 6
-OpenRouter and cost-control checkpoint. Approved employees can use the complete conversation
-experience from the earlier phases and choose Fast, Balanced, or Pro for each next response. The
-backend owns the exact model mapping, privacy route, output bounds, employee concurrency, monthly
-workspace budget, reservation, and authoritative usage settlement.
+Capstone Chat is an internal AI chat product. The repository currently implements the Phase 7
+compaction and administration checkpoint. Approved employees can use the complete conversation
+experience, choose Fast, Balanced, or Pro for each next response, and continue long selected
+branches through bounded, backend-owned context compaction. The backend owns the exact model
+mapping, privacy route, output bounds, employee concurrency, monthly workspace budget,
+reservation, authoritative usage settlement, and every administrative rule.
 
 Development and automated tests still default to the deterministic zero-cost `FakeModelGateway`.
 Real inference is an explicit `MODEL_GATEWAY=openrouter` opt-in and requires a dedicated key, a live
-validated catalog, and a fresh privacy attestation. Context compaction, web administration, usage
-reports, transactional email, and production deployment remain outside this milestone.
+validated catalog, and a fresh privacy attestation. The same deterministic fake covers chat and
+compaction locally. Transactional email, production telemetry, and production deployment remain
+outside this milestone.
 
 ## Prerequisites
 
@@ -71,9 +73,10 @@ pnpm model-policy:bootstrap \
 ```
 
 The simulated policy makes all three employee-facing tiers available but records them as untracked,
-zero-cost local generations. An exact retry is idempotent. Changing any effective input is rejected;
-switching an existing workspace from simulated to real policy requires a fresh database/workspace
-until Phase 7 supplies controlled policy administration.
+zero-cost local generations. An exact retry is idempotent. Changing bootstrap inputs is rejected;
+after the administrator account is active, use the web administration area for revision-checked
+policy and budget changes. Runtime mode remains an operator choice, so changing an existing
+workspace between simulated and OpenRouter mode still requires a separately bootstrapped workspace.
 
 Start Fastify and Vite together:
 
@@ -176,9 +179,10 @@ Approve another employee after bootstrap:
 pnpm identity:approve --workspace capstone --email employee@example.test --role member
 ```
 
-`--role` accepts only `admin` or `member`. Repeating the exact approval is idempotent; a conflicting
-role or lifecycle state fails without silently changing access. The employee uses the ordinary
-`/sign-up` flow and chooses their own 12–128 character password.
+`--role` accepts only `admin` or `member`. Repeating the exact approval is idempotent. A pending
+approval's role may be corrected before activation; an active or deactivated lifecycle conflict
+fails without silently changing access. The employee uses the ordinary `/sign-up` flow and chooses
+their own 12–128 character password.
 
 Deactivate an employee and revoke their database sessions:
 
@@ -186,8 +190,31 @@ Deactivate an employee and revoke their database sessions:
 pnpm identity:deactivate --workspace capstone --email employee@example.test
 ```
 
-Deactivation blocks authorization before session cleanup and is safe to retry. Phase 6 has no web
-administration surface.
+Deactivation blocks authorization before session cleanup and is safe to retry. The same operations
+are available to administrators in the browser.
+
+## Administration
+
+Administrators can open `/admin`; it redirects to the employee area. The browser uses the session
+role only for presentation. Fastify independently requires the administrator role for every read
+and a session authenticated within the last 15 minutes for every mutation.
+
+- `/admin/employees` pages through pending, active, and deactivated approvals. It can approve and
+  invite an employee, resend an invitation, revoke sessions, set or clear a non-blocking monthly
+  personal spend warning, and deactivate access. An administrator cannot deactivate themselves or
+  the workspace's last active administrator.
+- `/admin/models` shows the workspace-curated catalog and the complete revisioned tier policy. An
+  administrator can validate an exact OpenRouter model, refresh approved metadata, select each
+  tier's mapping and output limit, choose the default tier, enable or disable employee-facing tiers,
+  and change the hard monthly workspace budget atomically.
+- `/admin/usage` reports the current workspace-local month. It separates actual, estimated, and
+  still-reserved cost and groups content-free token/cost metadata by employee, tier, and purpose
+  (`chat` or `compaction`). It never exposes conversations, prompts, responses, or summaries.
+
+The development fake sender delivers administrator invitations to `/api/dev/mailbox`. No
+transactional email provider is implied by this milestone. If a mutation reports that the session
+must be refreshed, sign out and sign in again; the application does not collect credentials inside
+the administration area.
 
 ## Identity and recovery flow
 
@@ -203,6 +230,7 @@ administration surface.
 - `/search` searches owned active and archived titles and message text without putting the query in
   the browser URL.
 - `/archived` pages through archived conversations.
+- `/admin/employees`, `/admin/models`, and `/admin/usage` are available only to administrators.
 
 Verification and reset tokens are removed from the visible browser URL and are never intended for
 logs or browser storage.
@@ -278,11 +306,26 @@ Completion, cancellation, and failure never force a final scroll. Opening a mess
 selects its preserved branch, loads ancestors until the exact match is present, positions once, and
 marks it briefly without placing the query or message content in the URL.
 
+Long selected branches are planned entirely by Fastify. At 80% of the smaller safe chat/Fast input
+budget, the server reuses an applicable persisted summary or makes one synchronous hidden Fast call.
+Normal compaction keeps the newest eight complete turns verbatim, never changes or deletes original
+messages, and records the hidden call under purpose `compaction`. Its summary and deltas never enter
+the browser, search, logs, or administrator responses. Stop and disconnect cancel both the hidden
+work and the waiting chat.
+
+If compaction is unavailable, rejected by the hard budget, or ends without a reusable summary, the
+chat proceeds once with the newest bounded turns and displays a context warning. The fallback keeps
+eight complete turns when possible and never drops below six; if even that minimum cannot fit, the
+request fails before consuming the draft or creating messages. There is no automatic inference
+retry. In simulated mode both the compaction and chat calls are deterministic and zero-cost; in
+OpenRouter mode both are separately reserved and settled.
+
 The committed migration history includes the conversation/search tables, durable generation
-lifecycle, and Phase 6 model-policy, catalog, preference, reservation, and accounting state. Apply
-the complete history with `pnpm db:migrate` after updating a checkout; API replicas never migrate
-during startup. If conversation, model-tier, or response routes fail after an update, confirm the
-migrations ran against the selected `DATABASE_URL` before investigating application code.
+lifecycle, Phase 6 model-policy/accounting state, and Phase 7 compaction and administration state.
+Apply the complete history with `pnpm db:migrate` after updating a checkout; API replicas never
+migrate during startup. If conversation, model-tier, response, or administration routes fail after
+an update, confirm the migrations ran against the selected `DATABASE_URL` before investigating
+application code.
 
 ## Health and troubleshooting
 
@@ -296,8 +339,8 @@ Common local checks:
 
 - A readiness failure usually means PostgreSQL is unavailable or migrations were not applied. Run
   `docker compose up -d --wait postgres` and `pnpm db:migrate`.
-- A response route returning an ordinary database error after an update usually means the Phase 4
-  generation migration is missing; apply the complete migration history and retry.
+- An ordinary database error on a feature route after an update usually means the committed
+  migration history is incomplete; apply the complete migration history and retry.
 - A startup failure with `configurationKey` set to `BETTER_AUTH_SECRET`, `EMAIL_DELIVERY`,
   `DATABASE_URL`, or `PUBLIC_ORIGIN` means the selected runtime mode rejected that field. Operator
   failure metadata intentionally omits the rejected value and arbitrary error messages.
@@ -433,8 +476,9 @@ docker build --file apps/api/Dockerfile --tag capstone-chat-api .
 
 The Vite output is static content in `apps/web/dist`; no production static host has been selected.
 The API image runs as the non-root `node` user and includes the compiled runtime and committed
-migrations. Building the image verifies the artifact. Phase 6 includes the production OpenRouter
-adapter, but does not select or configure a deployment platform.
+migrations. Building the image verifies the artifact. Phase 7 includes the production OpenRouter
+adapter, compaction, and administration runtime, but does not select or configure a deployment
+platform.
 
 The migration job receives only `NODE_ENV` and `DATABASE_URL`; it does not receive the Better Auth
 secret, public origin, or email configuration. Apply migrations as a separate deployment action

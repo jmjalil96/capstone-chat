@@ -4,6 +4,7 @@ import { identitySecurity } from "./security.js";
 import type { IdentityService, WorkspaceRole } from "./service.js";
 
 const authorizationCopy = {
+  administratorRequired: "Necesitas permisos de administración para continuar.",
   authenticationRequired: "Inicia sesión para continuar.",
   freshSessionRequired: "Vuelve a iniciar sesión antes de realizar esta acción.",
   workspaceAccessDenied: "Tu cuenta no tiene acceso activo a este espacio de trabajo.",
@@ -68,6 +69,34 @@ export function requireAdministratorActor(
   }
 
   return member;
+}
+
+export function requireAdministratorRole(actor: RequestActor | null): RequestActor {
+  const member = requireMemberActor(actor);
+  if (member.role !== "admin") {
+    throw new ApplicationError(
+      403,
+      "ADMIN_ACCESS_REQUIRED",
+      authorizationCopy.administratorRequired,
+    );
+  }
+  return member;
+}
+
+export function requireFreshAdministratorActor(
+  actor: RequestActor | null,
+  now = new Date(),
+): RequestActor {
+  const administrator = requireAdministratorRole(actor);
+  const freshAfter = now.getTime() - identitySecurity.freshSessionSeconds * 1_000;
+  if (administrator.session.createdAt.getTime() < freshAfter) {
+    throw new ApplicationError(
+      403,
+      "SESSION_REFRESH_REQUIRED",
+      authorizationCopy.freshSessionRequired,
+    );
+  }
+  return administrator;
 }
 
 export function createActorResolver(authentication: Authentication, identity: IdentityService) {

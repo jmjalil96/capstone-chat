@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import { eq } from "drizzle-orm";
 import { type ApiApplication, createApplication } from "../../src/app.js";
 import { loadConfig } from "../../src/config.js";
 import { session as authenticationSessions } from "../../src/database/auth-schema.generated.js";
 import { generations } from "../../src/database/generation-schema.js";
 import { migrateDatabase } from "../../src/database/migrate.js";
+import { modelCatalog } from "../../src/database/model-policy-schema.js";
 import type { RequestActor } from "../../src/identity/authorization.js";
 import { FakeEmailSender } from "../../src/identity/email.js";
 import { createInvitationEmail } from "../../src/identity/email-templates.js";
@@ -13,6 +15,7 @@ import {
   conversationBrowserEmployee,
   conversationBrowserFixtures,
   phaseFiveBrowserFixtures,
+  phaseSevenBrowserFixtures,
   responseGalleryAssistantMarkdown,
 } from "./conversation-e2e-fixtures.js";
 import { bootstrapSimulatedModelPolicy } from "./model-policy.js";
@@ -249,6 +252,48 @@ async function seedDeepSearchConversation(
   );
 }
 
+async function seedCompactionConversation(
+  currentApplication: ApiApplication,
+  actor: RequestActor,
+): Promise<void> {
+  const conversation = await currentApplication.conversations.create(actor);
+  const renamed = await currentApplication.conversations.rename(
+    actor,
+    conversation.id,
+    phaseSevenBrowserFixtures.compactionTitle,
+    conversation.revision,
+  );
+  let parentMessageId: string | null = null;
+  let selectedLeafId: string | undefined;
+  for (let index = 0; index < 28; index += 1) {
+    const role = index % 2 === 0 ? "user" : "assistant";
+    const inAgedPrefix = index < 12;
+    const textBytes = inAgedPrefix ? 13_000 : 200;
+    const message = await currentApplication.conversations.insertImmutableMessage(actor, {
+      content: [
+        {
+          type: "text",
+          text: `${role === "user" ? "Pregunta" : "Respuesta"} extensa ${index + 1}: ${"x".repeat(textBytes)}`,
+        },
+      ],
+      conversationId: conversation.id,
+      parentMessageId,
+      role,
+    });
+    parentMessageId = message.id;
+    selectedLeafId = message.id;
+  }
+  if (selectedLeafId === undefined) {
+    throw new Error("The compaction browser fixture has no selected message");
+  }
+  await currentApplication.conversations.selectLeaf(
+    actor,
+    conversation.id,
+    selectedLeafId,
+    renamed.revision,
+  );
+}
+
 async function main(): Promise<void> {
   container = await new PostgreSqlContainer("postgres:18.4-alpine")
     .withDatabase("capstone_browser")
@@ -282,6 +327,10 @@ async function main(): Promise<void> {
     employeeActiveGenerationLimit: 2,
     monthlyBudgetUsd: "100",
   });
+  await application.database
+    .update(modelCatalog)
+    .set({ contextLength: 200_000 })
+    .where(eq(modelCatalog.metadataSource, "simulated"));
   const approval = await application.identity.approve({
     email: conversationBrowserEmployee.email,
     role: "member",
@@ -392,6 +441,7 @@ async function main(): Promise<void> {
 
   await seedResponseGallery(application, fixtureActor);
   await seedDeepSearchConversation(application, fixtureActor);
+  await seedCompactionConversation(application, fixtureActor);
   for (const title of Object.values(phaseFiveBrowserFixtures.controlsTitles)) {
     await seedControlConversation(application, fixtureActor, title);
   }

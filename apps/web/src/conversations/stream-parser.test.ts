@@ -108,6 +108,46 @@ describe("response stream parser", () => {
       ]),
     ).resolves.toHaveLength(5);
 
+    await expect(
+      collect([
+        lines(
+          started,
+          { type: "context.warning", code: "CONTEXT_COMPACTION_FALLBACK" },
+          { type: "content.delta", text: "Contexto acotado" },
+          completed,
+        ),
+      ]),
+    ).resolves.toHaveLength(4);
+
+    await expect(
+      collect([
+        lines(
+          started,
+          { type: "context.compacting" },
+          {
+            type: "response.cancelled",
+            messageId,
+            revision: 2,
+          },
+        ),
+      ]),
+    ).resolves.toHaveLength(3);
+    await expect(
+      collect([
+        lines(
+          started,
+          { type: "context.compacting" },
+          {
+            type: "response.failed",
+            errorCode: "GENERATION_FAILED",
+            messageId,
+            partial: false,
+            revision: 2,
+          },
+        ),
+      ]),
+    ).resolves.toHaveLength(3);
+
     for (const payload of [
       lines(started, { type: "context.compacted" }, completed),
       lines(
@@ -121,6 +161,18 @@ describe("response stream parser", () => {
         started,
         { type: "context.compacting" },
         { type: "context.compacted" },
+        { type: "context.warning", code: "CONTEXT_COMPACTION_FALLBACK" },
+        completed,
+      ),
+      lines(
+        started,
+        { type: "content.delta", text: "x" },
+        { type: "context.warning", code: "CONTEXT_COMPACTION_FALLBACK" },
+        completed,
+      ),
+      lines(
+        started,
+        { type: "context.warning", code: "CONTEXT_COMPACTION_FALLBACK" },
         { type: "context.warning", code: "CONTEXT_COMPACTION_FALLBACK" },
         completed,
       ),

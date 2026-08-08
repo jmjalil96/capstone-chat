@@ -2,6 +2,8 @@ import { expect, test } from "@playwright/test";
 
 import { copy } from "../src/copy";
 
+const phaseSevenCompactionTitle = "Contexto extenso para compactar";
+
 const employee = {
   email: "employee.browser@example.test",
   name: "Empleada de Conversaciones",
@@ -146,6 +148,24 @@ test("completes the real conversation and model-tier lifecycle through the brows
   await expect(otherTab.getByText(copy.conversations.draft.saved, { exact: true })).toBeVisible();
   await expect(otherDraft).toHaveValue("Reemplazo local confirmado.");
   await otherTab.close();
+
+  await desktopSidebar.getByRole("link", { name: phaseSevenCompactionTitle }).click();
+  await expect(
+    page.getByRole("heading", { level: 1, name: phaseSevenCompactionTitle }),
+  ).toBeVisible();
+  await expect(draft).toHaveValue("");
+  await draft.fill("Resume el estado actual del trabajo.");
+  const send = page.getByRole("button", {
+    name: copy.conversations.generation.actions.send,
+  });
+  await expect(send).toBeEnabled();
+  await send.click();
+  await expect(page.getByText(copy.conversations.generation.status.compacting)).toBeVisible();
+  await expect(
+    page.getByText("Esta es una respuesta simulada de Capstone Chat para desarrollo local.", {
+      exact: true,
+    }),
+  ).toBeVisible();
 
   await desktopSidebar.getByRole("link", { name: copy.conversations.navigation.search }).click();
   await page.getByLabel(copy.conversations.search.label).fill("BRUJ");

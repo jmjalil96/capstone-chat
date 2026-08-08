@@ -29,6 +29,13 @@
       "when": 1786205271465,
       "tag": "0003_openrouter_cost_control",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1786219479071,
+      "tag": "0004_compaction_administration",
+      "breakpoints": true
     }
   ]
 }

@@ -126,6 +126,26 @@ export const workspaceModelPolicies = pgTable(
   ],
 );
 
+export const workspaceCatalogApprovals = pgTable(
+  "workspace_catalog_approvals",
+  {
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    modelCatalogId: uuid("model_catalog_id")
+      .notNull()
+      .references(() => modelCatalog.id, { onDelete: "restrict" }),
+    createdAt: timestamp("created_at", { precision: 3, withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.workspaceId, table.modelCatalogId],
+      name: "workspace_catalog_approvals_workspace_catalog_pk",
+    }),
+    index("workspace_catalog_approvals_catalog_idx").on(table.modelCatalogId),
+  ],
+);
+
 export const workspaceCostPolicies = pgTable(
   "workspace_cost_policies",
   {
@@ -136,6 +156,7 @@ export const workspaceCostPolicies = pgTable(
     defaultTier: text("default_tier").notNull(),
     employeeActiveGenerationLimit: integer("employee_active_generation_limit").notNull(),
     reservationMarginBasisPoints: integer("reservation_margin_basis_points").notNull(),
+    revision: integer("revision").default(1).notNull(),
     createdAt: timestamp("created_at", { precision: 3, withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true }).defaultNow().notNull(),
   },
@@ -154,6 +175,7 @@ export const workspaceCostPolicies = pgTable(
       sql`${table.reservationMarginBasisPoints} >= 0
         AND ${table.reservationMarginBasisPoints} <= 1000000`,
     ),
+    check("workspace_cost_policies_revision_check", sql`${table.revision} > 0`),
     check(
       "workspace_cost_policies_timestamps_check",
       sql`${table.updatedAt} >= ${table.createdAt}`,

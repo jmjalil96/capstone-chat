@@ -10,6 +10,7 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import { hasUnsupportedControlCharacter } from "../conversations/content.js";
 import { applySecurityHeaders } from "../security/http.js";
 import type { ActiveStreamRegistry } from "./active-streams.js";
+import type { CompactionService } from "./compaction-service.js";
 import type {
   GatewayAccounting,
   GatewayEvent,
@@ -17,6 +18,7 @@ import type {
   GatewayProviderMetadata,
   GatewayUsage,
   GenerationAccountingGateway,
+  GenerationRequest,
   ModelGateway,
 } from "./model-gateway.js";
 import type {
@@ -325,6 +327,7 @@ export function splitContentDelta(text: string): readonly string[] {
 }
 
 export function createResponseStreamCoordinator(dependencies: {
+  readonly compactions?: CompactionService;
   readonly gateway: ModelGateway;
   readonly generations: GenerationService;
   readonly registry: ActiveStreamRegistry;
@@ -390,7 +393,24 @@ export function createResponseStreamCoordinator(dependencies: {
         await writer.write(event);
         return true;
       }
-      return state.status !== "active";
+      if (
+        (state.status === "failed" || state.status === "incomplete") &&
+        state.errorCode !== null &&
+        state.errorCode !== "STREAM_INTERRUPTED" &&
+        state.assistantMessageId !== null &&
+        state.revision !== null &&
+        isWritable(reply)
+      ) {
+        await writer.write({
+          errorCode: state.errorCode,
+          messageId: state.assistantMessageId,
+          partial: state.status === "incomplete",
+          revision: state.revision,
+          type: "response.failed",
+        });
+        return true;
+      }
+      return state.status !== "active" && state.status !== "preparing";
     }
 
     async function emitFailure(
@@ -484,7 +504,10 @@ export function createResponseStreamCoordinator(dependencies: {
       const signal = durableStateMonitorController.signal;
       while (!signal.aborted) {
         const state = await generations.readState(started.generationId).catch(() => undefined);
-        if (state === null || (state !== undefined && state.status !== "active")) {
+        if (
+          state === null ||
+          (state !== undefined && state.status !== "active" && state.status !== "preparing")
+        ) {
           gatewayController.abort("durable-terminal");
           return;
         }
@@ -541,7 +564,44 @@ export function createResponseStreamCoordinator(dependencies: {
       };
       await writer.write(startedEvent);
 
-      for await (const event of gateway.stream(started.request, gatewaySignal)) {
+      let chatRequest: GenerationRequest = started.request;
+      if (started.compaction !== undefined) {
+        if (dependencies.compactions === undefined) {
+          throw new Error("A pending context plan requires the compaction service");
+        }
+        await writer.write({ type: "context.compacting" });
+        const result = await dependencies.compactions.execute(
+          {
+            chatGenerationId: started.generationId,
+            conversationId: started.conversationId,
+            ...started.compaction,
+          },
+          gatewaySignal,
+        );
+        if (result.kind === "cancelled") {
+          const state = await generations.readState(started.generationId);
+          if (state !== null) {
+            terminal = await durableTerminalEvent(state);
+          }
+          return;
+        }
+        chatRequest = {
+          ...result.chat.request,
+          ...(started.request.route === undefined ? {} : { route: started.request.route }),
+        };
+        await writer.write(
+          result.kind === "compacted"
+            ? { type: "context.compacted" }
+            : { code: "CONTEXT_COMPACTION_FALLBACK", type: "context.warning" },
+        );
+      } else if (started.contextWarning === true) {
+        await writer.write({
+          code: "CONTEXT_COMPACTION_FALLBACK",
+          type: "context.warning",
+        });
+      }
+
+      for await (const event of gateway.stream(chatRequest, gatewaySignal)) {
         const state = await generations.readState(started.generationId);
         if (state === null) {
           throw new GatewayOutputError("GENERATION_FAILED");
@@ -702,7 +762,7 @@ export function createResponseStreamCoordinator(dependencies: {
       }
     } catch (error: unknown) {
       const state = await generations.readState(started.generationId).catch(() => null);
-      if (state !== null && state.status !== "active") {
+      if (state !== null && state.status !== "active" && state.status !== "preparing") {
         terminal = await durableTerminalEvent(state).catch(() => true);
       } else if (state?.status === "active") {
         const interrupted =
@@ -728,6 +788,16 @@ export function createResponseStreamCoordinator(dependencies: {
           }
         } else if (committed !== undefined) {
           terminal = await durableTerminalEvent(committed).catch(() => true);
+        }
+      } else if (state?.status === "preparing" && started.compaction !== undefined) {
+        await dependencies.compactions?.cancel({
+          chatGenerationId: started.generationId,
+          conversationId: started.conversationId,
+          ...started.compaction,
+        });
+        const cancelled = await generations.readState(started.generationId).catch(() => null);
+        if (cancelled !== null) {
+          terminal = await durableTerminalEvent(cancelled).catch(() => true);
         }
       }
     } finally {

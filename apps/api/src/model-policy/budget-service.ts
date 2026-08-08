@@ -1,4 +1,5 @@
-import { and, asc, count, eq, gt, lte, or, sql } from "drizzle-orm";
+import { and, asc, count, eq, gt, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { conversationCompactions } from "../database/compaction-schema.js";
 import { conversations } from "../database/conversation-schema.js";
 import type { AppDatabase, AppTransaction } from "../database/database.js";
 import { generations } from "../database/generation-schema.js";
@@ -152,7 +153,8 @@ export function createBudgetService(database: AppDatabase) {
         and(
           eq(generations.workspaceId, workspaceId),
           eq(generations.userId, userId),
-          eq(generations.status, "active"),
+          inArray(generations.status, ["preparing", "active"]),
+          or(isNull(generations.purpose), eq(generations.purpose, "chat")),
         ),
       );
     const consumedUsd = await workspaceBudgetConsumptionUsd(transaction, workspaceId, period);
@@ -171,6 +173,7 @@ export function createBudgetService(database: AppDatabase) {
     policy: ResolvedTierPolicy,
     estimatedInputTokensValue: bigint,
     startedAt: Date,
+    enforceEmployeeLimit = true,
   ): GenerationReservationSnapshot {
     const estimatedInputTokens = canonicalTokenCount(
       estimatedInputTokensValue,
@@ -179,7 +182,10 @@ export function createBudgetService(database: AppDatabase) {
     if (estimatedInputTokens + BigInt(policy.maximumOutputTokens) > BigInt(policy.contextLength)) {
       throw new ContextBudgetExceededError();
     }
-    if (admission.activeGenerationCount >= policy.employeeActiveGenerationLimit) {
+    if (
+      enforceEmployeeLimit &&
+      admission.activeGenerationCount >= policy.employeeActiveGenerationLimit
+    ) {
       throw new EmployeeGenerationLimitError();
     }
 
@@ -384,7 +390,7 @@ export function createBudgetService(database: AppDatabase) {
             generation.createdAt,
             generation.updatedAt,
           );
-          const isActive = generation.status === "active";
+          const isActive = generation.status === "active" || generation.status === "preparing";
           await transaction
             .update(generations)
             .set({
@@ -402,7 +408,21 @@ export function createBudgetService(database: AppDatabase) {
               and(eq(generations.id, generation.id), eq(generations.accountingStatus, "reserved")),
             );
 
-          if (isActive && generation.conversationId !== null) {
+          if (isActive && generation.purpose === "compaction") {
+            await transaction
+              .update(conversationCompactions)
+              .set({
+                completedAt: safeSettledAt,
+                status: "incomplete",
+                updatedAt: safeSettledAt,
+              })
+              .where(
+                and(
+                  eq(conversationCompactions.generationId, generation.id),
+                  eq(conversationCompactions.status, "active"),
+                ),
+              );
+          } else if (isActive && generation.conversationId !== null) {
             await transaction
               .update(conversations)
               .set({

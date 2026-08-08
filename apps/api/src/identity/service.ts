@@ -390,21 +390,26 @@ export function createIdentityService(database: AppDatabase) {
       const approval = existing[0];
 
       if (approval !== undefined) {
-        if (
-          existing.length !== 1 ||
-          approval.role !== input.role ||
-          approval.status !== "pending"
-        ) {
+        if (existing.length !== 1 || approval.status !== "pending") {
           throw new IdentityConflictError(
             "The existing employee approval conflicts with this request",
           );
+        }
+
+        if (approval.role !== input.role) {
+          await transaction
+            .update(employeeApprovals)
+            .set({ role: input.role, updatedAt: new Date() })
+            .where(
+              and(eq(employeeApprovals.id, approval.id), eq(employeeApprovals.status, "pending")),
+            );
         }
 
         return {
           approvalId: approval.id,
           normalizedEmail,
           repeated: true,
-          role: approval.role,
+          role: input.role,
           workspaceId: workspace.id,
         };
       }

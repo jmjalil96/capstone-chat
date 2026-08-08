@@ -23,6 +23,7 @@ function snapshot(overrides: Partial<ChatRuntimeSnapshot>): ChatRuntimeSnapshot 
   return {
     awaitingCanonical: false,
     committedUserText: undefined,
+    contextWarning: false,
     conversationId: "00000000-0000-4000-8000-000000000001",
     consumesDraft: false,
     errorCode: undefined,

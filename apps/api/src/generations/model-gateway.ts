@@ -1,4 +1,5 @@
 import type { GenerationModelTier } from "@capstone/protocol";
+import { serializeSummaryFrame } from "./compaction-prompt.js";
 
 export type GatewayCompletionReason = "content_filter" | "length" | "refusal" | "stop";
 export type GatewayFailureCode = "GENERATION_FAILED" | "GENERATION_TIMEOUT" | "MODEL_UNAVAILABLE";
@@ -57,16 +58,63 @@ export interface GenerationContextMessage {
   readonly text: string;
 }
 
-export interface GenerationRequest {
+export interface GenerationDerivedContext {
+  readonly kind: "compaction-summary";
+  readonly summary: string;
+}
+
+export type GenerationPurpose = "chat" | "compaction";
+
+interface GenerationRequestBase {
   readonly history: readonly GenerationContextMessage[];
   readonly message: GenerationContextMessage & { readonly role: "user" };
-  readonly modelTier: GenerationModelTier;
   /** Required by a real gateway; omitted only by legacy/fake Phase 4 fixtures. */
   readonly route?: GenerationModelRoute;
   readonly systemPrompt: {
     readonly text: string;
     readonly version: string;
   };
+}
+
+export interface ChatGenerationRequest extends GenerationRequestBase {
+  readonly derivedContext?: GenerationDerivedContext;
+  readonly modelTier: GenerationModelTier;
+  readonly purpose: "chat";
+}
+
+export interface CompactionGenerationRequest extends GenerationRequestBase {
+  readonly derivedContext?: never;
+  readonly modelTier: "fast";
+  readonly purpose: "compaction";
+}
+
+export type GenerationRequest = ChatGenerationRequest | CompactionGenerationRequest;
+
+export interface GatewayRequestMessage {
+  readonly content: string;
+  readonly role: "assistant" | "system" | "user";
+}
+
+export function generationRequestMessages(
+  request: GenerationRequest,
+): readonly GatewayRequestMessage[] {
+  return [
+    { content: request.systemPrompt.text, role: "system" },
+    ...(request.purpose === "chat" && request.derivedContext !== undefined
+      ? [
+          {
+            content: serializeSummaryFrame(request.derivedContext.summary),
+            role: "user" as const,
+          },
+        ]
+      : []),
+    ...request.history.map((message) => ({ content: message.text, role: message.role })),
+    { content: request.message.text, role: "user" },
+  ];
+}
+
+export function generationRequestEstimatorInputs(request: GenerationRequest): readonly string[] {
+  return generationRequestMessages(request).map((message) => message.content);
 }
 
 export type GatewayEvent =

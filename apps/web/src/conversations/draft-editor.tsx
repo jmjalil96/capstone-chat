@@ -520,6 +520,11 @@ export function DraftEditor({
               {lifecycleStatus}
             </p>
           ) : null}
+          {runtimeSnapshot?.contextWarning ? (
+            <p className="generation-warning" role="status" aria-live="polite">
+              {copy.conversations.generation.status.contextFallback}
+            </p>
+          ) : null}
         </div>
         {draft.status === "unsaved" && !draft.validationIssue ? (
           <button
