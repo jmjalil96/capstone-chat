@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { eq, inArray } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { type ApiApplication, createApplication } from "../src/app.js";
@@ -16,6 +17,7 @@ import { conversations, drafts, messages } from "../src/database/conversation-sc
 import { type AppDatabase, createDatabase } from "../src/database/database.js";
 import { workspaces } from "../src/database/identity-schema.js";
 import { migrateDatabase } from "../src/database/migrate.js";
+import * as databaseSchema from "../src/database/schema.js";
 import { ApplicationError } from "../src/errors.js";
 import { createGenerationService, type GenerationService } from "../src/generations/service.js";
 import type { RequestActor } from "../src/identity/authorization.js";
@@ -541,7 +543,7 @@ describe.sequential("conversation core integration", () => {
     expect((await restarted.getDraft(primary, scope)).revision).toBe(1);
   });
 
-  it("resolves adjacent alternatives from the selected path without returning content", async () => {
+  it("defers adjacent descendant resolution until selection without returning content", async () => {
     const conversation = await service.create(primary);
     const selectedRoot = await service.insertImmutableMessage(primary, {
       content: text("raíz elegida"),
@@ -622,7 +624,7 @@ describe.sequential("conversation core integration", () => {
       .returning();
     const rootAlternative = rootAlternativeRows[0];
     if (rootAlternative === undefined) throw new Error("missing root alternative");
-    const rootAlternativeLeaf = await service.insertImmutableMessage(primary, {
+    await service.insertImmutableMessage(primary, {
       content: text("respuesta de raíz alternativa"),
       conversationId: conversation.id,
       parentMessageId: rootAlternative.id,
@@ -670,18 +672,30 @@ describe.sequential("conversation core integration", () => {
       [nextAssistant.id, nextLeaf.id],
     ]);
 
-    const result = await service.getAlternativeContexts(primary, conversation.id, [
+    const loggedQueries: string[] = [];
+    const loggedDatabase = drizzle({
+      client: pool,
+      logger: { logQuery: (query) => loggedQueries.push(query) },
+      schema: databaseSchema,
+    });
+    const loggedService = createConversationService(
+      loggedDatabase,
+      createCursorCodec("alternative-context-query-secret-longer-than-thirty-two-characters"),
+    );
+    const result = await loggedService.getAlternativeContexts(primary, conversation.id, [
       selectedAssistant.id,
       selectedRoot.id,
     ]);
+    const metadataQuery = loggedQueries.find((query) => query.includes("requested_messages AS"));
+    expect(metadataQuery).toBeDefined();
+    expect(metadataQuery).not.toContain("descendants AS");
+    expect(metadataQuery).not.toContain("child.parent_message_id = descendant.id");
     expect(result).toMatchObject({ conversationId: conversation.id, revision: 1 });
     expect(result.contexts[0]).toEqual({
       messageId: selectedAssistant.id,
-      nextLeafMessageId:
-        expectedNextRoot === undefined ? null : newestLeafByRoot.get(expectedNextRoot.id),
+      nextLeafMessageId: expectedNextRoot?.id ?? null,
       position: selectedPosition + 1,
-      previousLeafMessageId:
-        expectedPreviousRoot === undefined ? null : newestLeafByRoot.get(expectedPreviousRoot.id),
+      previousLeafMessageId: expectedPreviousRoot?.id ?? null,
       total: orderedSiblings.length,
     });
     const orderedRoots = [selectedRoot, rootAlternative].toSorted((left, right) =>
@@ -692,9 +706,9 @@ describe.sequential("conversation core integration", () => {
     );
     expect(result.contexts[1]).toEqual({
       messageId: selectedRoot.id,
-      nextLeafMessageId: selectedRootPosition === 0 ? rootAlternativeLeaf.id : null,
+      nextLeafMessageId: selectedRootPosition === 0 ? rootAlternative.id : null,
       position: selectedRootPosition + 1,
-      previousLeafMessageId: selectedRootPosition === 1 ? rootAlternativeLeaf.id : null,
+      previousLeafMessageId: selectedRootPosition === 1 ? rootAlternative.id : null,
       total: 2,
     });
     for (const context of result.contexts) {
@@ -702,6 +716,107 @@ describe.sequential("conversation core integration", () => {
         ["messageId", "nextLeafMessageId", "position", "previousLeafMessageId", "total"].toSorted(),
       );
     }
+
+    const adjacentRoot = expectedPreviousRoot ?? expectedNextRoot;
+    if (adjacentRoot === undefined) throw new Error("missing adjacent root");
+    const expectedResolvedLeaf = newestLeafByRoot.get(adjacentRoot.id);
+    if (expectedResolvedLeaf === undefined) throw new Error("missing resolved leaf");
+    const selectedAlternative = await service.selectLeaf(
+      primary,
+      conversation.id,
+      adjacentRoot.id,
+      1,
+    );
+    expect(selectedAlternative).toMatchObject({
+      conversation: { revision: 2 },
+      selectedLeafId: expectedResolvedLeaf,
+    });
+    expect(selectedAlternative.selectedLeafId).not.toBe(adjacentRoot.id);
+
+    const rootConversation = await service.create(primary);
+    const rootSelected = await service.insertImmutableMessage(primary, {
+      content: text("raíz seleccionada separada"),
+      conversationId: rootConversation.id,
+      parentMessageId: null,
+      role: "user",
+    });
+    const rootSelectedLeaf = await service.insertImmutableMessage(primary, {
+      content: text("respuesta seleccionada separada"),
+      conversationId: rootConversation.id,
+      parentMessageId: rootSelected.id,
+      role: "assistant",
+    });
+    const rootDeferredRows = await database
+      .insert(messages)
+      .values({
+        content: text("raíz diferida"),
+        conversationId: rootConversation.id,
+        parentMessageId: null,
+        role: "user",
+      })
+      .returning();
+    const rootDeferred = rootDeferredRows[0];
+    if (rootDeferred === undefined) throw new Error("missing deferred root");
+    const rootDeferredLeaf = await service.insertImmutableMessage(primary, {
+      content: text("respuesta diferida"),
+      conversationId: rootConversation.id,
+      parentMessageId: rootDeferred.id,
+      role: "assistant",
+    });
+    await service.selectLeaf(primary, rootConversation.id, rootSelectedLeaf.id, 0);
+
+    let signalResolution: () => void = () => undefined;
+    const resolutionReached = new Promise<void>((resolve) => {
+      signalResolution = resolve;
+    });
+    let releaseResolution: () => void = () => undefined;
+    const resolutionRelease = new Promise<void>((resolve) => {
+      releaseResolution = resolve;
+    });
+    let pausedResolution = false;
+    const selectionDatabase = new Proxy(database, {
+      get(target, property, receiver) {
+        const value = Reflect.get(target, property, receiver);
+        if (property !== "execute" || typeof value !== "function") {
+          return typeof value === "function" ? value.bind(target) : value;
+        }
+        return async (...arguments_: readonly unknown[]) => {
+          if (!pausedResolution) {
+            pausedResolution = true;
+            signalResolution();
+            await resolutionRelease;
+          }
+          return Reflect.apply(value, target, arguments_);
+        };
+      },
+    }) as AppDatabase;
+    const selectionService = createConversationService(
+      selectionDatabase,
+      createCursorCodec("deferred-selection-secret-longer-than-thirty-two-characters"),
+    );
+    const racedSelection = expectApplicationError(
+      selectionService.selectLeaf(primary, rootConversation.id, rootDeferred.id, 1),
+      { code: "CONVERSATION_CHANGED", statusCode: 409 },
+    );
+    await resolutionReached;
+    let renamedRevision: number;
+    try {
+      renamedRevision = (
+        await service.rename(primary, rootConversation.id, "selección concurrente", 1)
+      ).revision;
+    } finally {
+      releaseResolution();
+    }
+    await racedSelection;
+    expect(renamedRevision).toBe(2);
+
+    const rootSelection = await service.selectLeaf(
+      primary,
+      rootConversation.id,
+      rootDeferred.id,
+      2,
+    );
+    expect(rootSelection.selectedLeafId).toBe(rootDeferredLeaf.id);
 
     const otherConversation = await service.create(primary);
     const otherRoot = await service.insertImmutableMessage(primary, {
@@ -713,7 +828,7 @@ describe.sequential("conversation core integration", () => {
     for (const messageIds of [
       [],
       [selectedAssistant.id, selectedAssistant.id],
-      [previousAssistant.id],
+      [selectedUser.id],
       [otherRoot.id],
     ]) {
       await expectApplicationError(

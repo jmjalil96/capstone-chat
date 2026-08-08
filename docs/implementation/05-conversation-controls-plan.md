@@ -31,6 +31,9 @@ Code authorization: granted by the user on 2026-08-07
 - Implementation completed on 2026-08-07 against the frozen `ba88f12` Phase 4 baseline. The
   protocol now adds bounded alternative-context metadata, revision-safe Undo, and edit/retry
   response-source variants without changing the accepted response route or stream event catalog.
+  A post-push acceptance review then identified one streaming-scroll race and two Phase 5
+  correctness/accessibility gaps; the correction described below remains inside the approved
+  milestone and adds no dependency or migration.
 - Fastify resolves edit, retry, adjacent branches, and Undo from the authenticated employee's
   selected immutable tree. Edit inserts one user sibling and assistant; retry reuses the stored user
   and inserts only an assistant sibling. Both preserve title and ordinary draft, use the existing
@@ -38,33 +41,50 @@ Code authorization: granted by the user on 2026-08-07
 - The browser adds revision-scoped alternative queries, inline edit, retry, Undo, exact-source
   message/code copy, branch-aware optimistic presentation, deep search positioning, and one
   conversation-scoped scroll controller. Canonical recovery invalidates all revision-bearing
-  conversation views and preserves action focus or search intent across stale races.
+  conversation views and preserves action focus or search intent across stale races. A focused
+  pre-mutation selection fence captures every content-tree update before React replaces selected
+  nodes, disengages following before the parent layout effect, and restores the same visible text
+  through incremental Markdown, canonical reconciliation, and terminal action insertion. Its
+  bounded context exists only in a private commit field cleared before the layout callback; retained
+  scroll state contains positions only. Inline-edit validation now has a stable `aria-describedby`
+  association, including the unchanged-content state.
+- Alternative-context reads now stop at selected-path membership, sibling order, and adjacent
+  sibling targets. They do not recursively materialize off-path descendants. The historical
+  leaf-named wire fields remain compatible; exact newest-descendant resolution happens only after
+  explicit branch activation, outside the short selection transaction, and the locked transaction
+  rechecks ownership, active generation, and structural revision before updating selection.
 - The renderer uses the exact approved direct dependencies: `react-markdown@10.1.0`,
   `remark-gfm@4.0.1`, `remark-math@6.0.0`, `rehype-katex@7.0.1`,
   `rehype-highlight@7.0.2`, and `highlight.js@11.11.1`; the lockfile resolves transitive
   `katex@0.16.47`. Raw HTML and media are suppressed, destinations are protocol-allowlisted,
   highlighting registers only the ten committed grammars, KaTeX emits MathML only, and renderer
-  failure/error metadata contains no employee content.
-- The renderer remains behind one direct lazy boundary. The final production output is
-  `857.74 kB` raw / `246.79 kB` gzip for initial JavaScript, `628.57 kB` /
-  `191.89 kB` for deferred renderer JavaScript, `30.24 kB` / `5.67 kB` for initial CSS, and
+  failure/error metadata contains no employee content. Hidden MathML source annotations are excluded
+  from selection coordinates, while visible formula text remains selectable.
+- The renderer remains behind one direct lazy boundary. The final corrected production output is
+  `865.02 kB` raw / `249.24 kB` gzip for initial JavaScript, `628.70 kB` /
+  `191.93 kB` for deferred renderer JavaScript, `30.24 kB` / `5.67 kB` for initial CSS, and
   `4.86 kB` / `1.19 kB` for renderer CSS. Against the accepted Phase 4 initial JavaScript
-  (`833.70 kB` / `238.43 kB`), the initial delta is `24.04 kB` raw / `8.36 kB` gzip; the renderer
+  (`833.70 kB` / `238.43 kB`), the initial delta is `31.32 kB` raw / `10.81 kB` gzip; the renderer
   payload is not requested before a conversation message is rendered. Vite retains its expected
   advisory for chunks above 500 kB.
 - Deferred-render readiness fences initial/search positioning. Active-stream layout growth is
   observed on the message list so font, renderer, and canonical subtree reflow follows only while
-  the employee remains engaged; trusted scrolling and selection disengage it, and terminal
-  reconciliation cannot force movement.
+  the employee remains engaged; trusted scrolling and selection disengage it, retained selections
+  survive explicit Jump re-engagement, and terminal reconciliation cannot force movement. Selection
+  indexing is one pruned DOM pass per distinct selected root and never scans or stores a full
+  conversation tree.
 - Synthetic browser fixtures are inserted through the isolated migrated database before the test
   API listens. Phase 5 uses a seeded signed Better Auth session cookie so parallel coverage does not
   consume the identity sign-in rate limit; no production or test-only HTTP route was added.
-- Final automated verification passed 475 tests: 146 protocol, 165 API/PostgreSQL, and 164 web.
-  Strict TypeScript and all production builds passed. The configured Playwright matrix passed
-  25/25 cleanly in 22.6 seconds: 15 Chromium scenarios plus five critical scenarios each in Firefox
-  and WebKit, including renderer security/overflow, copy/focus, edit/retry/Undo/branch persistence,
-  deep search, and smart scroll.
-- `pnpm install --frozen-lockfile`, the repository-scoped Biome check over all 179 applicable files,
+- Final corrected automated verification passed 483 tests: 146 protocol, 165 API/PostgreSQL, and
+  172 web. Strict TypeScript and all production builds passed. The formerly flaky Chromium
+  selection scenario passed 20/20 repetitions with five workers in 40.1 seconds. The configured
+  Playwright matrix then passed 25/25 in 26.8 seconds: 15 Chromium scenarios plus five critical
+  scenarios each in Firefox and WebKit, including renderer security/overflow, copy/focus,
+  edit/retry/Undo/branch persistence, deep search, and smart scroll.
+- The adversarial 32 KiB selection benchmark over 4,096 highlighted spans preserves the exact
+  range and settles at 9.1–9.6 milliseconds per update after warm-up, below one 60 Hz frame.
+- `pnpm install --frozen-lockfile`, the repository-scoped Biome check over all 180 applicable files,
   and `git diff --check` passed. Literal `pnpm check` still reports only the pre-existing globally
   ignored `.claude/settings.local.json`; repository and CI inputs are clean.
 - `pnpm audit --prod --audit-level high` passed its high/critical gate and reports one retained
@@ -74,10 +94,14 @@ Code authorization: granted by the user on 2026-08-07
 - Phase 5 adds no migration. The API/PostgreSQL suite applies all three migrations to clean
   databases and exercises the accepted upgrade/retry paths. The production API image built
   successfully, runs as `node` UID/GID 1000, and contains exactly migrations `0000`–`0002`.
-- The final independent audit found no remaining P1/P2, correctness, privacy, architecture-boundary,
-  or Phase 6–8 scope finding. No OpenRouter/provider integration, tier policy, cost/budget,
-  compaction, administration, telemetry, production platform, content logging, or test-only route
-  entered the implementation.
+- The 1,667-line `ConversationPage` remains a valid maintainability watchpoint, not an acceptance
+  defect. The required renderer, message-action, scroll, and selection-fence boundaries are already
+  extracted; a search/selection/controller split would be a broad, timing-sensitive refactor with
+  substantial dependency plumbing. It is intentionally left out of this correctness correction and
+  should be handled, if chosen, as a dedicated behavior-neutral change with its own verification
+  cycle.
+- The corrected diff contains no OpenRouter/provider integration, tier policy, cost/budget,
+  compaction, administration, telemetry, production platform, content logging, or test-only route.
 
 ## Objective
 
@@ -142,11 +166,14 @@ gaps required by the roadmap without moving Phase 6 or later work forward.
 11. Alternative controls appear on user and assistant messages that have siblings. Metadata for the
     loaded messages is fetched in sorted, deduplicated chunks of at most 40 IDs, naturally aligned
     with detail pages—not one request per message, one unbounded aggregate, or a full tree. Each
-    entry reports its one-based position, total siblings, and previous and next branch targets.
-12. Selecting an adjacent alternative opens a complete concrete branch. For an adjacent sibling
-    with descendants, Fastify resolves the most recently created descendant graph leaf, ordered by
-    `created_at` and then ID for deterministic ties. Selecting the already selected endpoint remains
-    a no-op; selecting another branch increments the revision once.
+    entry reports its one-based position, total siblings, and previous and next adjacent sibling
+    targets. Automatic metadata reads do not walk either target's descendants.
+12. Selecting an adjacent alternative opens a complete concrete branch. Only after explicit
+    activation does Fastify resolve a target with descendants to the most recently created
+    descendant graph leaf, ordered by `created_at` and then ID for deterministic ties. That
+    immutable-tree read occurs outside the short selection transaction; the transaction rechecks
+    ownership, active generation, and revision before committing. Selecting the already selected
+    endpoint remains a no-op; selecting another branch increments the revision once.
 13. Branch selection and Undo are blocked while a generation is active. They remain available in an
     archived conversation because they only select preserved content. Edit and Try again require an
     active, unarchived conversation because they create a generation. Copy remains available for
@@ -427,8 +454,9 @@ The coherent response is:
 - `position` is one-based in deterministic sibling order by `created_at`, then ID.
 - `total` includes the current message and equals the existing `siblingCount + 1`.
 - Previous or next targets are `null` at their boundary.
-- A target is the adjacent sibling itself when it has no children, otherwise its newest descendant
-  graph leaf using the same deterministic creation ordering.
+- A target is the adjacent sibling itself. The historical `previousLeafMessageId` and
+  `nextLeafMessageId` field names remain for wire compatibility, but Fastify deliberately defers
+  deterministic descendant-leaf resolution until the employee activates that target.
 - The response contains IDs and positional metadata only—no alternative content, tree, title,
   generation metadata, or draft.
 - Fastify verifies every requested message belongs to the currently selected path in the owned
@@ -735,6 +763,12 @@ The controller tracks only:
 
 It stores no content, message history, or browser-persistent preference.
 
+A sibling pre-mutation fence may hold at most 48 characters of context on each side of a live
+selection endpoint for the duration of one React commit. React receives only a content-free boolean
+snapshot; the private context field is cleared before the scroll callback and never enters hook
+state, storage, logs, diagnostics, or browser persistence. Selection coordinates exclude hidden
+MathML annotations and use stable code-content roots so renderer controls cannot shift the range.
+
 ### Rules
 
 - Opening a normal conversation positions at its selected endpoint once.
@@ -868,7 +902,9 @@ is intentionally narrow:
 
 - Add explicit selected-path membership validation near current recursive conversation queries.
 - Add one coherent bounded alternative-context query that derives sibling ordinal and adjacent
-  deterministic descendant leaves without returning content.
+  sibling selection targets without returning content or traversing target descendants. Resolve a
+  target's deterministic descendant leaf only after explicit selection and outside the short
+  revision-checked mutation transaction.
 - Add the short Undo transaction and allow its selected endpoint to have preserved descendants.
 - Reuse actor ownership, revision conflict, active-generation, history invalidation, and selection
   patterns.
@@ -1023,7 +1059,8 @@ The Phase 5 suite must prove at least the following.
 
 - Sibling order is deterministic under equal timestamps through ID tie-breaking.
 - Position/total are exact for root user edits and assistant retries.
-- Previous/next targets resolve direct graph leaves and newest deterministic descendant leaves.
+- Previous/next metadata identifies adjacent sibling targets without scanning their descendants;
+  explicit selection resolves direct graph leaves and newest deterministic descendant leaves.
 - The alternative response contains no message content and is coherent with one conversation
   revision.
 - Selecting adjacent alternatives persists across reload, loads only that branch, and increments

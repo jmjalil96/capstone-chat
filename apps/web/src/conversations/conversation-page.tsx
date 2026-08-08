@@ -44,6 +44,7 @@ import { useOptionalChatRuntime, useOptionalConversationRuntime } from "./chat-r
 import { orderedBranchMessages } from "./collection";
 import { SEARCH_MATCH_FADE_MS, SEARCH_MATCH_HOLD_MS } from "./config";
 import { useConversationScroll } from "./conversation-scroll";
+import { ConversationSelectionFence } from "./conversation-selection";
 import { DraftEditor, generationErrorCodeCopy, type RemoteResponseOutcome } from "./draft-editor";
 import { useDraftMemory } from "./draft-memory";
 import { Icon } from "./icons";
@@ -797,7 +798,7 @@ export function ConversationPage() {
 
   async function selectAlternative(
     messageId: string,
-    leafMessageId: string,
+    selectionTargetMessageId: string,
     trigger: HTMLButtonElement,
   ): Promise<void> {
     if (
@@ -816,7 +817,10 @@ export function ConversationPage() {
     try {
       const selection = await selectConversationLeaf(
         conversation.id,
-        { leafMessageId, observedRevision: conversation.revision },
+        {
+          leafMessageId: selectionTargetMessageId,
+          observedRevision: conversation.revision,
+        },
         capture.signal,
       );
       await adoptSelection(selection, capture, copy.conversations.messages.branchSelected);
@@ -1159,6 +1163,10 @@ export function ConversationPage() {
                 : copy.conversations.conversation.older}
             </button>
           ) : null}
+          <ConversationSelectionFence
+            containerRef={conversationScroll.containerRef}
+            onSelectionSnapshot={conversationScroll.onSelectionSnapshot}
+          />
           <ol className="message-list">
             {messages.map((message, messageIndex) => {
               const state = responseStates.byMessageId.get(message.id);
@@ -1234,8 +1242,8 @@ export function ConversationPage() {
                     onContinue={() => continueResponse(message.id)}
                     onEdit={(content, onCommitted) => editMessage(message, content, onCommitted)}
                     onRetry={() => retryResponse(message)}
-                    onSelectAlternative={(leafMessageId, trigger) =>
-                      void selectAlternative(message.id, leafMessageId, trigger)
+                    onSelectAlternative={(selectionTargetMessageId, trigger) =>
+                      void selectAlternative(message.id, selectionTargetMessageId, trigger)
                     }
                     onUndo={(trigger) => void undoSelectedTurn(message.id, trigger)}
                   >

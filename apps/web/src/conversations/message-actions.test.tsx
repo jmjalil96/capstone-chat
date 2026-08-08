@@ -87,6 +87,25 @@ describe("message actions", () => {
     ).toBeNull();
   });
 
+  it("associates the unchanged validation message with the editor", async () => {
+    const user = userEvent.setup();
+    actions(userMessage);
+
+    await user.click(screen.getByRole("button", { name: copy.conversations.messages.edit }));
+
+    const editor = screen.getByRole("textbox", { name: copy.conversations.messages.editLabel });
+    const validation = screen.getByText(copy.conversations.messages.unchangedEdit);
+    expect(validation.id).not.toBe("");
+    expect(editor).toHaveAttribute("aria-describedby", validation.id);
+    expect(editor).toHaveAttribute("aria-invalid", "true");
+
+    await user.type(editor, " con cambios");
+
+    expect(screen.queryByText(copy.conversations.messages.unchangedEdit)).not.toBeInTheDocument();
+    expect(editor).not.toHaveAttribute("aria-describedby");
+    expect(editor).toHaveAttribute("aria-invalid", "false");
+  });
+
   it("keeps the temporary edit and its exact text after a deterministic rejection", async () => {
     const user = userEvent.setup();
     const onEdit = vi.fn(async () => {

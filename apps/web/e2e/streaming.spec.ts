@@ -132,21 +132,21 @@ test("@critical-stream follows growth, respects manual scrolling, and jumps to t
           deltas: [
             { delayMilliseconds: 80, text: "Primer fragmento visible." },
             {
-              delayMilliseconds: 500,
+              delayMilliseconds: 1_500,
               text: `\n${Array.from(
                 { length: 20 },
                 (_, index) => `Línea de crecimiento ${index + 1}.`,
-              ).join("\n")}`,
+              ).join("\n")}\n\n**Selección estable`,
             },
             {
-              delayMilliseconds: 700,
-              text: `\n${Array.from(
+              delayMilliseconds: 2_000,
+              text: ` confirmada.**\n${Array.from(
                 { length: 12 },
                 (_, index) => `Contenido no visto ${index + 1}.`,
               ).join("\n")}`,
             },
             {
-              delayMilliseconds: 1_200,
+              delayMilliseconds: 2_500,
               text: "\nFragmento seguido después del salto.",
             },
             {
@@ -175,8 +175,17 @@ test("@critical-stream follows growth, respects manual scrolling, and jumps to t
   expect(sentAssistantId).toBeTruthy();
   const sentUser = page.locator(`[data-message-id="${sentUserId}"]`);
   const sentAssistant = page.locator(`[data-message-id="${sentAssistantId}"]`);
+  const streamedContent = sentAssistant.locator("[data-message-content]");
   await expect(sentUser).toContainText("Pregunta recién enviada");
   await expect(sentAssistant).toContainText("Primer fragmento visible.");
+  const scroll = page.locator(".message-scroll");
+  await expect
+    .poll(() =>
+      scroll.evaluate(
+        (container) => container.scrollHeight - container.scrollTop - container.clientHeight,
+      ),
+    )
+    .toBeLessThanOrEqual(96);
 
   const presentedIds = await page
     .locator(".message")
@@ -213,8 +222,8 @@ test("@critical-stream follows growth, respects manual scrolling, and jumps to t
   expect(initialGeometry.assistantTop).toBeLessThan(initialGeometry.viewportBottom + 32);
   expect(initialGeometry.distanceFromBottom).toBeLessThanOrEqual(96);
 
+  await streamedContent.click();
   await expect(sentAssistant).toContainText("Línea de crecimiento 20.");
-  const scroll = page.locator(".message-scroll");
   const grownGeometry = await scroll.evaluate(
     (container, userId) => ({
       distanceFromBottom: container.scrollHeight - container.scrollTop - container.clientHeight,
@@ -233,12 +242,31 @@ test("@critical-stream follows growth, respects manual scrolling, and jumps to t
     .poll(() => scroll.evaluate((container) => container.scrollTop))
     .toBeLessThan(grownGeometry.scrollTop - 96);
   const disengagedTop = await scroll.evaluate((container) => container.scrollTop);
+  const selectedText = await streamedContent.evaluate((message) => {
+    const walker = document.createTreeWalker(message, NodeFilter.SHOW_TEXT);
+    for (let text = walker.nextNode(); text; text = walker.nextNode()) {
+      const start = text.textContent?.indexOf("Selección estable") ?? -1;
+      if (start < 0) {
+        continue;
+      }
+      const range = document.createRange();
+      range.setStart(text, start);
+      range.setEnd(text, start + "Selección estable".length);
+      const selection = document.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      return selection?.toString() ?? "";
+    }
+    throw new Error("The streamed response has no selectable Markdown fragment");
+  });
+  expect(selectedText).toBe("Selección estable");
   await expect(sentAssistant).toContainText("Contenido no visto 12.");
   const jump = page.getByRole("button", { name: copy.conversations.scroll.jumpToLatest });
   await expect(jump).toBeVisible();
   expect(
     Math.abs((await scroll.evaluate((container) => container.scrollTop)) - disengagedTop),
   ).toBeLessThan(3);
+  expect(await page.evaluate(() => document.getSelection()?.toString() ?? "")).toBe(selectedText);
 
   await jump.click();
   await expect(jump).toHaveCount(0);
@@ -249,28 +277,9 @@ test("@critical-stream follows growth, respects manual scrolling, and jumps to t
       ),
     )
     .toBeLessThan(3);
-
-  await sentAssistant.evaluate((message) => {
-    const walker = document.createTreeWalker(message, NodeFilter.SHOW_TEXT);
-    const text = walker.nextNode();
-    if (!text?.textContent) {
-      throw new Error("The streamed response has no selectable text");
-    }
-    const range = document.createRange();
-    range.setStart(text, 0);
-    range.setEnd(text, Math.min(10, text.textContent.length));
-    const selection = document.getSelection();
-    selection?.removeAllRanges();
-    selection?.addRange(range);
-  });
-  const selectedTop = await scroll.evaluate((container) => container.scrollTop);
+  expect(await page.evaluate(() => document.getSelection()?.toString() ?? "")).toBe(selectedText);
   await expect(sentAssistant).toContainText("Fragmento seguido después del salto.");
-  await expect(jump).toBeVisible();
-  expect(
-    Math.abs((await scroll.evaluate((container) => container.scrollTop)) - selectedTop),
-  ).toBeLessThan(3);
-  await page.evaluate(() => document.getSelection()?.removeAllRanges());
-  await jump.click();
+  await expect(jump).toHaveCount(0);
   await expect
     .poll(() =>
       scroll.evaluate(
@@ -278,7 +287,10 @@ test("@critical-stream follows growth, respects manual scrolling, and jumps to t
       ),
     )
     .toBeLessThan(3);
+  expect(await page.evaluate(() => document.getSelection()?.toString() ?? "")).toBe(selectedText);
   await expect(sentAssistant).toContainText("Cierre final seguido.");
+  expect(await page.evaluate(() => document.getSelection()?.toString() ?? "")).toBe(selectedText);
+  await expect(jump).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: copy.conversations.generation.actions.send }),
   ).toBeVisible();

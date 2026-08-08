@@ -147,6 +147,10 @@ function containsDisplayMath(node: RendererNode): boolean {
 function prepareMathOutput() {
   return (tree: unknown): undefined => {
     visitRendererTree(tree, (node) => {
+      if (node.tagName === "annotation") {
+        node.properties ??= {};
+        node.properties["data-message-selection-excluded"] = "";
+      }
       const classes = classNames(node);
       if (classes.includes("katex-error") && node.properties) {
         delete node.properties.style;
@@ -250,7 +254,12 @@ const markdownComponents: Components = {
         {renderCodeAction ? (
           <div className={styles.codeAction}>{renderCodeAction(source)}</div>
         ) : null}
-        <div {...accessibility} className={styles.codeScroll} tabIndex={0}>
+        <div
+          {...accessibility}
+          className={styles.codeScroll}
+          data-message-selection-root=""
+          tabIndex={0}
+        >
           <pre>{children}</pre>
         </div>
       </div>

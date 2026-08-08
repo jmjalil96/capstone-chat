@@ -288,6 +288,10 @@ export const RenameConversationRequestSchema = Type.Object(
 );
 export type RenameConversationRequest = Type.Static<typeof RenameConversationRequestSchema>;
 
+// `leafMessageId` is the established wire name. Alternative controls may submit an adjacent
+// sibling root; Fastify resolves that target before persisting the concrete selected leaf.
+// The field name is retained for wire compatibility. In addition to a concrete graph leaf, it may
+// carry an adjacent sibling target returned by AlternativeContextSchema for deferred resolution.
 export const SelectConversationLeafRequestSchema = Type.Object(
   {
     leafMessageId: MessageIdSchema,
@@ -318,6 +322,8 @@ export const AlternativeContextRequestSchema = Type.Object(
 );
 export type AlternativeContextRequest = Type.Static<typeof AlternativeContextRequestSchema>;
 
+// The leaf-named fields are retained for Phase 5 wire compatibility. A non-null value may identify
+// an adjacent sibling root; the selection route resolves it to the deterministic descendant leaf.
 export const AlternativeContextSchema = Type.Refine(
   Type.Object(
     {

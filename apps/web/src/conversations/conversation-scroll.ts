@@ -1,6 +1,11 @@
 import { type UIEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { CONVERSATION_FOLLOW_THRESHOLD_PX, PREFERS_REDUCED_MOTION_MEDIA_QUERY } from "./config";
+import {
+  type ConversationSelectionSnapshot,
+  captureConversationSelection,
+  conversationSelectionSnapshotsEqual,
+} from "./conversation-selection";
 
 function requestFrame(callback: FrameRequestCallback): number {
   if (typeof globalThis.requestAnimationFrame === "function") {
@@ -24,7 +29,7 @@ interface PaginationAnchor {
   readonly top: number;
 }
 
-interface StreamPublication {
+export interface StreamPublication {
   readonly messageId: string;
   readonly text: string;
 }
@@ -60,14 +65,6 @@ export function wasNearBottomBeforeGrowth(
   );
 }
 
-function selectionIsInside(container: HTMLElement, selection: Selection): boolean {
-  return Boolean(
-    !selection.isCollapsed &&
-      ((selection.anchorNode && container.contains(selection.anchorNode)) ||
-        (selection.focusNode && container.contains(selection.focusNode))),
-  );
-}
-
 function messageElement(container: HTMLElement, messageId: string): HTMLElement | undefined {
   return [...container.querySelectorAll<HTMLElement>("[data-message-id]")].find(
     (element) => element.dataset.messageId === messageId,
@@ -97,6 +94,7 @@ export function useConversationScroll({
   const programmaticRef = useRef(false);
   const programmaticFrameRef = useRef<number | undefined>(undefined);
   const streamPublicationRef = useRef<StreamPublication | undefined>(undefined);
+  const ignoredSelectionRef = useRef<ConversationSelectionSnapshot | undefined>(undefined);
   const streamActiveRef = useRef(streamActive);
   streamActiveRef.current = streamActive;
   const [unseen, setUnseen] = useState(false);
@@ -120,6 +118,28 @@ export function useConversationScroll({
     setUnseen(false);
   }, []);
 
+  const onSelectionSnapshot = useCallback(
+    (before: ConversationSelectionSnapshot, after: ConversationSelectionSnapshot) => {
+      if (conversationSelectionSnapshotsEqual(before, ignoredSelectionRef.current)) {
+        ignoredSelectionRef.current = after;
+        return;
+      }
+      ignoredSelectionRef.current = undefined;
+      followingRef.current = false;
+    },
+    [],
+  );
+
+  const currentSelectionDisengages = useCallback((container: HTMLElement): boolean => {
+    const snapshot = captureConversationSelection(container);
+    if (!snapshot || conversationSelectionSnapshotsEqual(snapshot, ignoredSelectionRef.current)) {
+      return false;
+    }
+    ignoredSelectionRef.current = undefined;
+    followingRef.current = false;
+    return true;
+  }, []);
+
   useEffect(() => {
     const media = globalThis.matchMedia?.(PREFERS_REDUCED_MOTION_MEDIA_QUERY);
     if (!media) {
@@ -134,14 +154,19 @@ export function useConversationScroll({
   useEffect(() => {
     const handleSelection = () => {
       const container = containerRef.current;
-      const selection = document.getSelection();
-      if (container && selection && selectionIsInside(container, selection)) {
-        followingRef.current = false;
+      if (!container) {
+        return;
+      }
+      const snapshot = captureConversationSelection(container);
+      if (!snapshot) {
+        ignoredSelectionRef.current = undefined;
+      } else {
+        onSelectionSnapshot(snapshot, snapshot);
       }
     };
     document.addEventListener("selectionchange", handleSelection);
     return () => document.removeEventListener("selectionchange", handleSelection);
-  }, []);
+  }, [onSelectionSnapshot]);
 
   useEffect(
     () => () => {
@@ -163,6 +188,7 @@ export function useConversationScroll({
     const observer = new ResizeObserver(() => {
       const previousHeight = observedHeightRef.current;
       const nextHeight = container.scrollHeight;
+      currentSelectionDisengages(container);
       if (
         nextHeight > previousHeight &&
         streamActiveRef.current &&
@@ -176,7 +202,13 @@ export function useConversationScroll({
     });
     observer.observe(content);
     return () => observer.disconnect();
-  }, [contentReady, conversationId, markProgrammatic, presentedMessageCount]);
+  }, [
+    contentReady,
+    conversationId,
+    currentSelectionDisengages,
+    markProgrammatic,
+    presentedMessageCount,
+  ]);
 
   useLayoutEffect(() => {
     if (conversationIdRef.current !== conversationId) {
@@ -189,6 +221,7 @@ export function useConversationScroll({
       positionedSentUserRef.current = undefined;
       awaitingFirstPublicationRef.current = false;
       streamPublicationRef.current = undefined;
+      ignoredSelectionRef.current = undefined;
       setUnseen(false);
     }
 
@@ -271,6 +304,7 @@ export function useConversationScroll({
       if (firstVisiblePublication) {
         awaitingFirstPublicationRef.current = false;
       }
+      currentSelectionDisengages(container);
       const priorHeight = observedHeightRef.current;
       if (
         followingRef.current &&
@@ -289,6 +323,7 @@ export function useConversationScroll({
   }, [
     contentReady,
     conversationId,
+    currentSelectionDisengages,
     engageFollowing,
     isFetchingNextPage,
     markProgrammatic,
@@ -323,6 +358,7 @@ export function useConversationScroll({
         distanceFromBottom(container.scrollHeight, container.scrollTop, container.clientHeight) <=
         CONVERSATION_FOLLOW_THRESHOLD_PX;
       if (nearBottom) {
+        ignoredSelectionRef.current = captureConversationSelection(container);
         engageFollowing();
       } else if (event.nativeEvent.isTrusted) {
         followingRef.current = false;
@@ -351,6 +387,7 @@ export function useConversationScroll({
     if (!container) {
       return;
     }
+    ignoredSelectionRef.current = captureConversationSelection(container);
     markProgrammatic();
     if (typeof container.scrollTo === "function") {
       container.scrollTo({
@@ -368,6 +405,7 @@ export function useConversationScroll({
     captureOlderPageAnchor,
     containerRef,
     jumpToLatest,
+    onSelectionSnapshot,
     onScroll,
     positionMessage,
     reducedMotion,

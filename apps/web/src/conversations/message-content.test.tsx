@@ -150,6 +150,9 @@ Inválido $\\frac{x$ y no confiable $\\href{https://example.com}{x}$.`}
     );
 
     expect(container.querySelectorAll("math")).toHaveLength(3);
+    expect(
+      container.querySelectorAll("annotation:not([data-message-selection-excluded])"),
+    ).toHaveLength(0);
     expect(container.querySelector('math[display="block"]')).not.toBeNull();
     expect(container.querySelector(".katex-html")).toBeNull();
     expect(container.querySelector(".katex-error")).toHaveTextContent(invalidExpression);

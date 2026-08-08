@@ -505,9 +505,118 @@ export function createConversationService(database: AppDatabase, cursorCodec: Cu
   async function selectLeaf(
     actor: RequestActor,
     conversationId: string,
-    leafMessageId: string,
+    selectionTargetMessageId: string,
     observedRevision: number,
   ): Promise<ConversationSelectionResponse> {
+    const preflightRows = await database
+      .select()
+      .from(conversations)
+      .where(ownedConversationWhere(actor, conversationId))
+      .limit(1);
+    const preflightConversation = preflightRows[0];
+    if (preflightConversation === undefined) {
+      return notFound();
+    }
+    if (preflightConversation.selectedLeafMessageId === selectionTargetMessageId) {
+      return {
+        conversation: toSummary(preflightConversation),
+        selectedLeafId: selectionTargetMessageId,
+      };
+    }
+    const preflightActiveGenerations = await database
+      .select({ id: generations.id })
+      .from(generations)
+      .where(and(eq(generations.conversationId, conversationId), eq(generations.status, "active")))
+      .limit(1);
+    if (preflightActiveGenerations.length !== 0) {
+      throw new ApplicationError(409, "GENERATION_ACTIVE", conversationCopy.generationActive);
+    }
+    if (preflightConversation.revision !== observedRevision) {
+      return changed();
+    }
+
+    const candidates = await database
+      .select({ id: messages.id })
+      .from(messages)
+      .where(
+        and(
+          eq(messages.conversationId, preflightConversation.id),
+          eq(messages.id, selectionTargetMessageId),
+        ),
+      )
+      .limit(1);
+    if (candidates.length !== 1) {
+      return notFound();
+    }
+    let resolvedLeafMessageId = selectionTargetMessageId;
+    const children = await database
+      .select({ id: messages.id })
+      .from(messages)
+      .where(
+        and(
+          eq(messages.conversationId, preflightConversation.id),
+          eq(messages.parentMessageId, selectionTargetMessageId),
+        ),
+      )
+      .limit(1);
+    if (children.length !== 0) {
+      // Alternative metadata keeps its leaf-named wire fields for compatibility but carries an
+      // adjacent sibling root. Resolve its deterministic leaf only after the employee activates it.
+      // This potentially large immutable-tree read stays outside the short selection transaction;
+      // the revision fence below rejects any structural change that races with this snapshot.
+      const result = await database.execute(sql<{ id: string }>`
+        WITH RECURSIVE selected_path AS (
+          SELECT message.id, message.parent_message_id
+          FROM messages AS message
+          WHERE message.conversation_id = ${preflightConversation.id}
+            AND message.id = ${preflightConversation.selectedLeafMessageId}
+          UNION ALL
+          SELECT parent.id, parent.parent_message_id
+          FROM messages AS parent
+          INNER JOIN selected_path
+            ON parent.conversation_id = ${preflightConversation.id}
+            AND parent.id = selected_path.parent_message_id
+        ),
+        alternative_root AS (
+          SELECT candidate.id, candidate.created_at
+          FROM messages AS candidate
+          WHERE candidate.conversation_id = ${preflightConversation.id}
+            AND candidate.id = ${selectionTargetMessageId}
+            AND EXISTS (
+              SELECT 1
+              FROM selected_path AS selected
+              WHERE selected.id <> candidate.id
+                AND selected.parent_message_id IS NOT DISTINCT FROM candidate.parent_message_id
+            )
+        ),
+        descendants AS (
+          SELECT root.id, root.created_at
+          FROM alternative_root AS root
+          UNION ALL
+          SELECT child.id, child.created_at
+          FROM descendants AS descendant
+          INNER JOIN messages AS child
+            ON child.conversation_id = ${preflightConversation.id}
+            AND child.parent_message_id = descendant.id
+        )
+        SELECT descendant.id AS "id"
+        FROM descendants AS descendant
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM messages AS child
+          WHERE child.conversation_id = ${preflightConversation.id}
+            AND child.parent_message_id = descendant.id
+        )
+        ORDER BY descendant.created_at DESC, descendant.id DESC
+        LIMIT 1
+      `);
+      const resolved = (result.rows as unknown as { readonly id: string }[])[0];
+      if (resolved === undefined) {
+        return notFound();
+      }
+      resolvedLeafMessageId = resolved.id;
+    }
+
     return database.transaction(async (transaction) => {
       const rows = await transaction
         .select()
@@ -519,8 +628,11 @@ export function createConversationService(database: AppDatabase, cursorCodec: Cu
       if (conversation === undefined) {
         return notFound();
       }
-      if (conversation.selectedLeafMessageId === leafMessageId) {
-        return { conversation: toSummary(conversation), selectedLeafId: leafMessageId };
+      if (conversation.selectedLeafMessageId === selectionTargetMessageId) {
+        return {
+          conversation: toSummary(conversation),
+          selectedLeafId: selectionTargetMessageId,
+        };
       }
       const activeGenerations = await transaction
         .select({ id: generations.id })
@@ -532,37 +644,17 @@ export function createConversationService(database: AppDatabase, cursorCodec: Cu
       if (activeGenerations.length !== 0) {
         throw new ApplicationError(409, "GENERATION_ACTIVE", conversationCopy.generationActive);
       }
-      if (conversation.revision !== observedRevision) {
+      if (
+        conversation.revision !== observedRevision ||
+        conversation.revision !== preflightConversation.revision
+      ) {
         return changed();
       }
-
-      const candidates = await transaction
-        .select({ id: messages.id })
-        .from(messages)
-        .where(and(eq(messages.conversationId, conversation.id), eq(messages.id, leafMessageId)))
-        .limit(1);
-      if (candidates.length !== 1) {
-        return notFound();
-      }
-      const children = await transaction
-        .select({ id: messages.id })
-        .from(messages)
-        .where(
-          and(
-            eq(messages.conversationId, conversation.id),
-            eq(messages.parentMessageId, leafMessageId),
-          ),
-        )
-        .limit(1);
-      if (children.length !== 0) {
-        return notFound();
-      }
-
       const updated = await transaction
         .update(conversations)
         .set({
           revision: conversation.revision + 1,
-          selectedLeafMessageId: leafMessageId,
+          selectedLeafMessageId: resolvedLeafMessageId,
           updatedAt: new Date(),
         })
         .where(
@@ -576,7 +668,7 @@ export function createConversationService(database: AppDatabase, cursorCodec: Cu
       if (row === undefined) {
         return changed();
       }
-      return { conversation: toSummary(row), selectedLeafId: leafMessageId };
+      return { conversation: toSummary(row), selectedLeafId: resolvedLeafMessageId };
     });
   }
 
@@ -677,61 +769,15 @@ export function createConversationService(database: AppDatabase, cursorCodec: Cu
             ON next_sibling.parent_message_id
               IS NOT DISTINCT FROM current_sibling.parent_message_id
             AND next_sibling.position = current_sibling.position + 1
-        ),
-        adjacent_roots AS (
-          SELECT context.message_id, 'previous'::text AS direction,
-            context.previous_sibling_id AS root_id
-          FROM current_context AS context
-          WHERE context.previous_sibling_id IS NOT NULL
-          UNION ALL
-          SELECT context.message_id, 'next'::text AS direction,
-            context.next_sibling_id AS root_id
-          FROM current_context AS context
-          WHERE context.next_sibling_id IS NOT NULL
-        ),
-        descendants AS (
-          SELECT adjacent.message_id, adjacent.direction,
-            root.id, root.created_at
-          FROM adjacent_roots AS adjacent
-          INNER JOIN messages AS root
-            ON root.conversation_id = ${conversation.id}
-            AND root.id = adjacent.root_id
-          UNION ALL
-          SELECT descendant.message_id, descendant.direction,
-            child.id, child.created_at
-          FROM descendants AS descendant
-          INNER JOIN messages AS child
-            ON child.conversation_id = ${conversation.id}
-            AND child.parent_message_id = descendant.id
-        ),
-        ranked_leaves AS (
-          SELECT descendant.message_id, descendant.direction, descendant.id,
-            row_number() OVER (
-              PARTITION BY descendant.message_id, descendant.direction
-              ORDER BY descendant.created_at DESC, descendant.id DESC
-            ) AS leaf_position
-          FROM descendants AS descendant
-          WHERE NOT EXISTS (
-            SELECT 1
-            FROM messages AS child
-            WHERE child.conversation_id = ${conversation.id}
-              AND child.parent_message_id = descendant.id
-          )
         )
+        -- Keep automatic metadata reads bounded to the selected path and its direct siblings.
+        -- The existing selection route resolves an internal adjacent target only after activation.
         SELECT context.message_id AS "messageId",
           context.position AS "position",
           context.total AS "total",
-          previous_leaf.id AS "previousLeafMessageId",
-          next_leaf.id AS "nextLeafMessageId"
+          context.previous_sibling_id AS "previousLeafMessageId",
+          context.next_sibling_id AS "nextLeafMessageId"
         FROM current_context AS context
-        LEFT JOIN ranked_leaves AS previous_leaf
-          ON previous_leaf.message_id = context.message_id
-          AND previous_leaf.direction = 'previous'
-          AND previous_leaf.leaf_position = 1
-        LEFT JOIN ranked_leaves AS next_leaf
-          ON next_leaf.message_id = context.message_id
-          AND next_leaf.direction = 'next'
-          AND next_leaf.leaf_position = 1
         ORDER BY context.input_position ASC
       `);
       const rows = result.rows as unknown as AlternativeContextRow[];

@@ -73,7 +73,10 @@ interface MessageActionsProps {
   readonly onEdit: (content: string, onCommitted: () => void) => Promise<void>;
   readonly onContinue: () => void;
   readonly onRetry: () => void;
-  readonly onSelectAlternative: (leafMessageId: string, trigger: HTMLButtonElement) => void;
+  readonly onSelectAlternative: (
+    selectionTargetMessageId: string,
+    trigger: HTMLButtonElement,
+  ) => void;
   readonly onUndo: (trigger: HTMLButtonElement) => void;
 }
 
@@ -95,6 +98,7 @@ export function MessageActions({
 }: MessageActionsProps) {
   const originalSource = message.content[0]?.text ?? "";
   const editorId = useId();
+  const editorValidationId = `${editorId}-validation`;
   const committedRef = useRef(false);
   const editButtonRef = useRef<HTMLButtonElement>(null);
   const editorRef = useRef<HTMLTextAreaElement>(null);
@@ -170,6 +174,7 @@ export function MessageActions({
       : unchanged
         ? copy.conversations.messages.unchangedEdit
         : undefined;
+    const editorInvalid = validationMessage !== undefined;
     return (
       <div className="message-inline-edit">
         <label htmlFor={editorId}>{copy.conversations.messages.editLabel}</label>
@@ -177,7 +182,8 @@ export function MessageActions({
           ref={editorRef}
           id={editorId}
           value={editSource}
-          aria-invalid={Boolean(validationIssue || empty)}
+          aria-describedby={editorInvalid ? editorValidationId : undefined}
+          aria-invalid={editorInvalid}
           disabled={saving}
           onChange={(event) => {
             setEditSource(event.currentTarget.value);
@@ -185,7 +191,11 @@ export function MessageActions({
           }}
           onKeyDown={handleEditorKeyDown}
         />
-        {validationMessage ? <p className="field-error">{validationMessage}</p> : null}
+        {validationMessage ? (
+          <p className="field-error" id={editorValidationId}>
+            {validationMessage}
+          </p>
+        ) : null}
         {editError ? (
           <p className="inline-alert" role="alert">
             {editError}
