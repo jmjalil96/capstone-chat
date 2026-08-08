@@ -1,6 +1,7 @@
 import { type ApiApplication, createApplication } from "./app.js";
 import type { ApiConfig } from "./config.js";
 import { publicConfigMetadata } from "./config.js";
+import { operationalErrorMetadata } from "./operator-error.js";
 
 export async function startServer(config: ApiConfig): Promise<ApiApplication> {
   const application = createApplication(config);
@@ -37,7 +38,7 @@ export function installShutdownHandlers(application: ApiApplication): () => void
       application.server.log.info({ signal }, "shutdown requested");
       void application.shutdown().catch((error: unknown) => {
         application.server.log.error(
-          { errorName: error instanceof Error ? error.name : "UnknownError", signal },
+          { ...operationalErrorMetadata(error), signal },
           "graceful shutdown failed",
         );
         process.exitCode = 1;

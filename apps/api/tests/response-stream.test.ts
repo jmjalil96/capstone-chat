@@ -133,6 +133,82 @@ async function waitForState(
   throw new Error(`Generation never reached ${status}`);
 }
 
+async function shutdownDuringCancellation(outcome: "commit" | "rollback") {
+  const memory = memoryGenerationService();
+  const registry = new ActiveStreamRegistry();
+  const allowSecondDelta = Promise.withResolvers<void>();
+  const secondStateRead = Promise.withResolvers<void>();
+  const originalReadState = memory.service.readState.bind(memory.service);
+  let stateReads = 0;
+  memory.service = {
+    ...memory.service,
+    readState: async (generationId: string) => {
+      stateReads += 1;
+      if (stateReads === 2) {
+        secondStateRead.resolve();
+      }
+      return originalReadState(generationId);
+    },
+  } as GenerationService;
+  const gateway: ModelGateway = {
+    async *stream() {
+      yield { text: "Visible partial", type: "content.delta" };
+      await allowSecondDelta.promise;
+      yield { text: "Must not forward", type: "content.delta" };
+    },
+  };
+  const response = await fetch(await streamUrl(gateway, memory, registry), { method: "POST" });
+  const reader = response.body?.getReader();
+  if (reader === undefined) {
+    throw new Error("Streaming response did not expose a reader");
+  }
+  const decoder = new TextDecoder();
+  let received = "";
+  while (!received.includes("Visible partial")) {
+    const chunk = await reader.read();
+    if (chunk.done) {
+      throw new Error("Stream ended before the visible partial");
+    }
+    received += decoder.decode(chunk.value, { stream: true });
+  }
+
+  const capture = registry.captureCancellation(started.generationId);
+  if (capture === undefined) {
+    throw new Error("Local stream did not expose its cancellation snapshot");
+  }
+  allowSecondDelta.resolve();
+  await secondStateRead.promise;
+  registry.abortAll("shutdown");
+  if (outcome === "commit") {
+    memory.content = capture.snapshot.content;
+    memory.firstTokenAt = capture.snapshot.firstTokenAt;
+    memory.state = {
+      ...memory.state,
+      errorCode: null,
+      reason: "cancelled",
+      revision: 2,
+      status: "cancelled",
+    };
+    capture.commit();
+  } else {
+    capture.release();
+  }
+
+  while (true) {
+    const chunk = await reader.read();
+    if (chunk.done) {
+      received += decoder.decode();
+      break;
+    }
+    received += decoder.decode(chunk.value, { stream: true });
+  }
+  const events = received
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+  return { events, memory };
+}
+
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => server.close()));
 });
@@ -485,9 +561,10 @@ describe("response stream normalization", () => {
     expect(gatewaySignal?.aborted).toBe(true);
   });
 
-  it("fences local cancellation and preserves a visible sub-threshold partial", async () => {
+  it("fences local cancellation and enqueues its backpressured terminal exactly once", async () => {
     const memory = memoryGenerationService();
     const registry = new ActiveStreamRegistry();
+    let cancellationWrites = 0;
     let gatewaySignal: AbortSignal | undefined;
     const gateway: ModelGateway = {
       async *stream(_request, signal) {
@@ -502,7 +579,19 @@ describe("response stream normalization", () => {
         });
       },
     };
-    const response = await fetch(await streamUrl(gateway, memory, registry), { method: "POST" });
+    const url = await streamUrl(gateway, memory, registry, (reply) => {
+      const originalWrite = reply.raw.write.bind(reply.raw);
+      reply.raw.write = ((chunk: string | Uint8Array, encoding?: BufferEncoding) => {
+        const accepted =
+          encoding === undefined ? originalWrite(chunk) : originalWrite(chunk, encoding);
+        if (typeof chunk === "string" && chunk.includes('"type":"response.cancelled"')) {
+          cancellationWrites += 1;
+          return false;
+        }
+        return accepted;
+      }) as typeof reply.raw.write;
+    });
+    const response = await fetch(url, { method: "POST" });
     const reader = response.body?.getReader();
     if (reader === undefined) {
       throw new Error("Streaming response did not expose a reader");
@@ -555,5 +644,32 @@ describe("response stream normalization", () => {
     expect(memory.content).toBe("Visible partial");
     expect(memory.firstTokenAt).not.toBeNull();
     expect(gatewaySignal?.aborted).toBe(true);
+    expect(cancellationWrites).toBe(1);
+  });
+
+  it("keeps a cancellation that commits while shutdown releases its local fence", async () => {
+    const { events, memory } = await shutdownDuringCancellation("commit");
+
+    expect(events.map((event) => event.type)).toEqual([
+      "response.started",
+      "content.delta",
+      "response.cancelled",
+    ]);
+    expect(events).not.toContainEqual(expect.objectContaining({ text: "Must not forward" }));
+    expect(memory.content).toBe("Visible partial");
+    expect(memory.state).toMatchObject({ reason: "cancelled", status: "cancelled" });
+  });
+
+  it("records STREAM_INTERRUPTED when cancellation rolls back during shutdown", async () => {
+    const { events, memory } = await shutdownDuringCancellation("rollback");
+
+    expect(events.map((event) => event.type)).toEqual(["response.started", "content.delta"]);
+    expect(events).not.toContainEqual(expect.objectContaining({ text: "Must not forward" }));
+    expect(memory.content).toBe("Visible partial");
+    expect(memory.state).toMatchObject({
+      errorCode: "STREAM_INTERRUPTED",
+      reason: "error",
+      status: "incomplete",
+    });
   });
 });

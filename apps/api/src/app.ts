@@ -22,6 +22,7 @@ import { createActorResolver } from "./identity/authorization.js";
 import { createEmailSender, type EmailSender, FakeEmailSender } from "./identity/email.js";
 import { createIdentityService, type IdentityService } from "./identity/service.js";
 import { createApplicationLifecycle } from "./lifecycle.js";
+import { operationalErrorMetadata } from "./operator-error.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerConversationRoutes } from "./routes/conversations.js";
 import { registerDevelopmentMailboxRoute } from "./routes/development-mailbox.js";
@@ -71,7 +72,7 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
   const pool =
     dependencies.pool ??
     createDatabasePool(config.databaseUrl, (error) => {
-      server.log.error({ errorName: error.name }, "idle database connection failed");
+      server.log.error(operationalErrorMetadata(error), "idle database connection failed");
     });
   const lifecycle = createApplicationLifecycle(pool);
   const database = dependencies.database ?? createDatabase(pool as Pool);

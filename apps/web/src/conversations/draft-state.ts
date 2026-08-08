@@ -13,6 +13,17 @@ export interface DraftRecord {
   readonly status: DraftSaveStatus;
 }
 
+export interface ConfirmedDraftIdentity {
+  readonly content: string;
+  readonly editVersion: number;
+  readonly revision: number;
+}
+
+export interface DraftConsumption {
+  readonly canonical: DraftState;
+  readonly record: DraftRecord;
+}
+
 export function initializeDraft(state: DraftState): DraftRecord {
   return {
     blocked: false,
@@ -30,6 +41,15 @@ export function adoptRefreshedDraft(
   record: DraftRecord | undefined,
   state: DraftState,
 ): DraftRecord {
+  if (
+    record &&
+    !record.dirty &&
+    !record.blocked &&
+    state.revision === record.revision &&
+    state.content === record.content
+  ) {
+    return record;
+  }
   if (!record || (!record.dirty && !record.blocked && state.revision >= record.revision)) {
     return initializeDraft(state);
   }
@@ -72,6 +92,55 @@ export function completeDraftSave(
     lastAttemptedVersion: submittedVersion,
     revision: saved.revision,
     status: hasNewerText ? "unsaved" : "saved",
+  };
+}
+
+export function consumeConfirmedDraft(
+  current: DraftRecord | undefined,
+  confirmed: ConfirmedDraftIdentity,
+  empty: DraftState,
+  cached: DraftState | undefined,
+): DraftConsumption {
+  if (
+    !current ||
+    (current.content === confirmed.content &&
+      current.editVersion === confirmed.editVersion &&
+      current.revision === confirmed.revision)
+  ) {
+    return { canonical: empty, record: initializeDraft(empty) };
+  }
+
+  const canonical =
+    cached && (cached.content !== confirmed.content || cached.revision !== confirmed.revision)
+      ? cached
+      : empty;
+  const canonicalIsConsumedEmpty =
+    canonical.content === "" && canonical.revision === 0 && canonical.updatedAt === null;
+  if (current.blocked && !canonicalIsConsumedEmpty) {
+    return { canonical, record: markDraftConflict(current, canonical) };
+  }
+  if (current.dirty && !canonicalIsConsumedEmpty && canonical.revision !== current.revision) {
+    return { canonical, record: markDraftConflict(current, canonical) };
+  }
+  if (!current.dirty) {
+    const record =
+      current.content === canonical.content && current.revision === canonical.revision
+        ? current
+        : initializeDraft(canonical);
+    return { canonical, record };
+  }
+
+  return {
+    canonical,
+    record: {
+      ...current,
+      blocked: false,
+      conflict: undefined,
+      dirty: true,
+      lastAttemptedVersion: current.editVersion - 1,
+      revision: canonical.revision,
+      status: "unsaved",
+    },
   };
 }
 

@@ -1,10 +1,13 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { useEffect } from "react";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { copy } from "../copy";
-import { ChatRuntimeProvider } from "./chat-runtime-provider";
+import { conversationQueryKeys } from "./api";
+import type { ChatRuntime } from "./chat-runtime";
+import { ChatRuntimeProvider, useChatRuntime } from "./chat-runtime-provider";
 import { DraftEditor, type DraftEditorComposer } from "./draft-editor";
 import { DraftMemoryProvider } from "./draft-memory";
 
@@ -45,13 +48,23 @@ function responseStarted(): Uint8Array {
 
 type ConversationComposer = Extract<DraftEditorComposer, { kind: "conversation" }>;
 
-function renderComposer(overrides: Partial<Omit<ConversationComposer, "kind">> = {}) {
+function RuntimeProbe({ capture }: { readonly capture: (runtime: ChatRuntime) => void }) {
+  const runtime = useChatRuntime();
+  useEffect(() => capture(runtime), [capture, runtime]);
+  return null;
+}
+
+function renderComposer(
+  overrides: Partial<Omit<ConversationComposer, "kind">> = {},
+  captureRuntime?: (runtime: ChatRuntime) => void,
+) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
         <DraftMemoryProvider queryScope={queryScope}>
           <ChatRuntimeProvider>
+            {captureRuntime ? <RuntimeProbe capture={captureRuntime} /> : null}
             <DraftEditor
               scope={{ kind: "conversation", conversationId }}
               composer={{
@@ -76,6 +89,7 @@ function renderComposer(overrides: Partial<Omit<ConversationComposer, "kind">> =
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
@@ -325,6 +339,146 @@ describe("streaming composer", () => {
       expect(editor).not.toHaveAttribute("readonly");
     },
   );
+
+  it("preserves a newer draft when late ambiguous-start recovery proves the sent turn", async () => {
+    let runtime: ChatRuntime | undefined;
+    let responseAttempts = 0;
+    let canonicalReads = 0;
+    let nextDraftSaves = 0;
+    let serverDraft = draft("", 0);
+    const fetchMock = vi.fn(async (url: string, options?: RequestInit) => {
+      if (url.endsWith("/draft") && options?.method === "PUT") {
+        const body = JSON.parse(String(options.body)) as {
+          content: string;
+          observedRevision: number;
+        };
+        if (body.observedRevision !== serverDraft.revision) {
+          return json(
+            {
+              code: "DRAFT_CHANGED",
+              message: "Draft changed",
+              requestId: "request-draft-conflict",
+            },
+            409,
+          );
+        }
+        serverDraft = draft(body.content, body.observedRevision + 1);
+        if (body.content === "Siguiente borrador") {
+          nextDraftSaves += 1;
+        }
+        return json(serverDraft);
+      }
+      if (url.endsWith("/draft")) {
+        return json(serverDraft);
+      }
+      if (url.endsWith("/responses")) {
+        responseAttempts += 1;
+        if (responseAttempts === 1) {
+          serverDraft = draft("", 0);
+          throw new TypeError("request status unknown");
+        }
+        return json(
+          {
+            code: "GENERATION_ALREADY_EXISTS",
+            message: "Generation already exists",
+            requestId: "request-replay",
+          },
+          409,
+        );
+      }
+      if (url.endsWith(`/api/conversations/${conversationId}`)) {
+        canonicalReads += 1;
+        const committed = canonicalReads >= 3;
+        return json({
+          conversation: {
+            id: conversationId,
+            title: committed ? "Pregunta enviada" : null,
+            isArchived: false,
+            revision: committed ? 2 : 0,
+            createdAt: "2026-08-07T12:00:00.000Z",
+            updatedAt: "2026-08-07T12:00:01.000Z",
+          },
+          selectedLeafId: committed ? messageId : null,
+          messages: committed
+            ? [
+                {
+                  id: userMessageId,
+                  parentMessageId: null,
+                  role: "user",
+                  content: [{ type: "text", text: "Pregunta enviada" }],
+                  createdAt: "2026-08-07T12:00:00.000Z",
+                  siblingCount: 0,
+                },
+                {
+                  id: messageId,
+                  parentMessageId: userMessageId,
+                  role: "assistant",
+                  content: [{ type: "text", text: "" }],
+                  createdAt: "2026-08-07T12:00:01.000Z",
+                  siblingCount: 0,
+                },
+              ]
+            : [],
+          nextCursor: null,
+        });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { queryClient } = renderComposer({}, (current) => {
+      runtime = current;
+    });
+
+    const editor = await screen.findByRole("textbox", { name: copy.conversations.draft.label });
+    await waitFor(() => expect(editor).toBeEnabled());
+    await waitFor(() => expect(runtime).toBeDefined());
+    fireEvent.change(editor, { target: { value: "Pregunta enviada" } });
+    fireEvent.click(
+      screen.getByRole("button", { name: copy.conversations.generation.actions.send }),
+    );
+
+    expect(await screen.findByText(copy.conversations.generation.errors.ambiguous)).toHaveAttribute(
+      "role",
+      "alert",
+    );
+    vi.useFakeTimers();
+    fireEvent.change(editor, { target: { value: "Siguiente borrador" } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(600);
+    });
+    expect(
+      screen.getByRole("heading", { name: copy.conversations.draft.conflictTitle }),
+    ).toBeVisible();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: copy.conversations.draft.replaceServer }));
+    });
+    expect(document.querySelector(".draft-save-status")).toHaveTextContent(
+      copy.conversations.draft.saved,
+    );
+    expect(serverDraft).toMatchObject({ content: "Siguiente borrador", revision: 1 });
+    expect(nextDraftSaves).toBe(1);
+
+    await act(async () => {
+      await runtime?.recoverConversation(conversationId);
+    });
+
+    expect(responseAttempts).toBe(2);
+    expect(canonicalReads).toBe(3);
+    expect(editor).toHaveValue("Siguiente borrador");
+    expect(
+      queryClient.getQueryData(
+        conversationQueryKeys.draft(queryScope, {
+          kind: "conversation",
+          conversationId,
+        }),
+      ),
+    ).toMatchObject({ content: "Siguiente borrador", revision: 1 });
+    expect(nextDraftSaves).toBe(1);
+    expect(
+      screen.queryByRole("heading", { name: copy.conversations.draft.conflictTitle }),
+    ).not.toBeInTheDocument();
+    expect(editor).toHaveValue("Siguiente borrador");
+  });
 
   it("keeps remote Stop available when the draft cannot be loaded", async () => {
     const fetchMock = vi.fn(async (url: string) => {

@@ -6,6 +6,7 @@ import {
   adoptRefreshedDraft,
   beginDraftSave,
   completeDraftSave,
+  consumeConfirmedDraft,
   editDraft,
   initializeDraft,
   markDraftConflict,
@@ -36,6 +37,121 @@ describe("draft state", () => {
       dirty: true,
       revision: 5,
       status: "unsaved",
+    });
+  });
+
+  it("consumes only the exact confirmed draft identity", () => {
+    const confirmed = editDraft(initializeDraft(serverDraft), "Mensaje enviado");
+    const saved = completeDraftSave(
+      confirmed,
+      { ...serverDraft, content: confirmed.content, revision: 5 },
+      confirmed.content,
+      confirmed.editVersion,
+    );
+    const empty = { ...serverDraft, content: "", revision: 0, updatedAt: null };
+    const identity = {
+      content: saved.content,
+      editVersion: saved.editVersion,
+      revision: saved.revision,
+    };
+    const sentCanonical = {
+      ...serverDraft,
+      content: saved.content,
+      revision: saved.revision,
+    };
+
+    expect(consumeConfirmedDraft(saved, identity, empty, sentCanonical).record).toMatchObject({
+      content: "",
+      dirty: false,
+      revision: 0,
+    });
+    const staleCachedDraft = {
+      ...serverDraft,
+      content: "Borrador anterior",
+      revision: saved.revision - 1,
+    };
+    expect(consumeConfirmedDraft(saved, identity, empty, staleCachedDraft)).toMatchObject({
+      canonical: empty,
+      record: {
+        content: "",
+        dirty: false,
+        revision: 0,
+      },
+    });
+
+    const interveningEdit = editDraft(saved, "Siguiente mensaje");
+    expect(
+      consumeConfirmedDraft(interveningEdit, identity, empty, sentCanonical).record,
+    ).toMatchObject({
+      blocked: false,
+      content: "Siguiente mensaje",
+      dirty: true,
+      revision: 0,
+      status: "unsaved",
+    });
+
+    const editedBackToSameText = editDraft(interveningEdit, saved.content);
+    expect(
+      consumeConfirmedDraft(editedBackToSameText, identity, empty, sentCanonical).record,
+    ).toMatchObject({
+      content: saved.content,
+      dirty: true,
+      revision: 0,
+      status: "unsaved",
+    });
+
+    const nextCanonical = {
+      ...empty,
+      content: "Siguiente borrador guardado",
+      revision: 1,
+      updatedAt: "2026-08-07T12:30:00.000Z",
+    };
+    const dirtyNextDraft = editDraft(initializeDraft(nextCanonical), "Edición posterior");
+    const consumed = consumeConfirmedDraft(dirtyNextDraft, identity, empty, nextCanonical);
+    expect(consumed.canonical).toBe(nextCanonical);
+    expect(consumed.record).toMatchObject({
+      blocked: false,
+      content: "Edición posterior",
+      dirty: true,
+      revision: 1,
+      status: "unsaved",
+    });
+
+    const crossTabDraft = {
+      ...empty,
+      content: "Borrador de otra pestaña",
+      revision: 1,
+      updatedAt: "2026-08-07T12:31:00.000Z",
+    };
+    const dirtyFromConsumedBase = editDraft(initializeDraft(empty), "Borrador local");
+    expect(
+      consumeConfirmedDraft(dirtyFromConsumedBase, identity, empty, crossTabDraft).record,
+    ).toMatchObject({
+      blocked: true,
+      conflict: crossTabDraft,
+      content: "Borrador local",
+      dirty: true,
+      revision: 1,
+      status: "conflict",
+    });
+
+    expect(
+      consumeConfirmedDraft(initializeDraft(nextCanonical), identity, empty, nextCanonical).record,
+    ).toMatchObject({
+      content: "Siguiente borrador guardado",
+      dirty: false,
+      revision: 1,
+      status: "saved",
+    });
+    const newerConflict = markDraftConflict(interveningEdit, nextCanonical);
+    expect(
+      consumeConfirmedDraft(newerConflict, identity, empty, nextCanonical).record,
+    ).toMatchObject({
+      blocked: true,
+      conflict: nextCanonical,
+      content: "Siguiente mensaje",
+      revision: 1,
+      status: "conflict",
     });
   });
 

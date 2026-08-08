@@ -37,7 +37,8 @@ Start PostgreSQL and wait for its health check:
 docker compose up -d --wait postgres
 ```
 
-If port 5432 is occupied, set `CAPSTONE_POSTGRES_PORT` and use the same port in `DATABASE_URL`.
+Compose publishes PostgreSQL on loopback only. If port 5432 is occupied, set
+`CAPSTONE_POSTGRES_PORT` and use the same port in `DATABASE_URL`.
 
 Apply the complete committed migration history explicitly:
 
@@ -192,8 +193,9 @@ Common local checks:
   `docker compose up -d --wait postgres` and `pnpm db:migrate`.
 - A response route returning an ordinary database error after an update usually means the Phase 4
   generation migration is missing; apply the complete migration history and retry.
-- A startup error naming `BETTER_AUTH_SECRET`, `EMAIL_DELIVERY`, `DATABASE_URL`, or `PUBLIC_ORIGIN`
-  means the selected runtime mode rejected its configuration.
+- A startup failure with `configurationKey` set to `BETTER_AUTH_SECRET`, `EMAIL_DELIVERY`,
+  `DATABASE_URL`, or `PUBLIC_ORIGIN` means the selected runtime mode rejected that field. Operator
+  failure metadata intentionally omits the rejected value and arbitrary error messages.
 - A missing local mailbox requires both development mode and fake delivery. A `403` means the
   request did not arrive from a loopback address.
 - Fake deliveries belong to one API process. Reload the mailbox after the request that sends the
@@ -244,9 +246,10 @@ Vite server. It does not use the local development database, expose a test-only 
 or contact a real email or model provider. The broad suite remains Chromium-first; tagged Send,
 Stop, navigation, reload, and mobile composer cases also run in Firefox and WebKit.
 
-GitHub Actions exposes formatting/linting, type checking, clean migrations, unit and PostgreSQL
-integration tests, production builds, the non-root API image, and Playwright as separate gates. CI
-uses only synthetic identities, a test-only auth secret, and fake delivery.
+GitHub Actions runs formatting/linting, type checking, clean migrations, unit and PostgreSQL
+integration tests, production builds, and the non-root API image as named steps in one quality job.
+Playwright remains a separate job so browser failures and artifacts are isolated. CI uses only
+synthetic identities, a test-only auth secret, and fake delivery.
 
 ## Auth schema regeneration
 
@@ -322,17 +325,14 @@ The API image runs as the non-root `node` user and includes the compiled runtime
 migrations. Building the image verifies the artifact, but Phase 4 does not ship a production model
 gateway.
 
-Provide `DATABASE_URL`, an HTTPS `PUBLIC_ORIGIN`, and a unique `BETTER_AUTH_SECRET` of at least 32
-characters through deployment secret/configuration management. Apply migrations as a separate
-deployment action before starting any API replica:
+The migration job receives only `NODE_ENV` and `DATABASE_URL`; it does not receive the Better Auth
+secret, public origin, or email configuration. Apply migrations as a separate deployment action
+before starting API replicas with their complete production configuration:
 
 ```sh
 docker run --rm \
   --env NODE_ENV=production \
-  --env EMAIL_DELIVERY=disabled \
   --env DATABASE_URL \
-  --env PUBLIC_ORIGIN \
-  --env BETTER_AUTH_SECRET \
   capstone-chat-api \
   node apps/api/dist/database/migrate-command.js
 ```

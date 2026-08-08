@@ -175,30 +175,26 @@ describe("response stream parser", () => {
     );
   });
 
-  it("enforces both line and unread-buffer bounds", async () => {
+  it("enforces the completed-line bound without depending on transport chunk size", async () => {
     await expect(
       (async () => {
         for await (const _event of parseResponseStream(
           streamFrom([bytes('{"type":"response.future","padding":"12345"}\n')]),
           new AbortController().signal,
-          { maxLineBytes: 16, maxBufferBytes: 64 },
+          { maxLineBytes: 16 },
         )) {
           // No known event is expected.
         }
       })(),
     ).rejects.toMatchObject({ code: "STREAM_PROTOCOL_ERROR" });
 
-    await expect(
-      (async () => {
-        for await (const _event of parseResponseStream(
-          streamFrom([bytes("123456789")]),
-          new AbortController().signal,
-          { maxLineBytes: 64, maxBufferBytes: 8 },
-        )) {
-          // No known event is expected.
-        }
-      })(),
-    ).rejects.toMatchObject({ code: "STREAM_PROTOCOL_ERROR" });
+    const shortUnknownEvents = Array.from({ length: 5_000 }, (_, sequence) => ({
+      sequence,
+      type: "response.future",
+    }));
+    const coalescedChunk = lines(started, ...shortUnknownEvents, completed);
+    expect(coalescedChunk.byteLength).toBeGreaterThan(131_072);
+    await expect(collect([coalescedChunk])).resolves.toEqual([started, completed]);
   });
 
   it("honors cancellation even when the reader has not completed", async () => {

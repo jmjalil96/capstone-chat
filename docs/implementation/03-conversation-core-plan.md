@@ -1,6 +1,6 @@
 # Phase 3 — Conversation Core Implementation Plan
 
-Status: implemented; verification complete; pending user acceptance
+Status: implemented and accepted
 
 Code authorization: granted by the user on 2026-08-06
 
@@ -95,6 +95,15 @@ Code authorization: granted by the user on 2026-08-06
   type checking, production builds, `git diff --check`, the repository-scoped Biome check over all
   130 repository files, and all eight Chromium scenarios passed. No API, protocol, schema, or Phase
   4 behavior changed.
+- A 2026-08-07 cross-phase correction reuses the public draft and search request schemas for
+  advisory browser validation. Oversized or control-character input remains editable and protected
+  from loss, receives specific Spanish guidance, and causes no futile autosave, retry, search, or
+  Send request until corrected; Fastify remains authoritative.
+- Late proof of an ambiguous committed send now consumes only the exact confirmed draft identity.
+  A draft saved after the send remains canonical, local edits retain their CAS base, and a different
+  cross-tab revision becomes the existing explicit draft conflict instead of being overwritten.
+  Regressions cover stale pre-send cache data, a saved next draft, dirty local text, and a newer
+  cross-tab draft.
 
 ## Objective
 

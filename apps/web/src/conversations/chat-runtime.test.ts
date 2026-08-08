@@ -306,6 +306,27 @@ describe("ChatRuntime", () => {
     runtime.dispose();
   });
 
+  it("keeps a failed remote Stop fenced until terminal state can reconcile it", async () => {
+    const cancel = vi.fn().mockRejectedValue(new TypeError("network unavailable"));
+    const fetchConversation = vi.fn(async () => canonical());
+    const fetchResponseStates = vi.fn(async () => responseState("completed"));
+    const { runtime } = createRuntime({ cancel, fetchConversation, fetchResponseStates });
+
+    await runtime.stopResponse(conversationId, { generationId, messageId });
+
+    expect(runtime.getSnapshot(conversationId)).toMatchObject({
+      locallyOwned: false,
+      phase: "generating",
+      recoveryRequired: false,
+    });
+    await runtime.recoverConversation(conversationId);
+
+    expect(fetchConversation).toHaveBeenCalledOnce();
+    expect(fetchResponseStates).toHaveBeenCalledOnce();
+    expect(runtime.getSnapshot(conversationId)).toBeUndefined();
+    runtime.dispose();
+  });
+
   it("preserves a received terminal outcome when its pending Stop request fails", async () => {
     const source = controlledStream();
     let rejectCancellation!: (error: unknown) => void;

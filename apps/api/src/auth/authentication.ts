@@ -220,7 +220,7 @@ export function createAuthentication(input: {
         "/sign-out": identitySecurity.rateLimit.ordinary,
         "/sign-up/email": identitySecurity.rateLimit.ordinary,
         "/verify-email": identitySecurity.rateLimit.verification,
-        "*": identitySecurity.rateLimit.ordinary,
+        "/**": identitySecurity.rateLimit.ordinary,
       },
       enabled: true,
       max: identitySecurity.rateLimit.ordinary.max,

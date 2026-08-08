@@ -1287,4 +1287,26 @@ describe.sequential("identity integration", () => {
     );
     expect(stillLimited.statusCode).toBe(429);
   });
+
+  it("applies the ordinary window to uncatalogued authentication paths", async () => {
+    const app = startApplication();
+    const remoteAddress = "127.0.0.7";
+    const path = "/uncatalogued/nested-path";
+
+    await app.database.insert(rateLimitTable).values({
+      count: 100,
+      id: "uncatalogued-path-rate-limit",
+      key: `${remoteAddress}|${path}`,
+      lastRequest: Date.now() - 61 * 1_000,
+    });
+
+    const response = await authPost(app, path, {}, undefined, {}, remoteAddress);
+    expect(response.statusCode).not.toBe(429);
+
+    const [counter] = await app.database
+      .select()
+      .from(rateLimitTable)
+      .where(eq(rateLimitTable.key, `${remoteAddress}|${path}`));
+    expect(counter?.count).toBe(1);
+  });
 });

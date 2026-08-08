@@ -17,8 +17,9 @@ Code authorization: granted by the user on 2026-08-07
   `.claude/settings.local.json` and that unrelated file remains untouched.
 - Phase 4 accepts user messages up to 32,768 UTF-8 bytes and bounds the streaming request body at
   69,632 bytes. The authoritative selected-branch context is bounded at 1,048,576 UTF-8 bytes.
-  Browser NDJSON parsing allows a 65,536-byte completed line and a 131,072-byte unread decoder
-  buffer. One assistant accumulator is limited to 1,048,576 UTF-8 bytes.
+  Browser NDJSON parsing allows a 65,536-byte completed line. Incremental newline processing makes
+  that same bound cap retained incomplete input without making arbitrary fetch chunk size part of
+  the protocol. One assistant accumulator is limited to 1,048,576 UTF-8 bytes.
 - A partial response becomes checkpoint-eligible after 250 ms or 1,024 newly accumulated UTF-8
   bytes. Downstream backpressure waits at most 5 seconds, graceful shutdown drains streams for 10
   seconds, and response state for a generation owned elsewhere is polled every 2 seconds while the
@@ -80,6 +81,34 @@ Code authorization: granted by the user on 2026-08-07
   privacy and logging, migration boundaries, production fake-gateway rejection, or later-phase
   scope. Phase 4 added no dependency, provider integration, Phase 5 continuous-follow behavior,
   Phase 6 accounting, or alternate infrastructure.
+- A 2026-08-07 cross-phase correction pass fenced an already-enqueued terminal NDJSON event from
+  catch-path replay under backpressure, separated scheduled and durable checkpoint watermarks so a
+  failed write remains eligible, and made shutdown interruption wait for durable state rather than
+  assuming an in-flight cancellation transaction committed. The browser parser now bounds each
+  retained incomplete line while accepting arbitrarily coalesced transport chunks.
+- Failed remote Stop requests keep their honest remote-generating state until polling observes a
+  terminal result. That observation triggers one canonical reconciliation; a failed reconciliation
+  exposes explicit Retry without an automatic loop. Draft validation and late ambiguous-send proof
+  use the Phase 3 rules recorded above.
+- The same audit narrowed migration configuration to `NODE_ENV` plus `DATABASE_URL`, gave migrations
+  a single-connection pool without the request query timeout, and exposed only allowlisted
+  configuration or PostgreSQL metadata in process-level operator logs. PostgreSQL Compose exposure
+  is loopback-only, local environment variants are ignored, and inert or duplicate tool settings
+  were removed without adding a dependency or changing a public contract.
+- The search-vector/output-size alignment and gateway CR/split-surrogate normalization remain
+  mandatory Phase 6 work before real model output. An overall process-shutdown deadline remains
+  Phase 8 deployment hardening. The Phase 2 password-change rate was not changed without a separate
+  locked security decision, and the currently aligned search snippet invariant was not replaced by
+  speculative fallback behavior.
+- Post-correction verification passed all 414 tests: 131 protocol, 161 API and PostgreSQL
+  integration, and 122 web. Strict TypeScript, production builds, `git diff --check`, and the
+  repository-scoped Biome check over 163 applicable files passed; the build retained only the
+  existing Vite chunk-size advisory. The literal `pnpm check` checked 164 files and still reports
+  only the globally ignored, unrelated `.claude/settings.local.json` formatting issue.
+- Playwright passed all 22 scenarios across the complete Chromium flow and the critical Firefox and
+  WebKit streaming flows. The production API image built successfully, runs as non-root `node`,
+  and contains the compiled runtime and complete three-migration history. Three independent
+  read-only correction audits found no remaining P1/P2 correctness issue or undue abstraction.
 
 ## Objective
 
@@ -184,7 +213,7 @@ unidentified dirty baseline when streaming implementation begins.
 At implementation start, record the initial operational values Phase 4 first needs:
 
 - user-message and streaming-request byte ceilings;
-- maximum NDJSON line and unread decoder-buffer sizes;
+- maximum NDJSON line size, which also bounds retained incomplete decoder input;
 - maximum in-memory assistant accumulator size;
 - checkpoint elapsed-time and accumulated-byte thresholds;
 - downstream backpressure timeout;

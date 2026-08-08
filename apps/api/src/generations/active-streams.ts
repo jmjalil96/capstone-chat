@@ -148,7 +148,7 @@ export class ActiveStreamRegistry {
 
   abortAll(reason: StreamAbortReason): void {
     for (const entry of this.#active.values()) {
-      this.#settleCancellation(entry, true);
+      this.#settleCancellation(entry, reason !== "shutdown");
       if (!entry.controller.signal.aborted) {
         entry.controller.abort(reason);
       }

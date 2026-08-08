@@ -205,13 +205,20 @@ export function ConversationPage() {
   const remoteActive = [...responseStates.byMessageId.values()].find(
     (state) => state.status === "active",
   );
+  const runtimeResponseState = runtimeSnapshot?.messageId
+    ? responseStates.byMessageId.get(runtimeSnapshot.messageId)
+    : undefined;
   const runtimeActive =
     runtimeSnapshot?.phase === "starting" ||
     runtimeSnapshot?.phase === "generating" ||
     runtimeSnapshot?.phase === "compacting" ||
     runtimeSnapshot?.phase === "stopping";
   const runtimeNeedsReconciliation = Boolean(
-    runtimeSnapshot?.awaitingCanonical || (runtimeSnapshot?.messageId && !runtimeActive),
+    runtimeSnapshot?.awaitingCanonical ||
+      (runtimeSnapshot?.messageId && !runtimeActive) ||
+      (!runtimeSnapshot?.locallyOwned &&
+        runtimeResponseState &&
+        runtimeResponseState.status !== "active"),
   );
   const runtimeRecoveryActionRequired = Boolean(
     runtimeSnapshot?.awaitingCanonical || runtimeSnapshot?.recoveryRequired,
@@ -446,20 +453,22 @@ export function ConversationPage() {
     ) {
       return;
     }
-    const canonicalState = responseStates.byMessageId.get(runtimeSnapshot.messageId);
     const detailReachedRuntimeRevision =
       runtimeSnapshot.revision !== undefined &&
       conversation?.revision !== undefined &&
       conversation.revision >= runtimeSnapshot.revision;
-    if ((canonicalState && canonicalState.status !== "active") || detailReachedRuntimeRevision) {
+    if (
+      (runtimeResponseState && runtimeResponseState.status !== "active") ||
+      detailReachedRuntimeRevision
+    ) {
       void runtime.recoverConversation(conversationId);
     }
   }, [
     conversation?.revision,
     conversationId,
-    responseStates.byMessageId,
     runtime,
     runtimeNeedsReconciliation,
+    runtimeResponseState,
     runtimeSnapshot,
   ]);
 

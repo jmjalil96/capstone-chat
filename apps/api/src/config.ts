@@ -9,6 +9,30 @@ export type RuntimeMode = (typeof runtimeModes)[number];
 export type LogLevel = (typeof logLevels)[number];
 export type EmailDelivery = "disabled" | "fake";
 
+export type ConfigurationKey =
+  | "BETTER_AUTH_SECRET"
+  | "DATABASE_URL"
+  | "EMAIL_DELIVERY"
+  | "HOST"
+  | "LOG_LEVEL"
+  | "NODE_ENV"
+  | "PORT"
+  | "PUBLIC_ORIGIN";
+
+export class ConfigurationError extends Error {
+  readonly configurationKey: ConfigurationKey;
+
+  constructor(configurationKey: ConfigurationKey, message: string) {
+    super(message);
+    this.name = "ConfigurationError";
+    this.configurationKey = configurationKey;
+  }
+}
+
+export interface DatabaseConfig {
+  readonly databaseUrl: string;
+}
+
 export interface ApiConfig {
   readonly authSecret: string;
   readonly databaseUrl: string;
@@ -37,7 +61,7 @@ function readRuntimeMode(value: string | undefined): RuntimeMode {
   const mode = value ?? "development";
 
   if (!isIncluded(runtimeModes, mode)) {
-    throw new Error("NODE_ENV must be development, test, or production");
+    throw new ConfigurationError("NODE_ENV", "NODE_ENV must be development, test, or production");
   }
 
   return mode;
@@ -51,7 +75,7 @@ function readRequired(
   const value = source[key]?.trim() || fallback;
 
   if (value === undefined) {
-    throw new Error(`${key} is required in production`);
+    throw new ConfigurationError(key, `${key} is required in production`);
   }
 
   return value;
@@ -65,7 +89,10 @@ function readAuthSecret(source: NodeJS.ProcessEnv, mode: RuntimeMode): string {
   );
 
   if (secret.length < 32) {
-    throw new Error("BETTER_AUTH_SECRET must contain at least 32 characters");
+    throw new ConfigurationError(
+      "BETTER_AUTH_SECRET",
+      "BETTER_AUTH_SECRET must contain at least 32 characters",
+    );
   }
 
   return secret;
@@ -75,15 +102,18 @@ function readEmailDelivery(value: string | undefined, mode: RuntimeMode): EmailD
   const delivery = value?.trim() || (mode === "production" ? undefined : "fake");
 
   if (delivery === undefined) {
-    throw new Error("EMAIL_DELIVERY is required in production");
+    throw new ConfigurationError("EMAIL_DELIVERY", "EMAIL_DELIVERY is required in production");
   }
 
   if (delivery !== "fake" && delivery !== "disabled") {
-    throw new Error("EMAIL_DELIVERY must be fake or disabled");
+    throw new ConfigurationError("EMAIL_DELIVERY", "EMAIL_DELIVERY must be fake or disabled");
   }
 
   if (mode === "production" && delivery === "fake") {
-    throw new Error("EMAIL_DELIVERY=fake is prohibited in production");
+    throw new ConfigurationError(
+      "EMAIL_DELIVERY",
+      "EMAIL_DELIVERY=fake is prohibited in production",
+    );
   }
 
   return delivery;
@@ -93,7 +123,7 @@ function readHost(value: string | undefined, mode: RuntimeMode): string {
   const host = value?.trim() || (mode === "production" ? "0.0.0.0" : developmentDefaults.host);
 
   if (host.length === 0 || /\s/u.test(host)) {
-    throw new Error("HOST must be a non-empty hostname or IP address");
+    throw new ConfigurationError("HOST", "HOST must be a non-empty hostname or IP address");
   }
 
   return host;
@@ -105,13 +135,13 @@ function readPort(value: string | undefined): number {
   }
 
   if (!/^\d+$/u.test(value)) {
-    throw new Error("PORT must be an integer from 1 to 65535");
+    throw new ConfigurationError("PORT", "PORT must be an integer from 1 to 65535");
   }
 
   const port = Number(value);
 
   if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
-    throw new Error("PORT must be an integer from 1 to 65535");
+    throw new ConfigurationError("PORT", "PORT must be an integer from 1 to 65535");
   }
 
   return port;
@@ -123,11 +153,14 @@ function readDatabaseUrl(value: string): string {
   try {
     url = new URL(value);
   } catch {
-    throw new Error("DATABASE_URL must be a valid PostgreSQL URL");
+    throw new ConfigurationError("DATABASE_URL", "DATABASE_URL must be a valid PostgreSQL URL");
   }
 
   if (url.protocol !== "postgres:" && url.protocol !== "postgresql:") {
-    throw new Error("DATABASE_URL must use the postgres or postgresql protocol");
+    throw new ConfigurationError(
+      "DATABASE_URL",
+      "DATABASE_URL must use the postgres or postgresql protocol",
+    );
   }
 
   return value;
@@ -139,15 +172,18 @@ function readPublicOrigin(value: string, mode: RuntimeMode): string {
   try {
     url = new URL(value);
   } catch {
-    throw new Error("PUBLIC_ORIGIN must be a valid HTTP origin");
+    throw new ConfigurationError("PUBLIC_ORIGIN", "PUBLIC_ORIGIN must be a valid HTTP origin");
   }
 
   if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new Error("PUBLIC_ORIGIN must use the http or https protocol");
+    throw new ConfigurationError(
+      "PUBLIC_ORIGIN",
+      "PUBLIC_ORIGIN must use the http or https protocol",
+    );
   }
 
   if (mode === "production" && url.protocol !== "https:") {
-    throw new Error("PUBLIC_ORIGIN must use https in production");
+    throw new ConfigurationError("PUBLIC_ORIGIN", "PUBLIC_ORIGIN must use https in production");
   }
 
   if (
@@ -157,7 +193,7 @@ function readPublicOrigin(value: string, mode: RuntimeMode): string {
     url.search !== "" ||
     url.hash !== ""
   ) {
-    throw new Error("PUBLIC_ORIGIN must contain only an origin");
+    throw new ConfigurationError("PUBLIC_ORIGIN", "PUBLIC_ORIGIN must contain only an origin");
   }
 
   return url.origin;
@@ -167,14 +203,16 @@ function readLogLevel(value: string | undefined, mode: RuntimeMode): LogLevel {
   const level = value?.trim() || (mode === "test" ? "silent" : "info");
 
   if (!isIncluded(logLevels, level)) {
-    throw new Error("LOG_LEVEL is not supported");
+    throw new ConfigurationError("LOG_LEVEL", "LOG_LEVEL is not supported");
   }
 
   return level;
 }
 
-export function loadConfig(source: NodeJS.ProcessEnv = process.env): Readonly<ApiConfig> {
-  const nodeEnv = readRuntimeMode(source.NODE_ENV);
+function readDatabaseConfig(
+  source: NodeJS.ProcessEnv,
+  nodeEnv: RuntimeMode,
+): Readonly<DatabaseConfig> {
   const allowDevelopmentDefaults = nodeEnv !== "production";
   const databaseUrl = readDatabaseUrl(
     readRequired(
@@ -183,6 +221,21 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): Readonly<Ap
       allowDevelopmentDefaults ? developmentDefaults.databaseUrl : undefined,
     ),
   );
+
+  return Object.freeze({ databaseUrl });
+}
+
+export function loadDatabaseConfig(
+  source: NodeJS.ProcessEnv = process.env,
+): Readonly<DatabaseConfig> {
+  const nodeEnv = readRuntimeMode(source.NODE_ENV);
+  return readDatabaseConfig(source, nodeEnv);
+}
+
+export function loadConfig(source: NodeJS.ProcessEnv = process.env): Readonly<ApiConfig> {
+  const nodeEnv = readRuntimeMode(source.NODE_ENV);
+  const { databaseUrl } = readDatabaseConfig(source, nodeEnv);
+  const allowDevelopmentDefaults = nodeEnv !== "production";
   const publicOrigin = readPublicOrigin(
     readRequired(
       source,

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { StrictMode } from "react";
 import { createMemoryRouter, Outlet } from "react-router";
@@ -7,6 +7,7 @@ import { RouterProvider } from "react-router/dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { copy } from "../copy";
+import { SEARCH_DEBOUNCE_DELAY_MS } from "./config";
 import { ConversationPage } from "./conversation-page";
 import { DraftMemoryProvider } from "./draft-memory";
 import { SearchPage } from "./search-page";
@@ -36,6 +37,57 @@ afterEach(() => {
 });
 
 describe("search page", () => {
+  it("blocks an over-limit multibyte query until it fits the shared UTF-8 bound", async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/api/conversations/search") && init?.method === "POST") {
+        return json({ results: [], nextCursor: null });
+      }
+      throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const router = createMemoryRouter(
+      [
+        {
+          Component: TestLayout,
+          children: [{ path: "/search", Component: SearchPage }],
+        },
+      ],
+      { initialEntries: ["/search"] },
+    );
+    render(
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>,
+    );
+
+    const searchbox = await screen.findByRole("searchbox", {
+      name: copy.conversations.search.label,
+    });
+    vi.useFakeTimers();
+    fireEvent.change(searchbox, { target: { value: "ñ".repeat(129) } });
+    expect(searchbox).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByRole("alert")).toHaveTextContent(copy.conversations.search.tooLarge);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_DELAY_MS * 2);
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    fireEvent.change(searchbox, { target: { value: "ñ".repeat(128) } });
+    expect(searchbox).not.toHaveAttribute("aria-invalid");
+    expect(screen.queryByText(copy.conversations.search.tooLarge)).not.toBeInTheDocument();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_DELAY_MS);
+    });
+    vi.useRealTimers();
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      query: "ñ".repeat(128),
+    });
+  });
+
   it("does not restore obsolete navigation after the employee leaves a pending result", async () => {
     let finishSelection: ((response: Response) => void) | undefined;
     let selectionSignal: AbortSignal | null | undefined;

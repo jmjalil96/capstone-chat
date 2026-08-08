@@ -281,7 +281,6 @@ describe("conversation recovery lifecycle", () => {
       screen.getByRole("button", { name: copy.conversations.generation.actions.send }),
     ).toBeDisabled();
 
-    const pendingRecoveryCalls = chatMocks.recoverConversation.mock.calls.length;
     chatMocks.snapshots.set(firstConversationId, {
       ...terminalSnapshot,
       recoveryRequired: true,
@@ -298,12 +297,152 @@ describe("conversation recovery lifecycle", () => {
     );
     expect(document.querySelector(".generation-status")).toBeNull();
     const retry = screen.getByRole("button", { name: copy.conversations.common.retry });
+    const failedRecoveryCalls = chatMocks.recoverConversation.mock.calls.length;
     await act(async () => {
       await Promise.resolve();
     });
-    expect(chatMocks.recoverConversation).toHaveBeenCalledTimes(pendingRecoveryCalls);
+    expect(chatMocks.recoverConversation).toHaveBeenCalledTimes(failedRecoveryCalls);
 
     await user.click(retry);
-    expect(chatMocks.recoverConversation).toHaveBeenCalledTimes(pendingRecoveryCalls + 1);
+    expect(chatMocks.recoverConversation).toHaveBeenCalledTimes(failedRecoveryCalls + 1);
+  });
+
+  it("reconciles a failed remote Stop once after polling observes terminal state", async () => {
+    const assistantMessageId = "33333333-3333-4333-8333-333333333333";
+    const userMessageId = "44444444-4444-4444-8444-444444444444";
+    const generationId = "55555555-5555-4555-8555-555555555555";
+    chatMocks.snapshots.set(firstConversationId, {
+      awaitingCanonical: false,
+      committedUserText: undefined,
+      conversationId: firstConversationId,
+      consumesDraft: false,
+      errorCode: undefined,
+      generationId,
+      locallyOwned: false,
+      messageId: assistantMessageId,
+      phase: "generating",
+      reason: undefined,
+      recoveryRequired: false,
+      revision: undefined,
+      text: "",
+      userMessageId: undefined,
+    });
+    let responseStatus: "active" | "cancelled" = "active";
+    chatMocks.recoverConversation.mockImplementation(async () => {
+      const current = chatMocks.snapshots.get(firstConversationId);
+      if (current) {
+        chatMocks.snapshots.set(firstConversationId, {
+          ...current,
+          recoveryRequired: true,
+        });
+      }
+    });
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/draft")) {
+        return json({
+          scope: { kind: "conversation", conversationId: firstConversationId },
+          content: "",
+          revision: 0,
+          updatedAt: null,
+        });
+      }
+      if (url.endsWith(`/api/conversations/${firstConversationId}`)) {
+        return json({
+          conversation: {
+            id: firstConversationId,
+            title: "Respuesta remota",
+            isArchived: false,
+            revision: 2,
+            createdAt: "2026-08-07T12:00:00.000Z",
+            updatedAt: "2026-08-07T12:00:01.000Z",
+          },
+          selectedLeafId: assistantMessageId,
+          messages: [
+            {
+              id: userMessageId,
+              parentMessageId: null,
+              role: "user",
+              content: [{ type: "text", text: "Pregunta" }],
+              createdAt: "2026-08-07T12:00:00.000Z",
+              siblingCount: 0,
+            },
+            {
+              id: assistantMessageId,
+              parentMessageId: userMessageId,
+              role: "assistant",
+              content: [{ type: "text", text: "Respuesta detenida" }],
+              createdAt: "2026-08-07T12:00:01.000Z",
+              siblingCount: 0,
+            },
+          ],
+          nextCursor: null,
+        });
+      }
+      if (url.endsWith(`/api/conversations/${firstConversationId}/response-states`)) {
+        return json({
+          conversationId: firstConversationId,
+          revision: 2,
+          responses: [
+            {
+              generationId,
+              messageId: assistantMessageId,
+              status: responseStatus,
+              reason: responseStatus === "cancelled" ? "cancelled" : null,
+              errorCode: null,
+            },
+          ],
+        });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const router = createMemoryRouter(
+      [
+        {
+          Component: TestLayout,
+          children: [{ path: "/c/:conversationId", Component: ConversationPage }],
+        },
+      ],
+      { initialEntries: [`/c/${firstConversationId}`] },
+    );
+    render(
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>,
+    );
+    const user = userEvent.setup();
+
+    await screen.findByRole("heading", { level: 1, name: "Respuesta remota" });
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([input]) =>
+          String(input).endsWith(`/api/conversations/${firstConversationId}/response-states`),
+        ),
+      ).toBe(true),
+    );
+    expect(chatMocks.recoverConversation).not.toHaveBeenCalled();
+
+    responseStatus = "cancelled";
+    await act(async () => {
+      await queryClient.invalidateQueries();
+    });
+    await waitFor(() =>
+      expect(chatMocks.recoverConversation).toHaveBeenCalledWith(firstConversationId),
+    );
+    expect(chatMocks.recoverConversation).toHaveBeenCalledOnce();
+
+    await act(async () => {
+      await router.navigate(`/c/${firstConversationId}`, {
+        replace: true,
+        state: { testRender: "remote-recovery-failed" },
+      });
+    });
+    expect(chatMocks.recoverConversation).toHaveBeenCalledOnce();
+
+    const retry = await screen.findByRole("button", { name: copy.conversations.common.retry });
+    await user.click(retry);
+    expect(chatMocks.recoverConversation).toHaveBeenCalledTimes(2);
   });
 });

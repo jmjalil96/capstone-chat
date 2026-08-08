@@ -40,6 +40,7 @@ export class NdjsonWriter {
   readonly #interruptSignal: AbortSignal;
   readonly #reply: FastifyReply;
   readonly #transportSignal: AbortSignal;
+  #terminalEnqueued = false;
 
   constructor(reply: FastifyReply, transportSignal: AbortSignal, interruptSignal: AbortSignal) {
     this.#reply = reply;
@@ -66,12 +67,23 @@ export class NdjsonWriter {
   }
 
   async write(event: StreamEvent): Promise<void> {
+    const terminal =
+      event.type === "response.completed" ||
+      event.type === "response.cancelled" ||
+      event.type === "response.failed";
+    if (terminal && this.#terminalEnqueued) {
+      return;
+    }
     this.#transportSignal.throwIfAborted();
     if (this.#reply.raw.destroyed || this.#reply.raw.writableEnded) {
       throw new StreamTransportError("The downstream response is no longer writable");
     }
     const line = `${JSON.stringify(event)}\n`;
-    if (this.#reply.raw.write(line, "utf8")) {
+    const accepted = this.#reply.raw.write(line, "utf8");
+    if (terminal) {
+      this.#terminalEnqueued = true;
+    }
+    if (accepted) {
       return;
     }
     await this.#waitForDrain();
@@ -114,29 +126,36 @@ export class NdjsonWriter {
 export class CheckpointScheduler {
   readonly #generations: GenerationService;
   readonly #generationId: string;
+  #durableCheckpointAt: number;
+  #durableCheckpointBytes = 0;
   #firstTokenAt: Date | null = null;
   #inFlight: Promise<void> | null = null;
-  #lastCheckpointAt: number;
-  #lastCheckpointBytes = 0;
   #latestBytes = 0;
   #latestContent = "";
+  #observedWhileInFlight = false;
   #pending = false;
+  #scheduledCheckpointAt: number;
+  #scheduledCheckpointBytes = 0;
   #stopped = false;
   #timer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(generations: GenerationService, generationId: string, now: number) {
     this.#generations = generations;
     this.#generationId = generationId;
-    this.#lastCheckpointAt = now;
+    this.#durableCheckpointAt = now;
+    this.#scheduledCheckpointAt = now;
   }
 
   observe(content: string, totalBytes: number, firstTokenAt: Date, now: number): void {
     this.#latestContent = content;
     this.#latestBytes = totalBytes;
     this.#firstTokenAt ??= firstTokenAt;
+    if (this.#inFlight !== null) {
+      this.#observedWhileInFlight = true;
+    }
     const eligible =
-      totalBytes - this.#lastCheckpointBytes >= generationTuning.checkpointBytes ||
-      now - this.#lastCheckpointAt >= generationTuning.checkpointMilliseconds;
+      totalBytes - this.#scheduledCheckpointBytes >= generationTuning.checkpointBytes ||
+      now - this.#scheduledCheckpointAt >= generationTuning.checkpointMilliseconds;
     if (this.#stopped) {
       return;
     }
@@ -169,12 +188,12 @@ export class CheckpointScheduler {
   }
 
   #scheduleElapsedCheckpoint(now: number): void {
-    if (this.#timer !== null || this.#latestBytes === this.#lastCheckpointBytes) {
+    if (this.#timer !== null || this.#latestBytes === this.#scheduledCheckpointBytes) {
       return;
     }
     const remaining = Math.max(
       0,
-      generationTuning.checkpointMilliseconds - (now - this.#lastCheckpointAt),
+      generationTuning.checkpointMilliseconds - (now - this.#scheduledCheckpointAt),
     );
     this.#timer = setTimeout(() => {
       this.#timer = null;
@@ -187,20 +206,37 @@ export class CheckpointScheduler {
   #start(now: number): void {
     const content = this.#latestContent;
     const bytes = this.#latestBytes;
-    this.#lastCheckpointAt = now;
-    this.#lastCheckpointBytes = bytes;
+    this.#scheduledCheckpointAt = now;
+    this.#scheduledCheckpointBytes = bytes;
+    let persisted = false;
     const operation = this.#generations
       .checkpoint(this.#generationId, content, this.#firstTokenAt)
-      .then(() => undefined)
+      .then((didPersist) => {
+        persisted = didPersist;
+        if (didPersist) {
+          this.#durableCheckpointAt = now;
+          this.#durableCheckpointBytes = bytes;
+        }
+      })
       .catch(() => undefined)
       .finally(() => {
         if (this.#inFlight === operation) {
           this.#inFlight = null;
         }
+        const observedWhileInFlight = this.#observedWhileInFlight;
+        this.#observedWhileInFlight = false;
+        if (!persisted) {
+          this.#scheduledCheckpointAt = this.#durableCheckpointAt;
+          this.#scheduledCheckpointBytes = this.#durableCheckpointBytes;
+          if (this.#timer !== null) {
+            clearTimeout(this.#timer);
+            this.#timer = null;
+          }
+        }
         if (!this.#stopped && this.#pending) {
           this.#pending = false;
           this.#start(Date.now());
-        } else if (!this.#stopped) {
+        } else if (!this.#stopped && observedWhileInFlight) {
           this.#scheduleElapsedCheckpoint(Date.now());
         }
       });
@@ -384,6 +420,7 @@ export function createResponseStreamCoordinator(dependencies: {
           terminal = await durableTerminalEvent(cancelledState);
           break;
         }
+        lease.signal.throwIfAborted();
 
         if (event.type === "content.delta") {
           if (
@@ -482,8 +519,12 @@ export function createResponseStreamCoordinator(dependencies: {
             status: partial ? "incomplete" : "failed",
           })
           .catch(() => undefined);
-        if (committed?.won && !interrupted && isWritable(reply) && !disconnected.signal.aborted) {
-          await emitFailure(failureCode, committed).catch(() => undefined);
+        if (committed?.won) {
+          if (!interrupted && isWritable(reply) && !disconnected.signal.aborted) {
+            await emitFailure(failureCode, committed).catch(() => undefined);
+          }
+        } else if (committed !== undefined) {
+          terminal = await durableTerminalEvent(committed).catch(() => true);
         }
       }
     } finally {

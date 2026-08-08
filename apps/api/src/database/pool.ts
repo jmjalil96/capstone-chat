@@ -1,10 +1,16 @@
 import { Pool } from "pg";
 
-const poolLimits = {
+const applicationPoolLimits = {
   connectionTimeoutMillis: 5_000,
   idleTimeoutMillis: 30_000,
   max: 10,
   query_timeout: 5_000,
+} as const;
+
+const migrationPoolLimits = {
+  connectionTimeoutMillis: 5_000,
+  idleTimeoutMillis: 30_000,
+  max: 1,
 } as const;
 
 export interface DatabasePool {
@@ -12,16 +18,36 @@ export interface DatabasePool {
   query(queryText: string): Promise<unknown>;
 }
 
+function createPool(
+  options: ConstructorParameters<typeof Pool>[0],
+  onIdleError: (error: Error) => void,
+): Pool {
+  const pool = new Pool(options);
+  pool.on("error", onIdleError);
+  return pool;
+}
+
 export function createDatabasePool(
   databaseUrl: string,
   onIdleError: (error: Error) => void = () => undefined,
 ): Pool {
-  const pool = new Pool({
-    application_name: "capstone-chat-api",
-    connectionString: databaseUrl,
-    ...poolLimits,
-  });
+  return createPool(
+    {
+      application_name: "capstone-chat-api",
+      connectionString: databaseUrl,
+      ...applicationPoolLimits,
+    },
+    onIdleError,
+  );
+}
 
-  pool.on("error", onIdleError);
-  return pool;
+export function createMigrationPool(databaseUrl: string): Pool {
+  return createPool(
+    {
+      application_name: "capstone-chat-migrations",
+      connectionString: databaseUrl,
+      ...migrationPoolLimits,
+    },
+    () => undefined,
+  );
 }

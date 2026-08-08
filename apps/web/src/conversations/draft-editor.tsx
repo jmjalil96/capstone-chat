@@ -14,6 +14,7 @@ import { ConversationApiError, conversationQueryKeys, createConversation } from 
 import { ChatRuntimeError, type ChatRuntimePhase, type RemoteGeneration } from "./chat-runtime";
 import { useOptionalChatRuntime, useOptionalConversationRuntime } from "./chat-runtime-provider";
 import { MOBILE_SHELL_MEDIA_QUERY } from "./config";
+import type { ContentValidationIssue } from "./content-validation";
 import { useDraftMemory, useServerDraft } from "./draft-memory";
 import { useConversationRequestLifetime } from "./request-lifetime";
 
@@ -153,6 +154,12 @@ function remoteOutcomeStatus(outcome: RemoteResponseOutcome | undefined): string
   }
 }
 
+function draftValidationCopy(issue: ContentValidationIssue): string {
+  return issue === "too-large"
+    ? copy.conversations.draft.tooLarge
+    : copy.conversations.draft.invalidText;
+}
+
 export function DraftEditor({
   autoFocus = false,
   composer,
@@ -227,6 +234,7 @@ export function DraftEditor({
       draft.isLoading ||
       draft.loadError ||
       draft.interactionLocked ||
+      draft.validationIssue ||
       draft.content.trim().length === 0 ||
       (composer.kind === "conversation" && !composer.isCoherent) ||
       (composer.kind === "conversation" && composer.isArchived)
@@ -286,7 +294,7 @@ export function DraftEditor({
           },
           {
             onStarted: () => {
-              memory.consumeDraft(movedScope);
+              memory.consumeDraft(movedScope, confirmed);
               textareaRef.current?.focus();
             },
           },
@@ -306,7 +314,7 @@ export function DraftEditor({
         },
         {
           onStarted: () => {
-            memory.consumeDraft(scope);
+            memory.consumeDraft(scope, confirmed);
             textareaRef.current?.focus();
           },
         },
@@ -363,9 +371,11 @@ export function DraftEditor({
       : undefined;
   const saveStatus = draft.isLoading
     ? copy.conversations.draft.loading
-    : draft.status === "conflict"
-      ? copy.conversations.draft.conflictTitle
-      : copy.conversations.draft[draft.status];
+    : draft.validationIssue
+      ? draftValidationCopy(draft.validationIssue)
+      : draft.status === "conflict"
+        ? copy.conversations.draft.conflictTitle
+        : copy.conversations.draft[draft.status];
   const lifecycleStatus =
     composer?.kind === "conversation" && composer.isArchived
       ? copy.conversations.generation.status.archived
@@ -382,6 +392,7 @@ export function DraftEditor({
     draft.isLoading ||
     draft.loadError ||
     draft.interactionLocked ||
+    Boolean(draft.validationIssue) ||
     draft.content.trim().length === 0 ||
     (composer?.kind === "conversation" && !composer.isCoherent) ||
     (composer?.kind === "conversation" && composer.isArchived);
@@ -465,7 +476,7 @@ export function DraftEditor({
             </p>
           ) : null}
         </div>
-        {draft.status === "unsaved" ? (
+        {draft.status === "unsaved" && !draft.validationIssue ? (
           <button
             className="text-button"
             type="button"

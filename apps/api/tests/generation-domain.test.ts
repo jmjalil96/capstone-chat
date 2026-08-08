@@ -191,6 +191,72 @@ describe("CheckpointScheduler", () => {
     expect(checkpoint).toHaveBeenCalledTimes(2);
     expect(checkpoint).toHaveBeenLastCalledWith(generationId, latestContent, firstTokenAt);
   });
+
+  it("keeps sub-threshold content behind a successful checkpoint on the elapsed schedule", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-07T12:00:00.000Z"));
+    const firstCheckpoint = Promise.withResolvers<boolean>();
+    let invocation = 0;
+    const checkpoint = vi.fn(() => {
+      invocation += 1;
+      return invocation === 1 ? firstCheckpoint.promise : Promise.resolve(true);
+    });
+    const generationId = "00000000-0000-4000-8000-000000000001";
+    const firstTokenAt = new Date();
+    const scheduler = new CheckpointScheduler(
+      { checkpoint } as unknown as GenerationService,
+      generationId,
+      Date.now(),
+    );
+
+    scheduler.observe("a".repeat(1_024), 1_024, firstTokenAt, Date.now());
+    scheduler.observe("b".repeat(1_025), 1_025, firstTokenAt, Date.now());
+    expect(checkpoint).toHaveBeenCalledOnce();
+
+    firstCheckpoint.resolve(true);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(checkpoint).toHaveBeenCalledOnce();
+
+    await vi.advanceTimersByTimeAsync(249);
+    expect(checkpoint).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(checkpoint).toHaveBeenCalledTimes(2);
+    expect(checkpoint).toHaveBeenLastCalledWith(generationId, "b".repeat(1_025), firstTokenAt);
+    await scheduler.settle();
+  });
+
+  it("keeps a failed checkpoint eligible for a later observation without retrying on its own", async () => {
+    const firstAttemptFinished = Promise.withResolvers<void>();
+    let invocation = 0;
+    const checkpoint = vi.fn(async () => {
+      invocation += 1;
+      if (invocation === 1) {
+        firstAttemptFinished.resolve();
+        throw new Error("Synthetic checkpoint failure");
+      }
+      return true;
+    });
+    const generationId = "00000000-0000-4000-8000-000000000001";
+    const firstTokenAt = new Date("2026-08-07T12:00:00.000Z");
+    const scheduler = new CheckpointScheduler(
+      { checkpoint } as unknown as GenerationService,
+      generationId,
+      firstTokenAt.getTime(),
+    );
+
+    scheduler.observe("a".repeat(1_024), 1_024, firstTokenAt, firstTokenAt.getTime());
+    await firstAttemptFinished.promise;
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(checkpoint).toHaveBeenCalledOnce();
+
+    scheduler.observe("b".repeat(1_025), 1_025, firstTokenAt, firstTokenAt.getTime() + 1);
+    await scheduler.settle();
+
+    expect(checkpoint).toHaveBeenCalledTimes(2);
+    expect(checkpoint).toHaveBeenLastCalledWith(generationId, "b".repeat(1_025), firstTokenAt);
+  });
 });
 
 describe("FakeModelGateway", () => {

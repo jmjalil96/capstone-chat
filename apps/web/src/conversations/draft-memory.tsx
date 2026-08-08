@@ -21,15 +21,16 @@ import {
   saveDraft,
 } from "./api";
 import { DRAFT_AUTOSAVE_DELAY_MS } from "./config";
+import { type ContentValidationIssue, draftContentValidationIssue } from "./content-validation";
 import {
   acceptServerDraft,
   adoptRefreshedDraft,
   beginDraftSave,
   blockDraftAfterConflict,
   completeDraftSave,
+  consumeConfirmedDraft,
   type DraftRecord,
   editDraft,
-  initializeDraft,
   markDraftConflict,
   markDraftUnsaved,
   prepareDraftReplacement,
@@ -50,7 +51,7 @@ interface DraftMemoryContextValue {
   readonly queryScope: ConversationQueryScope;
   readonly registerActiveDraft: (key: string, flush: () => Promise<boolean>) => () => void;
   readonly unlockEditing: () => void;
-  readonly consumeDraft: (scope: DraftScope) => void;
+  readonly consumeDraft: (scope: DraftScope, confirmed: ConfirmedDraft) => void;
   readonly updateRecord: (
     key: string,
     update: (current: DraftRecord | undefined) => DraftRecord | undefined,
@@ -133,7 +134,7 @@ export function DraftMemoryProvider({ children, queryScope }: DraftMemoryProvide
     [queryClient, queryScope],
   );
   const consumeDraft = useCallback(
-    (scope: DraftScope) => {
+    (scope: DraftScope, confirmed: ConfirmedDraft) => {
       const generation = generationRef.current;
       if (!generation?.active || generation.controller.signal.aborted) {
         return;
@@ -145,10 +146,20 @@ export function DraftMemoryProvider({ children, queryScope }: DraftMemoryProvide
         revision: 0,
         updatedAt: null,
       };
-      const next = { ...recordsRef.current, [key]: initializeDraft(empty) };
+      const queryKey = conversationQueryKeys.draft(queryScope, scope);
+      const consumed = consumeConfirmedDraft(
+        recordsRef.current[key],
+        confirmed,
+        empty,
+        queryClient.getQueryData<DraftState>(queryKey),
+      );
+      const next = {
+        ...recordsRef.current,
+        [key]: consumed.record,
+      };
       recordsRef.current = next;
       setRecords(next);
-      queryClient.setQueryData(conversationQueryKeys.draft(queryScope, scope), empty);
+      queryClient.setQueryData(queryKey, consumed.canonical);
     },
     [queryClient, queryScope],
   );
@@ -280,10 +291,12 @@ export interface DraftEditorState {
   readonly retrySave: () => void;
   readonly setContent: (content: string) => void;
   readonly status: DraftRecord["status"];
+  readonly validationIssue: ContentValidationIssue | undefined;
 }
 
 export interface ConfirmedDraft {
   readonly content: string;
+  readonly editVersion: number;
   readonly revision: number;
 }
 
@@ -324,6 +337,11 @@ export function useServerDraft(scope: DraftScope): DraftEditorState {
     refetchOnWindowFocus: true,
   });
   const record = memory.records[key];
+  const recordContent = record?.content;
+  const validationIssue = useMemo(
+    () => (recordContent === undefined ? undefined : draftContentValidationIssue(recordContent)),
+    [recordContent],
+  );
   const recordRef = useRef<DraftRecord | undefined>(record);
   const inFlightRef = useRef<Promise<boolean> | null>(null);
   const inFlightTokenRef = useRef<object | null>(null);
@@ -371,14 +389,19 @@ export function useServerDraft(scope: DraftScope): DraftEditorState {
   );
 
   useEffect(() => {
-    if (requestIsCurrent() && query.data) {
+    if (
+      requestIsCurrent() &&
+      query.data &&
+      // A sent draft may replace the cache before an older render's synchronization effect runs.
+      queryClient.getQueryData(conversationQueryKeys.draft(queryScope, scope)) === query.data
+    ) {
       const synchronized = adoptRefreshedDraft(recordRef.current, query.data);
       if (synchronized !== recordRef.current) {
         recordRef.current = synchronized;
         updateMemoryRecord(key, () => synchronized);
       }
     }
-  }, [key, query.data, requestIsCurrent, updateMemoryRecord]);
+  }, [key, query.data, queryClient, queryScope, requestIsCurrent, scope, updateMemoryRecord]);
 
   const performSave = useCallback(
     async (force = false): Promise<boolean> => {
@@ -395,6 +418,9 @@ export function useServerDraft(scope: DraftScope): DraftEditorState {
       const current = recordRef.current;
       if (!current?.dirty || current.blocked) {
         return !current?.dirty;
+      }
+      if (draftContentValidationIssue(current.content)) {
+        return false;
       }
       if (!force && current.editVersion <= current.lastAttemptedVersion) {
         return false;
@@ -417,7 +443,10 @@ export function useServerDraft(scope: DraftScope): DraftEditorState {
             },
             AbortSignal.any([saveController.signal, generationCapture]),
           );
-          if (!requestIsCurrent(saveController)) {
+          if (
+            !requestIsCurrent(saveController) ||
+            recordRef.current?.revision !== submittedRevision
+          ) {
             return false;
           }
           queryClient.setQueryData(conversationQueryKeys.draft(queryScope, scope), saved);
@@ -428,7 +457,10 @@ export function useServerDraft(scope: DraftScope): DraftEditorState {
           update((value) => completeDraftSave(value, saved, submittedContent, submittedVersion));
           return true;
         } catch (error) {
-          if (!requestIsCurrent(saveController)) {
+          if (
+            !requestIsCurrent(saveController) ||
+            recordRef.current?.revision !== submittedRevision
+          ) {
             return false;
           }
           if (error instanceof ConversationApiError && error.code === "DRAFT_CHANGED") {
@@ -438,7 +470,10 @@ export function useServerDraft(scope: DraftScope): DraftEditorState {
                 scope,
                 AbortSignal.any([refetchController.signal, generationCapture]),
               );
-              if (!requestIsCurrent(refetchController)) {
+              if (
+                !requestIsCurrent(refetchController) ||
+                recordRef.current?.revision !== submittedRevision
+              ) {
                 return false;
               }
               queryClient.setQueryData(conversationQueryKeys.draft(queryScope, scope), server);
@@ -489,6 +524,7 @@ export function useServerDraft(scope: DraftScope): DraftEditorState {
     if (
       !record?.dirty ||
       record.blocked ||
+      validationIssue ||
       record.status === "saving" ||
       record.editVersion <= record.lastAttemptedVersion
     ) {
@@ -497,11 +533,15 @@ export function useServerDraft(scope: DraftScope): DraftEditorState {
 
     const timeout = window.setTimeout(() => void saveRef.current(), DRAFT_AUTOSAVE_DELAY_MS);
     return () => window.clearTimeout(timeout);
-  }, [record]);
+  }, [record, validationIssue]);
 
   useEffect(() => {
     const retryWhenOnline = () => {
-      if (recordRef.current?.dirty && !recordRef.current.blocked) {
+      if (
+        recordRef.current?.dirty &&
+        !recordRef.current.blocked &&
+        !draftContentValidationIssue(recordRef.current.content)
+      ) {
         void saveRef.current(true);
       }
     };
@@ -559,11 +599,16 @@ export function useServerDraft(scope: DraftScope): DraftEditorState {
       !confirmed ||
       confirmed.dirty ||
       confirmed.blocked ||
+      draftContentValidationIssue(confirmed.content) ||
       confirmed.content.trim().length === 0
     ) {
       return undefined;
     }
-    return { content: confirmed.content, revision: confirmed.revision };
+    return {
+      content: confirmed.content,
+      editVersion: confirmed.editVersion,
+      revision: confirmed.revision,
+    };
   }, [requestIsCurrent]);
 
   return {
@@ -580,5 +625,6 @@ export function useServerDraft(scope: DraftScope): DraftEditorState {
     retrySave: () => void saveRef.current(true),
     setContent,
     status: record?.status ?? "saved",
+    validationIssue,
   };
 }

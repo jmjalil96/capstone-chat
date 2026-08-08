@@ -202,6 +202,74 @@ describe("draft editor", () => {
     );
   });
 
+  it.each([
+    [String.fromCharCode(0), copy.conversations.draft.invalidText],
+    [String.fromCharCode(0xd800), copy.conversations.draft.invalidText],
+    ["🙂".repeat(8_193), copy.conversations.draft.tooLarge],
+  ])(
+    "keeps a deterministically invalid draft editable and off the network",
+    async (content, error) => {
+      const fetchMock = vi.fn().mockResolvedValue(json(draft("", 0)));
+      vi.stubGlobal("fetch", fetchMock);
+      let flush: (() => Promise<boolean>) | undefined;
+      renderEditor((activeFlush) => {
+        flush = activeFlush;
+      });
+
+      const editor = await screen.findByRole("textbox", { name: copy.conversations.draft.label });
+      await waitFor(() => expect(editor).toBeEnabled());
+      await waitFor(() => expect(flush).toBeTypeOf("function"));
+      vi.useFakeTimers();
+      fireEvent.change(editor, { target: { value: content } });
+
+      expect(editor).toBeEnabled();
+      expect(screen.getByRole("status")).toHaveTextContent(error);
+      expect(
+        screen.queryByRole("button", { name: copy.conversations.draft.retry }),
+      ).not.toBeInTheDocument();
+      const flushResult = await flush?.();
+      expect(flushResult).toBe(false);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(600);
+      });
+      vi.useRealTimers();
+      expect(fetchMock).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("saves an invalid draft normally after the employee corrects it", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(json(draft("", 0)))
+      .mockImplementationOnce(async (_url: string, options: RequestInit) => {
+        const body = JSON.parse(String(options.body)) as { content: string };
+        return json(draft(body.content, 1));
+      });
+    vi.stubGlobal("fetch", fetchMock);
+    renderEditor();
+
+    const editor = await screen.findByRole("textbox", { name: copy.conversations.draft.label });
+    await waitFor(() => expect(editor).toBeEnabled());
+    fireEvent.change(editor, { target: { value: String.fromCharCode(0) } });
+    expect(screen.getByRole("status")).toHaveTextContent(copy.conversations.draft.invalidText);
+
+    vi.useFakeTimers();
+    fireEvent.change(editor, { target: { value: "Texto corregido" } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(600);
+    });
+    vi.useRealTimers();
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toMatchObject({
+      content: "Texto corregido",
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent(copy.conversations.draft.saved),
+    );
+  });
+
   it("adopts a newer server draft when a clean editor remounts", async () => {
     const fetchMock = vi
       .fn()

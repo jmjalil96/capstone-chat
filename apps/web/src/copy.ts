@@ -164,6 +164,9 @@ export const copy = {
       saving: "Guardando…",
       saved: "Borrador guardado",
       unsaved: "Cambios sin guardar",
+      invalidText:
+        "El borrador contiene texto no válido o caracteres de control. Corrígelo para guardarlo.",
+      tooLarge: "El borrador supera el límite de 32 KB. Redúcelo para guardarlo.",
       retry: "Volver a guardar",
       conflictTitle: "El borrador cambió en otra pestaña",
       conflictDescription:
@@ -216,7 +219,8 @@ export const copy = {
           "La conversación cambió. Actualiza la información y vuelve a intentarlo.",
         draftChanged: "El borrador cambió. Revisa la versión guardada antes de enviarlo.",
         active: "Ya hay una respuesta activa en esta conversación.",
-        tooLarge: "El mensaje es demasiado largo. Redúcelo antes de enviarlo.",
+        tooLarge:
+          "El mensaje o el contexto de esta rama es demasiado largo. Redúcelo antes de enviarlo.",
         draftSave: "No pudimos confirmar el borrador. Tu texto permanece en el editor.",
         recovery: "No pudimos actualizar la conversación.",
         responseState: "No pudimos actualizar el estado de algunas respuestas.",
@@ -260,6 +264,9 @@ export const copy = {
       description: "Busca en nombres y mensajes de todas tus conversaciones preservadas.",
       label: "Buscar en conversaciones",
       placeholder: "Escribe para buscar",
+      invalidText:
+        "La búsqueda contiene texto no válido o caracteres de control. Corrígela para continuar.",
+      tooLarge: "La búsqueda supera el límite de 256 bytes. Redúcela para continuar.",
       prompt: "Escribe una búsqueda para ver resultados.",
       loading: "Buscando…",
       empty: "No encontramos resultados.",

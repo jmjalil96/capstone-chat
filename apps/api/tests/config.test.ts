@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { loadConfig, publicConfigMetadata } from "../src/config.js";
+import {
+  ConfigurationError,
+  loadConfig,
+  loadDatabaseConfig,
+  publicConfigMetadata,
+} from "../src/config.js";
 
 const productionEnvironment = {
   BETTER_AUTH_SECRET: "production-auth-secret-with-at-least-thirty-two-characters",
@@ -45,6 +50,29 @@ describe("loadConfig", () => {
       port: 4100,
       publicOrigin: "http://127.0.0.1:5173",
     });
+  });
+
+  it("loads migration configuration without unrelated production settings", () => {
+    const config = loadDatabaseConfig({
+      DATABASE_URL: productionEnvironment.DATABASE_URL,
+      NODE_ENV: "production",
+    });
+
+    expect(config).toEqual({ databaseUrl: productionEnvironment.DATABASE_URL });
+    expect(Object.isFrozen(config)).toBe(true);
+  });
+
+  it("identifies the invalid configuration field without exposing its value", () => {
+    let error: unknown;
+    try {
+      loadDatabaseConfig({ DATABASE_URL: "not-a-database-url", NODE_ENV: "production" });
+    } catch (caught: unknown) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(ConfigurationError);
+    expect(error).toMatchObject({ configurationKey: "DATABASE_URL" });
+    expect(JSON.stringify(error)).not.toContain("not-a-database-url");
   });
 
   it.each([

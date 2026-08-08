@@ -24,6 +24,9 @@ Code authorization: granted by the user on 2026-08-06
   password-reset requests per 15 minutes. Better Auth's database retention horizon is also set to
   15 minutes while an explicit catch-all preserves the effective 60-second ordinary rule; this
   prevents its cleanup pass from prematurely deleting the longer custom counters.
+- A 2026-08-07 cross-phase audit corrected that catch-all to Better Auth's recursive `/**` matcher.
+  An integration regression exercises a nested uncatalogued auth path and proves that the ordinary
+  60-second window applies; the approved route-specific limits are unchanged.
 - Authentication request bodies are limited to 16 KiB, and the development fake mailbox retains
   at most 100 deliveries.
 - `trustProxy` is `false` in every Phase 2 environment. Better Auth receives only the client address

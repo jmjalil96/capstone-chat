@@ -22,6 +22,7 @@ import {
   selectConversationLeaf,
 } from "./api";
 import { SEARCH_DEBOUNCE_DELAY_MS } from "./config";
+import { type ContentValidationIssue, searchContentValidationIssue } from "./content-validation";
 import { useDraftMemory } from "./draft-memory";
 import {
   type ConversationRequestCapture,
@@ -61,10 +62,17 @@ interface OpenSearchResult {
   readonly result: ConversationSearchResult;
 }
 
+function searchValidationCopy(issue: ContentValidationIssue): string {
+  return issue === "too-large"
+    ? copy.conversations.search.tooLarge
+    : copy.conversations.search.invalidText;
+}
+
 export function SearchPage() {
   const [input, setInput] = useState("");
   const [query, setQuery] = useState("");
   const [openingError, setOpeningError] = useState<string>();
+  const validationIssue = useMemo(() => searchContentValidationIssue(input), [input]);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const errorRef = useRef<HTMLParagraphElement>(null);
   const navigate = useNavigate();
@@ -75,9 +83,13 @@ export function SearchPage() {
   useRouteHeading(copy.conversations.search.documentTitle, headingRef);
 
   useEffect(() => {
+    if (validationIssue) {
+      setQuery("");
+      return;
+    }
     const timeout = window.setTimeout(() => setQuery(input.trim()), SEARCH_DEBOUNCE_DELAY_MS);
     return () => window.clearTimeout(timeout);
-  }, [input]);
+  }, [input, validationIssue]);
 
   const search = useInfiniteQuery({
     queryKey: conversationQueryKeys.search(queryScope, query),
@@ -185,7 +197,14 @@ export function SearchPage() {
         onChange={(event) => setInput(event.currentTarget.value)}
         placeholder={copy.conversations.search.placeholder}
         autoComplete="off"
+        aria-describedby={validationIssue ? "conversation-search-validation" : undefined}
+        aria-invalid={validationIssue ? true : undefined}
       />
+      {validationIssue ? (
+        <p id="conversation-search-validation" className="inline-alert" role="alert">
+          {searchValidationCopy(validationIssue)}
+        </p>
+      ) : null}
       {openingError ? (
         <p className="inline-alert" ref={errorRef} role="alert" tabIndex={-1}>
           {openingError}

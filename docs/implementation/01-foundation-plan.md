@@ -1,6 +1,6 @@
 # Phase 1 — Foundation Implementation Plan
 
-Status: implemented; awaiting review  
+Status: implemented and accepted
 Code authorization: granted
 
 ## Objective
@@ -202,6 +202,11 @@ Phase 1 supplies only the migration command that Phase 2 will later use.
 The production API container, structured logging, health endpoints, graceful shutdown foundation, and GitHub Actions belong to Phase 1 because they validate the architecture early. They must not expand into Phase 8 deployment work.
 
 ## Acceptance procedure
+
+This records the historical Phase 1 acceptance procedure. Step 9 passed for the Phase 1 artifact.
+The current Phase 4 image still builds and contains the migration history, but intentionally refuses
+production startup until Phase 6 supplies the real model gateway; the current operational boundary
+is documented in the repository README.
 
 From a clean dependency install and with Docker available:
 

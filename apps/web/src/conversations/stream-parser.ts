@@ -1,7 +1,7 @@
 import { type StreamEvent, StreamEventSchema } from "@capstone/protocol";
 import Value from "typebox/value";
 
-import { STREAM_MAX_DECODER_BUFFER_BYTES, STREAM_MAX_LINE_BYTES } from "./config";
+import { STREAM_MAX_LINE_BYTES } from "./config";
 
 const knownEventTypes = new Set([
   "response.started",
@@ -33,12 +33,10 @@ export class StreamReadError extends Error {
 }
 
 export interface StreamParserLimits {
-  readonly maxBufferBytes: number;
   readonly maxLineBytes: number;
 }
 
 const defaultLimits: StreamParserLimits = {
-  maxBufferBytes: STREAM_MAX_DECODER_BUFFER_BYTES,
   maxLineBytes: STREAM_MAX_LINE_BYTES,
 };
 
@@ -105,7 +103,6 @@ export async function* parseResponseStream(
       if (read.done) {
         break;
       }
-
       let offset = 0;
       while (offset < read.value.byteLength) {
         const newline = read.value.indexOf(0x0a, offset);
@@ -113,7 +110,7 @@ export async function* parseResponseStream(
         const segment = read.value.subarray(offset, end);
         if (segment.byteLength > 0) {
           bufferedBytes += segment.byteLength;
-          if (bufferedBytes > limits.maxLineBytes || bufferedBytes > limits.maxBufferBytes) {
+          if (bufferedBytes > limits.maxLineBytes) {
             throw new StreamReadError("STREAM_PROTOCOL_ERROR");
           }
           parts.push(segment);
