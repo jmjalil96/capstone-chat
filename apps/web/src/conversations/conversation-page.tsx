@@ -617,7 +617,13 @@ export function ConversationPage() {
 
   useEffect(() => {
     const intent = searchPositionIntent;
-    if (!intent || intent.conversationId !== conversationId || !conversation || !firstPage) {
+    if (
+      !intent ||
+      intent.conversationId !== conversationId ||
+      !conversation ||
+      !firstPage ||
+      detail.isFetching
+    ) {
       return;
     }
     const attemptKey = `${intent.conversationId}:${intent.messageId}:${intent.attempt}:${conversation.revision}`;
@@ -673,8 +679,6 @@ export function ConversationPage() {
           return;
         }
         setSearchHighlight({ messageId: intent.messageId, phase: "hold" });
-        setSearchPositionStatus(copy.conversations.search.located);
-        setSearchPositionIntent(undefined);
       } catch (error) {
         if (!capture.isCurrent()) {
           return;
@@ -696,6 +700,7 @@ export function ConversationPage() {
   }, [
     conversation,
     conversationId,
+    detail.isFetching,
     firstPage,
     queryClient,
     queryScope,
@@ -705,10 +710,23 @@ export function ConversationPage() {
   ]);
 
   useLayoutEffect(() => {
-    if (messageContentReady && searchHighlight?.phase === "hold") {
-      conversationScroll.positionMessage(searchHighlight.messageId);
+    if (
+      messageContentReady &&
+      searchHighlight?.phase === "hold" &&
+      searchPositionIntent?.conversationId === conversationId &&
+      searchPositionIntent.messageId === searchHighlight.messageId &&
+      conversationScroll.positionMessage(searchHighlight.messageId)
+    ) {
+      setSearchPositionStatus(copy.conversations.search.located);
+      setSearchPositionIntent(undefined);
     }
-  }, [conversationScroll.positionMessage, messageContentReady, searchHighlight]);
+  }, [
+    conversationId,
+    conversationScroll.positionMessage,
+    messageContentReady,
+    searchHighlight,
+    searchPositionIntent,
+  ]);
 
   useEffect(() => {
     if (!searchHighlight) {

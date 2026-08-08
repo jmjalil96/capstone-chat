@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { createElement, type ReactNode } from "react";
+import { createElement, type ReactNode, type UIEvent } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { CONVERSATION_FOLLOW_THRESHOLD_PX } from "./config";
@@ -11,6 +11,7 @@ import {
 import { ConversationSelectionFence } from "./conversation-selection";
 
 interface ScrollHarnessProps {
+  readonly captureOnScroll?: (onScroll: (event: UIEvent<HTMLDivElement>) => void) => void;
   readonly contentReady?: boolean;
   readonly renderedContent?: ReactNode;
   readonly sentUserMessageId?: string;
@@ -19,6 +20,7 @@ interface ScrollHarnessProps {
 }
 
 function ScrollHarness({
+  captureOnScroll,
   contentReady = true,
   renderedContent,
   sentUserMessageId,
@@ -36,6 +38,7 @@ function ScrollHarness({
     streamActive,
     streamPublication: stream,
   });
+  captureOnScroll?.(scroll.onScroll);
   return (
     <>
       <div data-testid="scroll" ref={scroll.containerRef} onScroll={scroll.onScroll}>
@@ -196,6 +199,71 @@ describe("conversation scroll geometry", () => {
     );
 
     expect(position.top).toBe(1_084);
+  });
+
+  it("ignores a delayed trusted scroll from sent-message positioning", () => {
+    let finishProgrammaticFrame: FrameRequestCallback | undefined;
+    let onScroll: ((event: UIEvent<HTMLDivElement>) => void) | undefined;
+    vi.stubGlobal(
+      "requestAnimationFrame",
+      vi.fn((callback: FrameRequestCallback) => {
+        finishProgrammaticFrame = callback;
+        return 1;
+      }),
+    );
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    const view = render(
+      <ScrollHarness
+        captureOnScroll={(handler) => {
+          onScroll = handler;
+        }}
+        contentReady={false}
+        stream={undefined}
+      />,
+    );
+    const container = screen.getByTestId("scroll");
+    const position = geometry(container, 1_000);
+    position.setTop(600);
+    Object.defineProperty(container.querySelector("[data-message-id]"), "scrollIntoView", {
+      configurable: true,
+      value: vi.fn(),
+    });
+
+    view.rerender(
+      <ScrollHarness
+        captureOnScroll={(handler) => {
+          onScroll = handler;
+        }}
+        contentReady
+        sentUserMessageId="message-1"
+        stream={{ messageId: "assistant-1", text: "" }}
+      />,
+    );
+    expect(position.top).toBe(654);
+    act(() => finishProgrammaticFrame?.(0));
+    position.setHeight(1_042);
+    act(() =>
+      onScroll?.({
+        currentTarget: container,
+        nativeEvent: { isTrusted: true },
+      } as UIEvent<HTMLDivElement>),
+    );
+
+    position.writes.length = 0;
+    position.setHeight(1_084);
+    view.rerender(
+      <ScrollHarness
+        captureOnScroll={(handler) => {
+          onScroll = handler;
+        }}
+        contentReady
+        sentUserMessageId="message-1"
+        stream={{ messageId: "assistant-1", text: "Primer fragmento" }}
+      />,
+    );
+
+    expect(position.writes).toEqual([1_084]);
+    expect(screen.queryByText("Contenido no visto")).not.toBeInTheDocument();
   });
 
   it("follows active same-source layout growth but not terminal reconciliation", () => {

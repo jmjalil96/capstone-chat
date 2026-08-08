@@ -155,6 +155,9 @@ test("completes the real Phase 4 conversation lifecycle through the browser", as
   await page.getByRole("link", { name: "Plan de lanzamiento actualizado" }).click();
   await expect(page.getByText(copy.conversations.search.archived, { exact: true })).toBeVisible();
   await page.getByRole("button", { name: copy.conversations.conversation.unarchive }).click();
+  await expect(
+    page.getByRole("button", { name: copy.conversations.conversation.archive }),
+  ).toBeVisible();
 
   await page.getByRole("button", { name: copy.conversations.conversation.delete }).click();
   await expect(page.getByText(copy.conversations.conversation.deleteNotice)).toBeVisible();

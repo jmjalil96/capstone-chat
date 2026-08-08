@@ -93,6 +93,7 @@ export function useConversationScroll({
   const positionedSentUserRef = useRef<string | undefined>(undefined);
   const programmaticRef = useRef(false);
   const programmaticFrameRef = useRef<number | undefined>(undefined);
+  const programmaticTopRef = useRef<number | undefined>(undefined);
   const streamPublicationRef = useRef<StreamPublication | undefined>(undefined);
   const ignoredSelectionRef = useRef<ConversationSelectionSnapshot | undefined>(undefined);
   const streamActiveRef = useRef(streamActive);
@@ -197,6 +198,7 @@ export function useConversationScroll({
       ) {
         markProgrammatic();
         container.scrollTop = nextHeight;
+        programmaticTopRef.current = container.scrollTop;
       }
       observedHeightRef.current = nextHeight;
     });
@@ -222,6 +224,7 @@ export function useConversationScroll({
       awaitingFirstPublicationRef.current = false;
       streamPublicationRef.current = undefined;
       ignoredSelectionRef.current = undefined;
+      programmaticTopRef.current = undefined;
       setUnseen(false);
     }
 
@@ -242,6 +245,7 @@ export function useConversationScroll({
         if (container.scrollTop < minimumFollowTop) {
           container.scrollTop = minimumFollowTop;
         }
+        programmaticTopRef.current = container.scrollTop;
         positionedSentUserRef.current = sentUserMessageId;
         awaitingFirstPublicationRef.current = !streamPublication?.text;
         paginationAnchorRef.current = undefined;
@@ -257,6 +261,7 @@ export function useConversationScroll({
       positionedRequestRef.current = positionRequest;
       markProgrammatic();
       container.scrollTop = container.scrollHeight;
+      programmaticTopRef.current = container.scrollTop;
       paginationAnchorRef.current = undefined;
       initializedRef.current = true;
       engageFollowing();
@@ -271,6 +276,7 @@ export function useConversationScroll({
     } else if (anchor && pageCount > anchor.pageCount) {
       markProgrammatic();
       container.scrollTop = container.scrollHeight - anchor.height + anchor.top;
+      programmaticTopRef.current = container.scrollTop;
       paginationAnchorRef.current = undefined;
       initializedRef.current = true;
       observedHeightRef.current = container.scrollHeight;
@@ -283,6 +289,7 @@ export function useConversationScroll({
     if (!initializedRef.current) {
       markProgrammatic();
       container.scrollTop = container.scrollHeight;
+      programmaticTopRef.current = container.scrollTop;
       initializedRef.current = true;
       engageFollowing();
       observedHeightRef.current = container.scrollHeight;
@@ -313,6 +320,7 @@ export function useConversationScroll({
       ) {
         markProgrammatic();
         container.scrollTop = container.scrollHeight;
+        programmaticTopRef.current = container.scrollTop;
       } else {
         followingRef.current = false;
         setUnseen(true);
@@ -350,6 +358,11 @@ export function useConversationScroll({
   const onScroll = useCallback(
     (event: UIEvent<HTMLDivElement>) => {
       const container = event.currentTarget;
+      const programmaticTop = programmaticTopRef.current;
+      if (programmaticTop !== undefined && Math.abs(container.scrollTop - programmaticTop) < 1) {
+        return;
+      }
+      programmaticTopRef.current = undefined;
       observedHeightRef.current = container.scrollHeight;
       if (programmaticRef.current) {
         return;
@@ -376,6 +389,7 @@ export function useConversationScroll({
       }
       markProgrammatic();
       message.scrollIntoView?.({ behavior: "auto", block });
+      programmaticTopRef.current = container.scrollTop;
       observedHeightRef.current = container.scrollHeight;
       return true;
     },
@@ -390,12 +404,19 @@ export function useConversationScroll({
     ignoredSelectionRef.current = captureConversationSelection(container);
     markProgrammatic();
     if (typeof container.scrollTo === "function") {
+      if (!reducedMotion) {
+        programmaticTopRef.current = undefined;
+      }
       container.scrollTo({
         behavior: reducedMotion ? "auto" : "smooth",
         top: container.scrollHeight,
       });
+      if (reducedMotion) {
+        programmaticTopRef.current = container.scrollTop;
+      }
     } else {
       container.scrollTop = container.scrollHeight;
+      programmaticTopRef.current = container.scrollTop;
     }
     observedHeightRef.current = container.scrollHeight;
     engageFollowing();

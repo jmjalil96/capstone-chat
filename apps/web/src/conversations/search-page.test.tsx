@@ -436,6 +436,151 @@ describe("search page", () => {
     ]);
   });
 
+  it("waits for a stale cached detail refetch before preserving a deep search page", async () => {
+    const targetMessageId = "33333333-3333-4333-8333-333333333333";
+    const olderAssistantId = "44444444-4444-4444-8444-444444444444";
+    const currentUserId = "55555555-5555-4555-8555-555555555555";
+    const currentAssistantId = "66666666-6666-4666-8666-666666666666";
+    const summary = {
+      id: conversationId,
+      title: "Resultado profundo en caché",
+      isArchived: false,
+      revision: 4,
+      createdAt: "2026-08-06T12:00:00.000Z",
+      updatedAt: "2026-08-06T12:00:04.000Z",
+    };
+    const currentPage: ConversationDetailResponse = {
+      conversation: summary,
+      selectedLeafId: currentAssistantId,
+      messages: [
+        {
+          id: currentUserId,
+          parentMessageId: olderAssistantId,
+          role: "user",
+          content: [{ type: "text", text: "Pregunta actual en caché" }],
+          createdAt: "2026-08-06T12:00:02.000Z",
+          siblingCount: 0,
+        },
+        {
+          id: currentAssistantId,
+          parentMessageId: currentUserId,
+          role: "assistant",
+          content: [{ type: "text", text: "Respuesta actual en caché" }],
+          createdAt: "2026-08-06T12:00:03.000Z",
+          siblingCount: 0,
+        },
+      ],
+      nextCursor: "opaque.cursor",
+    };
+    let resolveRefetch!: (response: Response) => void;
+    const refetchedPage = new Promise<Response>((resolve) => {
+      resolveRefetch = resolve;
+    });
+    let resolveOlder!: (response: Response) => void;
+    const olderPage = new Promise<Response>((resolve) => {
+      resolveOlder = resolve;
+    });
+    const detailUrls: string[] = [];
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = init?.method ?? "GET";
+      if (url.endsWith(`/api/conversations/${conversationId}/draft`) && method === "GET") {
+        return json({
+          scope: { kind: "conversation", conversationId },
+          content: "",
+          revision: 0,
+          updatedAt: null,
+        });
+      }
+      if (url.endsWith(`/api/conversations/${conversationId}/response-states`)) {
+        return json({ conversationId, revision: 4, responses: [] });
+      }
+      if (url.includes(`/api/conversations/${conversationId}`) && method === "GET") {
+        detailUrls.push(url);
+        return url.endsWith("?cursor=opaque.cursor") ? olderPage : refetchedPage;
+      }
+      throw new Error(`Unexpected request: ${method} ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData<InfiniteData<ConversationDetailResponse>>(
+      conversationQueryKeys.detail(queryScope, conversationId),
+      { pages: [currentPage], pageParams: [undefined] },
+    );
+    const router = createMemoryRouter(
+      [
+        {
+          Component: TestLayout,
+          children: [{ path: "/c/:conversationId", Component: ConversationPage }],
+        },
+      ],
+      {
+        initialEntries: [
+          {
+            pathname: `/c/${conversationId}`,
+            state: { matchedMessageId: targetMessageId },
+          },
+        ],
+      },
+    );
+    render(
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => expect(detailUrls).toEqual([`/api/conversations/${conversationId}`]));
+    expect(router.state.location.state).toBeNull();
+    expect(screen.queryByText(copy.conversations.search.located)).not.toBeInTheDocument();
+    expect(screen.queryByText("Objetivo preservado en caché")).not.toBeInTheDocument();
+
+    await act(async () => {
+      resolveRefetch(json(currentPage));
+      await refetchedPage;
+    });
+    await waitFor(() =>
+      expect(detailUrls).toContain(`/api/conversations/${conversationId}?cursor=opaque.cursor`),
+    );
+    expect(screen.queryByText(copy.conversations.search.located)).not.toBeInTheDocument();
+
+    await act(async () => {
+      resolveOlder(
+        json({
+          conversation: summary,
+          selectedLeafId: currentAssistantId,
+          messages: [
+            {
+              id: targetMessageId,
+              parentMessageId: null,
+              role: "user",
+              content: [{ type: "text", text: "Objetivo preservado en caché" }],
+              createdAt: "2026-08-06T12:00:00.000Z",
+              siblingCount: 0,
+            },
+            {
+              id: olderAssistantId,
+              parentMessageId: targetMessageId,
+              role: "assistant",
+              content: [{ type: "text", text: "Respuesta anterior en caché" }],
+              createdAt: "2026-08-06T12:00:01.000Z",
+              siblingCount: 0,
+            },
+          ],
+          nextCursor: null,
+        }),
+      );
+      await olderPage;
+    });
+
+    const target = await screen.findByText("Objetivo preservado en caché", { exact: true });
+    expect(target.closest("[data-message-id]")).toHaveClass("search-match");
+    expect(screen.getByText(copy.conversations.search.located)).toHaveClass("visually-hidden");
+    expect(detailUrls).toEqual([
+      `/api/conversations/${conversationId}`,
+      `/api/conversations/${conversationId}?cursor=opaque.cursor`,
+    ]);
+  });
+
   it("recovers a stale deep cursor for the new revision, then consumes it once", async () => {
     const targetMessageId = "33333333-3333-4333-8333-333333333333";
     const currentMessageId = "44444444-4444-4444-8444-444444444444";
