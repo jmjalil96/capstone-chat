@@ -87,6 +87,7 @@ export function useConversationScroll({
   const conversationIdRef = useRef(conversationId);
   const followingRef = useRef(true);
   const initializedRef = useRef(false);
+  const lastScrollTopRef = useRef<number | undefined>(undefined);
   const observedHeightRef = useRef(0);
   const paginationAnchorRef = useRef<PaginationAnchor | undefined>(undefined);
   const positionedRequestRef = useRef(positionRequest);
@@ -199,6 +200,7 @@ export function useConversationScroll({
         markProgrammatic();
         container.scrollTop = nextHeight;
         programmaticTopRef.current = container.scrollTop;
+        lastScrollTopRef.current = container.scrollTop;
       }
       observedHeightRef.current = nextHeight;
     });
@@ -225,6 +227,7 @@ export function useConversationScroll({
       streamPublicationRef.current = undefined;
       ignoredSelectionRef.current = undefined;
       programmaticTopRef.current = undefined;
+      lastScrollTopRef.current = undefined;
       setUnseen(false);
     }
 
@@ -236,16 +239,19 @@ export function useConversationScroll({
     if (sentUserMessageId && positionedSentUserRef.current !== sentUserMessageId) {
       const sentUser = messageElement(container, sentUserMessageId);
       if (sentUser) {
-        markProgrammatic();
-        sentUser.scrollIntoView?.({ behavior: "auto", block: "start" });
         const minimumFollowTop = Math.max(
           0,
           container.scrollHeight - container.clientHeight - CONVERSATION_FOLLOW_THRESHOLD_PX,
         );
-        if (container.scrollTop < minimumFollowTop) {
-          container.scrollTop = minimumFollowTop;
-        }
+        const sentUserTop =
+          container.scrollTop +
+          sentUser.getBoundingClientRect().top -
+          container.getBoundingClientRect().top;
+        markProgrammatic();
+        // One target avoids a late scrollIntoView movement racing the follow clamp.
+        container.scrollTop = Math.max(sentUserTop, minimumFollowTop);
         programmaticTopRef.current = container.scrollTop;
+        lastScrollTopRef.current = container.scrollTop;
         positionedSentUserRef.current = sentUserMessageId;
         awaitingFirstPublicationRef.current = !streamPublication?.text;
         paginationAnchorRef.current = undefined;
@@ -262,6 +268,7 @@ export function useConversationScroll({
       markProgrammatic();
       container.scrollTop = container.scrollHeight;
       programmaticTopRef.current = container.scrollTop;
+      lastScrollTopRef.current = container.scrollTop;
       paginationAnchorRef.current = undefined;
       initializedRef.current = true;
       engageFollowing();
@@ -277,6 +284,7 @@ export function useConversationScroll({
       markProgrammatic();
       container.scrollTop = container.scrollHeight - anchor.height + anchor.top;
       programmaticTopRef.current = container.scrollTop;
+      lastScrollTopRef.current = container.scrollTop;
       paginationAnchorRef.current = undefined;
       initializedRef.current = true;
       observedHeightRef.current = container.scrollHeight;
@@ -290,6 +298,7 @@ export function useConversationScroll({
       markProgrammatic();
       container.scrollTop = container.scrollHeight;
       programmaticTopRef.current = container.scrollTop;
+      lastScrollTopRef.current = container.scrollTop;
       initializedRef.current = true;
       engageFollowing();
       observedHeightRef.current = container.scrollHeight;
@@ -315,18 +324,20 @@ export function useConversationScroll({
       const priorHeight = observedHeightRef.current;
       if (
         followingRef.current &&
-        (firstVisiblePublication ||
-          wasNearBottomBeforeGrowth(priorHeight, container.scrollTop, container.clientHeight))
+        wasNearBottomBeforeGrowth(priorHeight, container.scrollTop, container.clientHeight)
       ) {
         markProgrammatic();
         container.scrollTop = container.scrollHeight;
         programmaticTopRef.current = container.scrollTop;
+        lastScrollTopRef.current = container.scrollTop;
       } else {
         followingRef.current = false;
         setUnseen(true);
       }
     }
-    observedHeightRef.current = container.scrollHeight;
+    if (!awaitingFirstPublicationRef.current) {
+      observedHeightRef.current = container.scrollHeight;
+    }
     streamPublicationRef.current = streamPublication;
   }, [
     contentReady,
@@ -358,12 +369,13 @@ export function useConversationScroll({
   const onScroll = useCallback(
     (event: UIEvent<HTMLDivElement>) => {
       const container = event.currentTarget;
+      const previousTop = lastScrollTopRef.current;
+      lastScrollTopRef.current = container.scrollTop;
       const programmaticTop = programmaticTopRef.current;
       if (programmaticTop !== undefined && Math.abs(container.scrollTop - programmaticTop) < 1) {
         return;
       }
       programmaticTopRef.current = undefined;
-      observedHeightRef.current = container.scrollHeight;
       if (programmaticRef.current) {
         return;
       }
@@ -373,7 +385,11 @@ export function useConversationScroll({
       if (nearBottom) {
         ignoredSelectionRef.current = captureConversationSelection(container);
         engageFollowing();
-      } else if (event.nativeEvent.isTrusted) {
+      } else if (
+        event.nativeEvent.isTrusted &&
+        previousTop !== undefined &&
+        container.scrollTop < previousTop
+      ) {
         followingRef.current = false;
       }
     },
@@ -381,15 +397,24 @@ export function useConversationScroll({
   );
 
   const positionMessage = useCallback(
-    (messageId: string, block: ScrollLogicalPosition = "center"): boolean => {
+    (messageId: string): boolean => {
       const container = containerRef.current;
       const message = container ? messageElement(container, messageId) : undefined;
       if (!container || !message) {
         return false;
       }
+      const containerBounds = container.getBoundingClientRect();
+      const messageBounds = message.getBoundingClientRect();
+      const centeredTop =
+        container.scrollTop +
+        messageBounds.top +
+        messageBounds.height / 2 -
+        containerBounds.top -
+        container.clientHeight / 2;
       markProgrammatic();
-      message.scrollIntoView?.({ behavior: "auto", block });
+      container.scrollTop = centeredTop;
       programmaticTopRef.current = container.scrollTop;
+      lastScrollTopRef.current = container.scrollTop;
       observedHeightRef.current = container.scrollHeight;
       return true;
     },
@@ -402,6 +427,7 @@ export function useConversationScroll({
       return;
     }
     ignoredSelectionRef.current = captureConversationSelection(container);
+    lastScrollTopRef.current = container.scrollTop;
     markProgrammatic();
     if (typeof container.scrollTo === "function") {
       if (!reducedMotion) {
@@ -413,10 +439,12 @@ export function useConversationScroll({
       });
       if (reducedMotion) {
         programmaticTopRef.current = container.scrollTop;
+        lastScrollTopRef.current = container.scrollTop;
       }
     } else {
       container.scrollTop = container.scrollHeight;
       programmaticTopRef.current = container.scrollTop;
+      lastScrollTopRef.current = container.scrollTop;
     }
     observedHeightRef.current = container.scrollHeight;
     engageFollowing();

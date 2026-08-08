@@ -303,17 +303,19 @@ describe("search page", () => {
     expect(detailReads).toBe(2);
   });
 
-  it("consumes a matched-message intent before sequential opaque pagination finishes", async () => {
+  it("retries matched-message positioning after the rendered list advances", async () => {
     const targetMessageId = "33333333-3333-4333-8333-333333333333";
     const olderAssistantId = "44444444-4444-4444-8444-444444444444";
     const currentUserId = "55555555-5555-4555-8555-555555555555";
     const currentAssistantId = "66666666-6666-4666-8666-666666666666";
+    const oldestUserId = "77777777-7777-4777-8777-777777777777";
+    const oldestAssistantId = "88888888-8888-4888-8888-888888888888";
     const summary = {
       id: conversationId,
       title: "Resultado profundo",
       isArchived: false,
       revision: 4,
-      createdAt: "2026-08-06T12:00:00.000Z",
+      createdAt: "2026-08-06T11:59:58.000Z",
       updatedAt: "2026-08-06T12:00:04.000Z",
     };
     let resolveOlder!: (response: Response) => void;
@@ -396,7 +398,36 @@ describe("search page", () => {
     );
     expect(router.state.location.state).toBeNull();
     expect(screen.queryByText("Objetivo preservado")).not.toBeInTheDocument();
+    expect(screen.getByText(copy.conversations.common.loadingMore)).toBeInTheDocument();
 
+    const messageContainer = document.querySelector<HTMLElement>(".message-scroll");
+    expect(messageContainer).not.toBeNull();
+    if (!messageContainer) {
+      throw new Error("Expected the rendered message list");
+    }
+    const emptyMessages = document
+      .createElement("div")
+      .querySelectorAll<HTMLElement>("[data-message-id]");
+    const querySelectorAll = messageContainer.querySelectorAll.bind(messageContainer);
+    let suppressedTargetLookup = false;
+    Object.defineProperty(messageContainer, "querySelectorAll", {
+      configurable: true,
+      value: (selectors: string) => {
+        const matches = querySelectorAll(selectors);
+        if (
+          !suppressedTargetLookup &&
+          selectors === "[data-message-id]" &&
+          [...matches].some(
+            (element) =>
+              element instanceof HTMLElement && element.dataset.messageId === targetMessageId,
+          )
+        ) {
+          suppressedTargetLookup = true;
+          return emptyMessages;
+        }
+        return matches;
+      },
+    });
     await act(async () => {
       resolveOlder(
         json({
@@ -405,7 +436,7 @@ describe("search page", () => {
           messages: [
             {
               id: targetMessageId,
-              parentMessageId: null,
+              parentMessageId: oldestAssistantId,
               role: "user",
               content: [{ type: "text", text: "Objetivo preservado" }],
               createdAt: "2026-08-06T12:00:00.000Z",
@@ -420,10 +451,55 @@ describe("search page", () => {
               siblingCount: 0,
             },
           ],
-          nextCursor: null,
+          nextCursor: "oldest.cursor",
         }),
       );
       await olderPage;
+    });
+    await waitFor(() =>
+      expect(screen.queryByText(copy.conversations.common.loadingMore)).not.toBeInTheDocument(),
+    );
+    expect(await screen.findByText("Objetivo preservado", { exact: true })).toBeVisible();
+    expect(suppressedTargetLookup).toBe(true);
+    expect(screen.queryByText(copy.conversations.search.located)).not.toBeInTheDocument();
+
+    await act(async () => {
+      queryClient.setQueryData<InfiniteData<ConversationDetailResponse>>(
+        conversationQueryKeys.detail(queryScope, conversationId),
+        (current) =>
+          current
+            ? {
+                ...current,
+                pages: [
+                  ...current.pages,
+                  {
+                    conversation: summary,
+                    selectedLeafId: currentAssistantId,
+                    messages: [
+                      {
+                        id: oldestUserId,
+                        parentMessageId: null,
+                        role: "user",
+                        content: [{ type: "text", text: "Pregunta inicial" }],
+                        createdAt: "2026-08-06T11:59:58.000Z",
+                        siblingCount: 0,
+                      },
+                      {
+                        id: oldestAssistantId,
+                        parentMessageId: oldestUserId,
+                        role: "assistant",
+                        content: [{ type: "text", text: "Respuesta inicial" }],
+                        createdAt: "2026-08-06T11:59:59.000Z",
+                        siblingCount: 0,
+                      },
+                    ],
+                    nextCursor: null,
+                  },
+                ],
+                pageParams: [...current.pageParams, "oldest.cursor"],
+              }
+            : current,
+      );
     });
 
     const target = await screen.findByText("Objetivo preservado", { exact: true });

@@ -711,6 +711,7 @@ export function ConversationPage() {
 
   useLayoutEffect(() => {
     if (
+      presentedMessageCount > 0 &&
       messageContentReady &&
       searchHighlight?.phase === "hold" &&
       searchPositionIntent?.conversationId === conversationId &&
@@ -724,6 +725,7 @@ export function ConversationPage() {
     conversationId,
     conversationScroll.positionMessage,
     messageContentReady,
+    presentedMessageCount,
     searchHighlight,
     searchPositionIntent,
   ]);
