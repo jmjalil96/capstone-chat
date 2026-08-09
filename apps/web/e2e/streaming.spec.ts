@@ -1,4 +1,4 @@
-import { expect, type Page, test } from "@playwright/test";
+import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import { copy } from "../src/copy";
 import { browserMessage, browserUuid, installStreamingFixture } from "./support/streaming-fixture";
@@ -18,6 +18,29 @@ async function navigateFromConversationMenu(page: Page, title: string): Promise<
   await expect(drawer).toBeVisible();
   await drawer.getByRole("link", { name: title }).click();
   await expect(drawer).not.toBeVisible();
+}
+
+async function waitForSettledScrollTop(scroll: Locator): Promise<void> {
+  let previousTop: number | undefined;
+  let stableSamples = 0;
+  await expect
+    .poll(
+      async () => {
+        const currentTop = await scroll.evaluate((container) => container.scrollTop);
+        stableSamples =
+          previousTop !== undefined && Math.abs(currentTop - previousTop) < 1
+            ? stableSamples + 1
+            : 0;
+        previousTop = currentTop;
+        return stableSamples;
+      },
+      {
+        // WebKit can keep applying a wheel gesture after Playwright's wheel promise resolves.
+        intervals: [100, 100, 100, 100, 100, 100, 100, 100, 100, 100],
+        timeout: 3_000,
+      },
+    )
+    .toBeGreaterThanOrEqual(3);
 }
 
 test("@critical-stream keeps conversation streams isolated across navigation and stops one safely", async ({
@@ -262,7 +285,7 @@ test("@critical-stream follows growth, respects manual scrolling, and jumps to t
   await expect
     .poll(() => scroll.evaluate((container) => container.scrollTop))
     .toBeLessThan(grownGeometry.scrollTop - 96);
-  const disengagedTop = await scroll.evaluate((container) => container.scrollTop);
+  await waitForSettledScrollTop(scroll);
   const selectedText = await streamedContent.evaluate((message) => {
     const walker = document.createTreeWalker(message, NodeFilter.SHOW_TEXT);
     for (let text = walker.nextNode(); text; text = walker.nextNode()) {
@@ -281,6 +304,7 @@ test("@critical-stream follows growth, respects manual scrolling, and jumps to t
     throw new Error("The streamed response has no selectable Markdown fragment");
   });
   expect(selectedText).toBe("Selección estable");
+  const disengagedTop = await scroll.evaluate((container) => container.scrollTop);
   await expect(sentAssistant).toContainText("Contenido no visto 12.");
   const jump = page.getByRole("button", { name: copy.conversations.scroll.jumpToLatest });
   await expect(jump).toBeVisible();
