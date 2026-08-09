@@ -1,17 +1,17 @@
 # Capstone Chat
 
-Capstone Chat is an internal AI chat product. The repository currently implements the Phase 7
-compaction and administration checkpoint. Approved employees can use the complete conversation
-experience, choose Fast, Balanced, or Pro for each next response, and continue long selected
-branches through bounded, backend-owned context compaction. The backend owns the exact model
-mapping, privacy route, output bounds, employee concurrency, monthly workspace budget,
-reservation, authoritative usage settlement, and every administrative rule.
+Capstone Chat is an internal AI chat product. The repository implements the Phase 8 production-
+hardening checkpoint: one non-root container serves the branded SPA and Fastify API, transactional
+identity email has a bounded Resend adapter, content-free telemetry can export to New Relic over
+OTLP, and the deployment, recovery, load, browser, accessibility, and operator gates are committed.
+Approved employees can use the complete conversation experience, choose Fast, Balanced, or Pro for
+each next response, and continue long selected branches through bounded backend-owned compaction.
 
 Development and automated tests still default to the deterministic zero-cost `FakeModelGateway`.
 Real inference is an explicit `MODEL_GATEWAY=openrouter` opt-in and requires a dedicated key, a live
-validated catalog, and a fresh privacy attestation. The same deterministic fake covers chat and
-compaction locally. Transactional email, production telemetry, and production deployment remain
-outside this milestone.
+validated catalog, and a fresh privacy attestation. No Render, Resend, New Relic, DNS, paid
+OpenRouter, or recovery resource is created by repository setup. Production acceptance remains a
+separate operator exercise with fresh authorization and evidence from the committed runbooks.
 
 ## Prerequisites
 
@@ -184,14 +184,16 @@ approval's role may be corrected before activation; an active or deactivated lif
 fails without silently changing access. The employee uses the ordinary `/sign-up` flow and chooses
 their own 12–128 character password.
 
-Deactivate an employee and revoke their database sessions:
+Deactivate an employee, durably cancel active chat/compaction work, and revoke database sessions:
 
 ```sh
 pnpm identity:deactivate --workspace capstone --email employee@example.test
 ```
 
-Deactivation blocks authorization before session cleanup and is safe to retry. The same operations
-are available to administrators in the browser.
+Deactivation blocks authorization before cleanup, protects the final active administrator, and is
+safe to retry. If cleanup is reported incomplete, repeat the exact command after correcting the
+database/connectivity failure; access remains blocked between attempts. The same operations are
+available to administrators in the browser.
 
 ## Administration
 
@@ -211,10 +213,11 @@ and a session authenticated within the last 15 minutes for every mutation.
   still-reserved cost and groups content-free token/cost metadata by employee, tier, and purpose
   (`chat` or `compaction`). It never exposes conversations, prompts, responses, or summaries.
 
-The development fake sender delivers administrator invitations to `/api/dev/mailbox`. No
-transactional email provider is implied by this milestone. If a mutation reports that the session
-must be refreshed, sign out and sign in again; the application does not collect credentials inside
-the administration area.
+The development fake sender delivers administrator invitations to `/api/dev/mailbox`. Production
+uses the bounded native-fetch Resend adapter and the verified `mail.capstone.com.ec` sender; it does
+not add an email SDK, queue, webhook, tracking, or retained delivery body. If a mutation reports
+that the session must be refreshed, sign out and sign in again; the application does not collect
+credentials inside the administration area.
 
 ## Identity and recovery flow
 
@@ -321,7 +324,8 @@ retry. In simulated mode both the compaction and chat calls are deterministic an
 OpenRouter mode both are separately reserved and settled.
 
 The committed migration history includes the conversation/search tables, durable generation
-lifecycle, Phase 6 model-policy/accounting state, and Phase 7 compaction and administration state.
+lifecycle, model-policy/accounting state, compaction and administration state, and Phase 8's
+content-free client-error limits and recovery markers.
 Apply the complete history with `pnpm db:migrate` after updating a checkout; API replicas never
 migrate during startup. If conversation, model-tier, response, or administration routes fail after
 an update, confirm the migrations ran against the selected `DATABASE_URL` before investigating
@@ -367,9 +371,15 @@ report that the service is unavailable. Restart it with `docker compose start po
 | `pnpm check` | Run Biome formatting, linting, and import checks |
 | `pnpm typecheck` | Run strict TypeScript checks in each executable TypeScript workspace |
 | `pnpm test` | Run protocol, API unit/PostgreSQL integration, and deterministic web tests |
-| `pnpm test:e2e` | Run Playwright in Chromium plus critical streaming flows in Firefox and WebKit |
+| `pnpm test:e2e` | Run Playwright's configured desktop, critical-flow, accessibility, and CI browser/device matrix |
+| `pnpm test:load` | Run the separately authorized, isolated load harness; this is not part of ordinary CI |
 | `pnpm build` | Build the protocol, production API JavaScript, and static web assets |
-| `pnpm run ci` | Run `check`, `typecheck`, `test`, and `build` in order |
+| `pnpm report:bundle` | Report production assets and prove the admin route is absent from the initial module graph |
+| `pnpm verify:repository` | Scan nonignored repository text, dependencies, and architecture boundaries |
+| `pnpm verify:operations` | Validate the Render Blueprint, runbook links/commands, and recovery-evidence validator |
+| `pnpm verify:recovery -- <safe-evidence.json>` | Validate accepted, content-free PITR evidence and recompute RPO/RTO limits |
+| `pnpm smoke:container -- <image> <full-revision>` | Start and probe a built image against a migrated loopback test database |
+| `pnpm run ci` | Run repository checks, operations validation, types, tests, builds, and the bundle report |
 | `pnpm db:migrate` | Apply every committed Drizzle migration to `DATABASE_URL` |
 | `pnpm identity:bootstrap …` | Create the initial workspace and pending administrator approval |
 | `pnpm identity:approve …` | Create an idempotent pending employee approval |
@@ -398,10 +408,43 @@ or contact a real email or model provider. The broad suite remains Chromium-firs
 scroll, Markdown-overflow, copy, and branch interactions also run in Firefox and WebKit with isolated
 mutable fixture conversations.
 
-GitHub Actions runs formatting/linting, type checking, clean migrations, unit and PostgreSQL
-integration tests, production builds, and the non-root API image as named steps in one quality job.
+The opt-in capacity harness is intentionally outside `pnpm test` and CI. Its acceptance path runs
+the production-built OCI image with the committed Render `pro_plus` candidate limits (4 CPU and 8
+GB RAM) against a newly created, empty disposable PostgreSQL 18 database. Generate a test-only
+secret, migrate that database, and build the exact candidate image:
+
+```sh
+export CAPSTONE_LOAD_DATABASE_URL='<isolated PostgreSQL URL>'
+export CAPSTONE_LOAD_AUTH_SECRET='<generated test-only value of at least 32 characters>'
+DATABASE_URL="$CAPSTONE_LOAD_DATABASE_URL" pnpm db:migrate
+docker build --file apps/api/Dockerfile \
+  --build-arg RENDER_GIT_COMMIT="$(git rev-parse HEAD)" \
+  --tag capstone-chat:phase8-load .
+```
+
+Run the unchanged five measured waves. Before their warmed heap/RSS baseline, the harness runs five
+complete unmeasured workload waves so lazy schema compilation and V8 tiering are finite warm-up
+rather than false leak evidence. The wrapper constrains and verifies the image as the non-root
+`node` user, starts its compiled load entry point with explicit garbage collection, waits for
+readiness, runs the harness, and always removes the container:
+
+```sh
+pnpm test:load:container -- capstone-chat:phase8-load
+```
+
+The compiled server injects the deterministic load gateway through a test-only process entry point;
+it never contacts OpenRouter. The wrapper accepts only a loopback disposable database URL. The
+harness additionally refuses the production origin, credentials in the target URL, missing
+confirmations, a nonempty or mismatched fixture database, or an invalid NDJSON lifecycle. Its report
+contains only safe identifiers, counts, resource measurements, and latency percentiles. Delete the
+disposable database after the wrapper stops. A source/`tsx` load server can still aid debugging, but
+it is not capacity evidence.
+
+GitHub Actions runs formatting/linting, repository and operations validation, type checking, clean
+migrations, unit/PostgreSQL integration tests, production builds, the bundle report, dependency
+audit, and a non-root built-image startup/static/API smoke as named steps in one quality job.
 Playwright remains a separate job so browser failures and artifacts are isolated. CI uses only
-synthetic identities, a test-only auth secret, and fake delivery.
+synthetic identities, a test-only auth secret, fake providers, and the local PostgreSQL service.
 
 ## Auth schema regeneration
 
@@ -430,20 +473,27 @@ object through the process.
 | `DATABASE_URL` | `postgresql://capstone:capstone@127.0.0.1:5432/capstone_chat` | PostgreSQL connection URL |
 | `PUBLIC_ORIGIN` | `http://localhost:5173` | Exact browser origin, with no path; HTTPS is required in production |
 | `BETTER_AUTH_SECRET` | `capstone-chat-local-auth-secret-not-for-production-use` | Better Auth signing secret, at least 32 characters; explicit and secret in production |
-| `EMAIL_DELIVERY` | `fake` | `fake` for development/test or `disabled`; fake is prohibited in production |
+| `EMAIL_DELIVERY` | `fake` | `fake` or `disabled` outside production; production requires `resend` |
+| `RESEND_API_KEY` | unset | Backend-only Resend key required with `EMAIL_DELIVERY=resend` |
+| `EMAIL_FROM` | unset | Approved sender; production requires `Capstone Chat <no-reply@mail.capstone.com.ec>` |
 | `LOG_LEVEL` | `info` | Pino log level |
 | `MODEL_GATEWAY` | `fake` | `fake` or `openrouter`; production requires `openrouter` |
 | `OPENROUTER_API_KEY` | unset | Backend-only key required when `MODEL_GATEWAY=openrouter` |
+| `DEPLOYMENT_REVISION` | `development` | Safe release label outside production |
+| `RENDER_GIT_COMMIT` | unset | Full commit identifier supplied by Render and required in production |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | New Relic regional HTTPS OTLP origin; required in production |
+| `OTEL_EXPORTER_OTLP_HEADERS` | unset | Exactly one backend-only `api-key=…` header; required in production |
 
 `CAPSTONE_WEB_PORT` selects Vite's local port, and `CAPSTONE_POSTGRES_PORT` selects the Compose host
 port. They default to 5173 and 5432 and are not exposed in the browser bundle. If the web port
 changes, update `PUBLIC_ORIGIN` to the same browser origin and port so authentication's exact-origin
 check remains aligned.
 
-Phase 2 fixes `trustProxy` to `false` in development, test, and production because no edge proxy has
-been selected. Raw browser forwarding headers are not trusted. Startup logs and request-completion
-logs contain only safe metadata; database URLs, request bodies, cookies, passwords, tokens, and
-email bodies are excluded.
+Fastify keeps unrestricted proxy trust disabled. Development and test use the socket address;
+production accepts exactly one syntactically valid `CF-Connecting-IP` value from Render's selected
+edge contract and rejects an absent or ambiguous value. Startup, request, email, model, telemetry,
+and recovery output excludes database URLs, bodies, cookies, credentials, tokens, provider payloads,
+and employee content.
 
 ## Identity security policy
 
@@ -461,11 +511,11 @@ email bodies are excluded.
   `frame-ancestors 'none'`, and `object-src 'none'`, plus `Permissions-Policy`,
   `Referrer-Policy: no-referrer`, and `X-Content-Type-Options: nosniff`.
 
-A future static host and edge must apply an equivalent policy to static web responses, preserve the
-exact-origin boundary, and add HSTS only on verified production HTTPS. That edge configuration,
-proxy trust, and HSTS verification belong to Phase 8.
+The production container applies the same policy to API and static responses and adds one-year HSTS
+only in the locked HTTPS production mode. Fingerprinted assets are immutable; the SPA shell and API
+responses are not stored as immutable content.
 
-## Production image and limitation
+## Production artifact and acceptance boundary
 
 Build both applications and the API image from the repository root:
 
@@ -474,11 +524,11 @@ pnpm build
 docker build --file apps/api/Dockerfile --tag capstone-chat-api .
 ```
 
-The Vite output is static content in `apps/web/dist`; no production static host has been selected.
-The API image runs as the non-root `node` user and includes the compiled runtime and committed
-migrations. Building the image verifies the artifact. Phase 7 includes the production OpenRouter
-adapter, compaction, and administration runtime, but does not select or configure a deployment
-platform.
+The API image runs as the non-root `node` user and includes the compiled runtime, migrations, and
+`apps/web/dist`. Fastify serves the SPA and API from the same origin with explicit API-404, fallback,
+cache, security-header, and streaming boundaries. The committed [Render Blueprint](./render.yaml)
+describes one Virginia Web Service and one private PostgreSQL database; its paid sizes remain
+candidates until the authorized production-shaped rehearsal supplies evidence.
 
 The migration job receives only `NODE_ENV` and `DATABASE_URL`; it does not receive the Better Auth
 secret, public origin, or email configuration. Apply migrations as a separate deployment action
@@ -492,17 +542,23 @@ docker run --rm \
   node apps/api/dist/database/migrate-command.js
 ```
 
-`EMAIL_DELIVERY=disabled` is an honest validation mode, not a launch-capable email setup:
-verification and password-recovery sends fail safely. `EMAIL_DELIVERY=fake` is rejected during
-production startup. The fake model gateway is also rejected in production; OpenRouter mode requires
-its key and a previously bootstrapped real policy with a fresh privacy attestation. A
-transactional email provider, managed secret wiring, deployment venue, static host, and edge
-configuration remain deliberately unselected until production hardening.
+`EMAIL_DELIVERY=disabled` is an honest non-production validation mode, not a launch-capable setup.
+Production rejects disabled/fake email, the fake model gateway, a noncanonical origin, absent release
+metadata, or incomplete New Relic OTLP configuration. OpenRouter mode requires its key and a
+previously bootstrapped real policy with a fresh privacy attestation. Identity action credentials
+are delivered in URL fragments, removed immediately when the SPA starts, kept only in memory, and
+sent to Better Auth in JSON rather than entering request paths, queries, storage, or referrers.
 
 Bootstrap and approval commit their database change before attempting invitation delivery. With
 delivery disabled, the command reports `"outcome":"approval-committed"` and
 `"retrySafe":true`, exits nonzero, and sends no invitation; the persisted operation remains safe to
 retry after a provider is configured.
+
+Repository implementation does not authorize or perform deployment. Follow the indexed
+[operations runbooks](./docs/operations/README.md) for provisioning, domain/TLS, deploy/rollback,
+provider/budget setup, employee access, incidents, secret rotation, and isolated PITR recovery.
+Those runbooks require content-free evidence and fresh approval before external mutation, paid
+inference, disposable Render resources, or recovery-resource creation.
 
 ## Workspace boundaries
 

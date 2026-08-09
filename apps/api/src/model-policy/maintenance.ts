@@ -1,3 +1,4 @@
+import type { ApplicationTelemetry } from "../observability/telemetry-contract.js";
 import type { ReconciliationResult } from "./budget-service.js";
 import type { CatalogRefreshSummary } from "./catalog-refresh.js";
 import { costControlTuning } from "./settings.js";
@@ -22,6 +23,7 @@ export interface CostControlMaintenanceOptions {
   readonly budget: MaintenanceBudget;
   readonly onFailure?: ((metadata: MaintenanceFailureMetadata) => void) | undefined;
   readonly refreshCatalog: (signal: AbortSignal) => Promise<CatalogRefreshSummary>;
+  readonly telemetry?: Pick<ApplicationTelemetry, "recordReconciliation"> | undefined;
 }
 
 export interface CostControlMaintenance {
@@ -71,6 +73,16 @@ export function createCostControlMaintenance(
     try {
       reconciliation = await options.budget.reconcileExpiredOnce();
     } catch (error: unknown) {
+      try {
+        options.telemetry?.recordReconciliation({
+          claimed: 0,
+          errors: 1,
+          oldestDueLagMs: 0,
+          settled: 0,
+        });
+      } catch {
+        // Telemetry cannot affect cost-control recovery.
+      }
       report("reservation-reconciliation", error);
     }
 

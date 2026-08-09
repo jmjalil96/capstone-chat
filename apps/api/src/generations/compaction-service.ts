@@ -13,6 +13,11 @@ import {
 } from "../model-policy/budget-service.js";
 import { unitPricePerMillion } from "../model-policy/money.js";
 import type { ModelPolicyMode, ResolvedTierPolicy } from "../model-policy/service.js";
+import type {
+  ApplicationTelemetry,
+  ModelCallTelemetry,
+  TelemetryOutcome,
+} from "../observability/telemetry-contract.js";
 import {
   contextCompactionTuning,
   materializeCompactedChat,
@@ -29,6 +34,7 @@ import type {
   GenerationRequest,
   ModelGateway,
 } from "./model-gateway.js";
+import { gatewayTransportElapsedMilliseconds } from "./model-gateway.js";
 
 export type CompactionExecutionResult =
   | { readonly chat: PlannedChatContext; readonly kind: "compacted" }
@@ -72,6 +78,7 @@ interface TerminalAccounting {
 
 interface TerminalizationResult {
   readonly reusable: boolean;
+  readonly settledReservation: boolean;
   readonly won: boolean;
 }
 
@@ -159,8 +166,27 @@ export function createCompactionService(input: {
   readonly database: AppDatabase;
   readonly gateway: ModelGateway;
   readonly mode: ModelPolicyMode;
+  readonly telemetry?:
+    | Pick<
+        ApplicationTelemetry,
+        | "changeActiveProviderCalls"
+        | "recordCompaction"
+        | "recordGeneration"
+        | "recordReservationSettlement"
+        | "recordSettlement"
+        | "startModelCall"
+      >
+    | undefined;
 }) {
   const { budget, database, gateway, mode } = input;
+
+  function observe(action: () => void): void {
+    try {
+      action();
+    } catch {
+      // Telemetry cannot affect compaction or its fallback path.
+    }
+  }
 
   async function startCompaction(
     context: CompactionExecutionInput,
@@ -386,7 +412,9 @@ export function createCompactionService(input: {
     generationId: string,
     terminal: TerminalCompactionInput,
   ): Promise<TerminalizationResult> {
-    return database.transaction(async (transaction) => {
+    const settlementStartedAt = performance.now();
+    let settledReservation = false;
+    const result = await database.transaction(async (transaction) => {
       const conversationRows = await transaction
         .select({ id: conversations.id })
         .from(conversations)
@@ -400,7 +428,7 @@ export function createCompactionService(input: {
         .limit(1)
         .for("update");
       if (conversationRows[0] === undefined) {
-        return { reusable: false, won: false };
+        return { reusable: false, settledReservation: false, won: false };
       }
       const generationRows = await transaction
         .select()
@@ -418,7 +446,7 @@ export function createCompactionService(input: {
         .for("update");
       const generation = generationRows[0];
       if (generation === undefined || generation.status !== "active") {
-        return { reusable: false, won: false };
+        return { reusable: false, settledReservation: false, won: false };
       }
       const compactionRows = await transaction
         .select()
@@ -435,7 +463,7 @@ export function createCompactionService(input: {
         .for("update");
       const compaction = compactionRows[0];
       if (compaction === undefined || compaction.status !== "active") {
-        return { reusable: false, won: false };
+        return { reusable: false, settledReservation: false, won: false };
       }
       const firstTokenAt =
         generation.firstTokenAt ??
@@ -466,6 +494,7 @@ export function createCompactionService(input: {
         if (generation.accountingStatus === "reserved" && !settled) {
           throw new Error("Compaction accounting could not be settled");
         }
+        settledReservation = generation.accountingStatus === "reserved" && settled;
       } else if (terminal.settleDeterministicZero && generation.accountingStatus === "reserved") {
         const settled = await budget.settleAuthoritativeUsageInTransaction(
           transaction,
@@ -476,6 +505,7 @@ export function createCompactionService(input: {
         if (!settled) {
           throw new Error("Compaction zero-cost accounting could not be settled");
         }
+        settledReservation = true;
       }
 
       const reusable =
@@ -526,8 +556,22 @@ export function createCompactionService(input: {
             eq(conversationCompactions.status, "active"),
           ),
         );
-      return { reusable, won: true };
+      return { reusable, settledReservation, won: true };
     });
+    if (result.won) {
+      observe(() =>
+        input.telemetry?.recordSettlement(
+          "fast",
+          "compaction",
+          terminal.status,
+          performance.now() - settlementStartedAt,
+        ),
+      );
+    }
+    if (result.won && result.settledReservation) {
+      observe(() => input.telemetry?.recordReservationSettlement("actual"));
+    }
+    return result;
   }
 
   async function terminalizeWithLateAccounting(
@@ -595,6 +639,7 @@ export function createCompactionService(input: {
   }
 
   async function cancelPreparingChat(context: CompactionExecutionInput): Promise<void> {
+    let settledReservation = false;
     await database.transaction(async (transaction) => {
       const conversationRows = await transaction
         .select({ revision: conversations.revision })
@@ -643,6 +688,7 @@ export function createCompactionService(input: {
         if (!settled) {
           throw new Error("Cancelled preparing chat accounting could not be settled");
         }
+        settledReservation = true;
       }
       await transaction
         .update(generations)
@@ -672,9 +718,12 @@ export function createCompactionService(input: {
           ),
         );
     });
+    if (settledReservation) {
+      observe(() => input.telemetry?.recordReservationSettlement("actual"));
+    }
   }
 
-  async function execute(
+  async function executeWorkflow(
     context: CompactionExecutionInput,
     signal: AbortSignal,
   ): Promise<CompactionExecutionResult> {
@@ -696,174 +745,322 @@ export function createCompactionService(input: {
     let providerGenerationId: string | null = null;
     let terminalEvent: GatewayEvent | null = null;
     let usageLookupAttempted = false;
-    try {
-      for await (const event of gateway.stream(started.request, signal)) {
-        if (event.type === "generation.metadata") {
-          providerGenerationId =
-            safeMetadataValue(event.metadata.providerGenerationId) ?? providerGenerationId;
-          await recordMetadata(started.generationId, event.metadata);
-          continue;
-        }
-        if (event.type === "content.delta") {
-          if (
-            event.text.length === 0 ||
-            !event.text.isWellFormed() ||
-            hasUnsupportedControlCharacter(event.text)
-          ) {
-            throw new Error("Compaction output is invalid");
-          }
-          const deltaBytes = Buffer.byteLength(event.text, "utf8");
-          if (contentBytes + deltaBytes > contextCompactionTuning.maximumSummaryBytes) {
-            throw new Error("Compaction output exceeded its accumulator");
-          }
-          content += event.text;
-          contentBytes += deltaBytes;
-          firstTokenAt ??= new Date();
-          continue;
-        }
-        terminalEvent = event;
-        break;
+    const modelCallStartedAt = performance.now();
+    let modelCallStoppedAt: number | undefined;
+    let modelTransportDurationMilliseconds: number | undefined;
+    let modelOutcome: TelemetryOutcome = "failed";
+    let modelOutcomeObserved = false;
+    let modelUsage: GatewayUsage | undefined;
+    let modelAccounting: GatewayAccounting | undefined;
+    let providerHeadersObserved = false;
+    let providerCallActive = true;
+    let providerTokenObserved = false;
+    let modelCall: ModelCallTelemetry | undefined;
+    observe(() => {
+      modelCall = input.telemetry?.startModelCall({
+        contextMode: "full",
+        generationId: started.generationId,
+        privacyPolicyVersion:
+          started.request.route === undefined ? "not_applicable" : "openrouter-privacy-v1",
+        purpose: "compaction",
+        tier: "fast",
+      });
+    });
+    observe(() => modelCall?.requestSent());
+    observe(() => input.telemetry?.changeActiveProviderCalls("compaction", 1));
+
+    function stopProviderObservation(): void {
+      modelCallStoppedAt ??= performance.now();
+      if (!providerCallActive) {
+        return;
       }
-    } catch (error: unknown) {
-      const lookup = await lookupTerminalAccounting(providerGenerationId, usageLookupAttempted);
-      if (isAbort(error, signal)) {
+      providerCallActive = false;
+      observe(() => input.telemetry?.changeActiveProviderCalls("compaction", -1));
+    }
+
+    try {
+      try {
+        for await (const event of gateway.stream(started.request, signal)) {
+          if (event.type === "response.headers" && !providerHeadersObserved) {
+            providerHeadersObserved = true;
+            observe(() =>
+              modelCall?.responseStarted(
+                gatewayTransportElapsedMilliseconds(event) ??
+                  performance.now() - modelCallStartedAt,
+              ),
+            );
+          }
+          if (event.type === "content.delta" && !providerTokenObserved) {
+            providerTokenObserved = true;
+            observe(() =>
+              modelCall?.firstToken(
+                gatewayTransportElapsedMilliseconds(event) ??
+                  performance.now() - modelCallStartedAt,
+              ),
+            );
+          }
+          if (event.type === "generation.metadata") {
+            providerGenerationId =
+              safeMetadataValue(event.metadata.providerGenerationId) ?? providerGenerationId;
+            await recordMetadata(started.generationId, event.metadata);
+            continue;
+          }
+          if (event.type === "response.headers") {
+            continue;
+          }
+          if (event.type === "content.delta") {
+            if (
+              event.text.length === 0 ||
+              !event.text.isWellFormed() ||
+              hasUnsupportedControlCharacter(event.text)
+            ) {
+              throw new Error("Compaction output is invalid");
+            }
+            const deltaBytes = Buffer.byteLength(event.text, "utf8");
+            if (contentBytes + deltaBytes > contextCompactionTuning.maximumSummaryBytes) {
+              throw new Error("Compaction output exceeded its accumulator");
+            }
+            content += event.text;
+            contentBytes += deltaBytes;
+            firstTokenAt ??= new Date();
+            continue;
+          }
+          terminalEvent = event;
+          modelTransportDurationMilliseconds =
+            gatewayTransportElapsedMilliseconds(event) ?? performance.now() - modelCallStartedAt;
+          stopProviderObservation();
+          modelOutcomeObserved = true;
+          if (event.type === "response.completed") {
+            modelOutcome = "completed";
+            modelUsage = event.usage;
+            modelAccounting = event.accounting;
+          } else {
+            modelOutcome = event.providerOutcome === undefined ? "failed" : "completed";
+            modelUsage = event.usage;
+            modelAccounting = event.accounting?.actual;
+          }
+          break;
+        }
+        stopProviderObservation();
+      } catch (error: unknown) {
+        stopProviderObservation();
+        modelOutcome = isAbort(error, signal) ? "cancelled" : "failed";
+        modelOutcomeObserved = true;
+        if (isAbort(error, signal)) {
+          observe(() => modelCall?.cancelRequested());
+        }
+        const lookup = await lookupTerminalAccounting(providerGenerationId, usageLookupAttempted);
+        if (lookup !== null) {
+          modelUsage = lookup.usage;
+          modelAccounting = lookup.accounting;
+        }
+        if (isAbort(error, signal)) {
+          await terminalizeWithLateAccounting(context, started.generationId, {
+            ...(lookup ?? {}),
+            content,
+            errorCode: null,
+            firstTokenAt,
+            reason: "cancelled",
+            status: "cancelled",
+          });
+          await cancelPreparingChat(context);
+          return { kind: "cancelled" };
+        }
         await terminalizeWithLateAccounting(context, started.generationId, {
           ...(lookup ?? {}),
           content,
-          errorCode: null,
+          errorCode: "GENERATION_FAILED",
           firstTokenAt,
-          reason: "cancelled",
-          status: "cancelled",
+          reason: "error",
+          status: usefulText(content) ? "incomplete" : "failed",
         });
-        await cancelPreparingChat(context);
-        return { kind: "cancelled" };
+        if (!(await promoteChat(context, "fallback"))) {
+          return { kind: "cancelled" };
+        }
+        return { chat: context.plan.fallback, kind: "fallback" };
+      } finally {
+        stopProviderObservation();
       }
-      await terminalizeWithLateAccounting(context, started.generationId, {
-        ...(lookup ?? {}),
-        content,
-        errorCode: "GENERATION_FAILED",
-        firstTokenAt,
-        reason: "error",
-        status: usefulText(content) ? "incomplete" : "failed",
-      });
-      if (!(await promoteChat(context, "fallback"))) {
-        return { kind: "cancelled" };
-      }
-      return { chat: context.plan.fallback, kind: "fallback" };
-    }
 
-    if (terminalEvent?.type === "response.completed") {
-      providerGenerationId =
-        safeMetadataValue(terminalEvent.accounting?.metadata.providerGenerationId) ??
-        providerGenerationId;
-      if (!validUsage(terminalEvent.usage)) {
-        terminalEvent = null;
-      } else {
-        const eventAccounting =
-          terminalEvent.accounting === undefined
-            ? null
-            : normalizeTerminalAccounting(
-                terminalEvent.usage,
-                terminalEvent.accounting,
-                mode === "openrouter",
-              );
-        const lookup =
-          eventAccounting === null
-            ? await lookupTerminalAccounting(providerGenerationId, usageLookupAttempted)
-            : null;
-        const terminalAccounting = lookup ?? eventAccounting;
-        if (mode === "openrouter" && terminalAccounting === null) {
-          await terminalizeWithLateAccounting(context, started.generationId, {
+      if (terminalEvent?.type === "response.completed") {
+        providerGenerationId =
+          safeMetadataValue(terminalEvent.accounting?.metadata.providerGenerationId) ??
+          providerGenerationId;
+        if (!validUsage(terminalEvent.usage)) {
+          terminalEvent = null;
+        } else {
+          const eventAccounting =
+            terminalEvent.accounting === undefined
+              ? null
+              : normalizeTerminalAccounting(
+                  terminalEvent.usage,
+                  terminalEvent.accounting,
+                  mode === "openrouter",
+                );
+          const lookup =
+            eventAccounting === null
+              ? await lookupTerminalAccounting(providerGenerationId, usageLookupAttempted)
+              : null;
+          const terminalAccounting = lookup ?? eventAccounting;
+          if (terminalAccounting !== null) {
+            modelUsage = terminalAccounting.usage;
+            modelAccounting = terminalAccounting.accounting;
+          }
+          if (mode === "openrouter" && terminalAccounting === null) {
+            await terminalizeWithLateAccounting(context, started.generationId, {
+              content,
+              errorCode: "GENERATION_FAILED",
+              firstTokenAt,
+              reason: "error",
+              status: usefulText(content) ? "incomplete" : "failed",
+            });
+            if (!(await promoteChat(context, "fallback"))) {
+              return { kind: "cancelled" };
+            }
+            return { chat: context.plan.fallback, kind: "fallback" };
+          }
+          const terminalized = await terminalizeWithLateAccounting(context, started.generationId, {
+            ...(terminalAccounting ?? {}),
             content,
-            errorCode: "GENERATION_FAILED",
+            errorCode:
+              terminalEvent.reason === "stop" && !usefulText(content) ? "EMPTY_RESPONSE" : null,
             firstTokenAt,
-            reason: "error",
-            status: usefulText(content) ? "incomplete" : "failed",
+            reason:
+              terminalEvent.reason === "stop" && !usefulText(content)
+                ? "error"
+                : terminalEvent.reason,
+            status:
+              terminalEvent.reason === "stop" && !usefulText(content) ? "failed" : "completed",
+            usage: terminalAccounting?.usage ?? terminalEvent.usage,
           });
+          if (terminalized.reusable && context.plan.strategy === "normal") {
+            const chat = materializeCompactedChat(context.plan, content);
+            if (!(await promoteChat(context, "compacted"))) {
+              return { kind: "cancelled" };
+            }
+            return { chat, kind: "compacted" };
+          }
           if (!(await promoteChat(context, "fallback"))) {
             return { kind: "cancelled" };
           }
           return { chat: context.plan.fallback, kind: "fallback" };
         }
-        const terminalized = await terminalizeWithLateAccounting(context, started.generationId, {
+      }
+
+      if (terminalEvent?.type === "response.failed") {
+        usageLookupAttempted = terminalEvent.usageLookupAttempted === true;
+        providerGenerationId =
+          safeMetadataValue(terminalEvent.accounting?.metadata?.providerGenerationId) ??
+          safeMetadataValue(terminalEvent.accounting?.actual?.metadata.providerGenerationId) ??
+          providerGenerationId;
+        const actual = terminalEvent.accounting?.actual;
+        const completedOutcome = terminalEvent.providerOutcome;
+        const eventAccountingCandidate =
+          actual !== undefined &&
+          terminalEvent.usage !== undefined &&
+          validUsage(terminalEvent.usage)
+            ? { accounting: actual, usage: terminalEvent.usage }
+            : null;
+        const eventAccounting =
+          eventAccountingCandidate === null
+            ? null
+            : normalizeTerminalAccounting(
+                eventAccountingCandidate.usage,
+                eventAccountingCandidate.accounting,
+                mode === "openrouter",
+              );
+        const lookup =
+          eventAccounting === null || eventAccounting.accounting.metadata.provider === undefined
+            ? await lookupTerminalAccounting(providerGenerationId, usageLookupAttempted)
+            : null;
+        const terminalAccounting = lookup ?? eventAccounting;
+        if (terminalAccounting !== null) {
+          modelUsage = terminalAccounting.usage;
+          modelAccounting = terminalAccounting.accounting;
+        }
+        const accountedOutcome = completedOutcome !== undefined && terminalAccounting !== null;
+        await terminalizeWithLateAccounting(context, started.generationId, {
           ...(terminalAccounting ?? {}),
           content,
-          errorCode:
-            terminalEvent.reason === "stop" && !usefulText(content) ? "EMPTY_RESPONSE" : null,
+          errorCode: accountedOutcome ? null : terminalEvent.errorCode,
           firstTokenAt,
-          reason:
-            terminalEvent.reason === "stop" && !usefulText(content)
-              ? "error"
-              : terminalEvent.reason,
-          status: terminalEvent.reason === "stop" && !usefulText(content) ? "failed" : "completed",
-          usage: terminalAccounting?.usage ?? terminalEvent.usage,
+          reason: accountedOutcome ? completedOutcome : "error",
+          settleDeterministicZero:
+            terminalAccounting === null && terminalEvent.accounting?.spendRisk === "none",
+          status: accountedOutcome ? "completed" : usefulText(content) ? "incomplete" : "failed",
         });
-        if (terminalized.reusable && context.plan.strategy === "normal") {
-          const chat = materializeCompactedChat(context.plan, content);
-          if (!(await promoteChat(context, "compacted"))) {
-            return { kind: "cancelled" };
-          }
-          return { chat, kind: "compacted" };
+      } else {
+        const lookup = await lookupTerminalAccounting(providerGenerationId, usageLookupAttempted);
+        if (lookup !== null) {
+          modelUsage = lookup.usage;
+          modelAccounting = lookup.accounting;
         }
-        if (!(await promoteChat(context, "fallback"))) {
-          return { kind: "cancelled" };
-        }
-        return { chat: context.plan.fallback, kind: "fallback" };
+        await terminalizeWithLateAccounting(context, started.generationId, {
+          ...(lookup ?? {}),
+          content,
+          errorCode: "GENERATION_FAILED",
+          firstTokenAt,
+          reason: "error",
+          status: usefulText(content) ? "incomplete" : "failed",
+        });
       }
-    }
 
-    if (terminalEvent?.type === "response.failed") {
-      usageLookupAttempted = terminalEvent.usageLookupAttempted === true;
-      providerGenerationId =
-        safeMetadataValue(terminalEvent.accounting?.metadata?.providerGenerationId) ??
-        safeMetadataValue(terminalEvent.accounting?.actual?.metadata.providerGenerationId) ??
-        providerGenerationId;
-      const actual = terminalEvent.accounting?.actual;
-      const completedOutcome = terminalEvent.providerOutcome;
-      const eventAccountingCandidate =
-        actual !== undefined && terminalEvent.usage !== undefined && validUsage(terminalEvent.usage)
-          ? { accounting: actual, usage: terminalEvent.usage }
-          : null;
-      const eventAccounting =
-        eventAccountingCandidate === null
-          ? null
-          : normalizeTerminalAccounting(
-              eventAccountingCandidate.usage,
-              eventAccountingCandidate.accounting,
-              mode === "openrouter",
-            );
-      const lookup =
-        eventAccounting === null || eventAccounting.accounting.metadata.provider === undefined
-          ? await lookupTerminalAccounting(providerGenerationId, usageLookupAttempted)
-          : null;
-      const terminalAccounting = lookup ?? eventAccounting;
-      const accountedOutcome = completedOutcome !== undefined && terminalAccounting !== null;
-      await terminalizeWithLateAccounting(context, started.generationId, {
-        ...(terminalAccounting ?? {}),
-        content,
-        errorCode: accountedOutcome ? null : terminalEvent.errorCode,
-        firstTokenAt,
-        reason: accountedOutcome ? completedOutcome : "error",
-        settleDeterministicZero:
-          terminalAccounting === null && terminalEvent.accounting?.spendRisk === "none",
-        status: accountedOutcome ? "completed" : usefulText(content) ? "incomplete" : "failed",
-      });
-    } else {
-      const lookup = await lookupTerminalAccounting(providerGenerationId, usageLookupAttempted);
-      await terminalizeWithLateAccounting(context, started.generationId, {
-        ...(lookup ?? {}),
-        content,
-        errorCode: "GENERATION_FAILED",
-        firstTokenAt,
-        reason: "error",
-        status: usefulText(content) ? "incomplete" : "failed",
-      });
+      if (!(await promoteChat(context, "fallback"))) {
+        return { kind: "cancelled" };
+      }
+      return { chat: context.plan.fallback, kind: "fallback" };
+    } finally {
+      observe(() =>
+        modelCall?.settle({
+          cachedTokens: modelAccounting?.cachedTokens,
+          completionTokens: modelUsage?.outputTokens,
+          costUsd: modelAccounting?.costUsd,
+          outcome: modelOutcomeObserved ? modelOutcome : "failed",
+          promptTokens: modelUsage?.inputTokens,
+          providerDurationMs:
+            modelTransportDurationMilliseconds ??
+            (modelCallStoppedAt ?? performance.now()) - modelCallStartedAt,
+          reasoningTokens: modelAccounting?.reasoningTokens,
+        }),
+      );
     }
+  }
 
-    if (!(await promoteChat(context, "fallback"))) {
-      return { kind: "cancelled" };
+  async function execute(
+    context: CompactionExecutionInput,
+    signal: AbortSignal,
+  ): Promise<CompactionExecutionResult> {
+    const workflowStartedAt = performance.now();
+    try {
+      const result = await executeWorkflow(context, signal);
+      const outcome: TelemetryOutcome =
+        result.kind === "compacted"
+          ? "completed"
+          : result.kind === "cancelled"
+            ? "cancelled"
+            : "failed";
+      observe(() => input.telemetry?.recordCompaction("fast", outcome));
+      observe(() =>
+        input.telemetry?.recordGeneration(
+          "fast",
+          "compaction",
+          outcome,
+          performance.now() - workflowStartedAt,
+        ),
+      );
+      return result;
+    } catch (error: unknown) {
+      observe(() => input.telemetry?.recordCompaction("fast", "failed"));
+      observe(() =>
+        input.telemetry?.recordGeneration(
+          "fast",
+          "compaction",
+          "failed",
+          performance.now() - workflowStartedAt,
+        ),
+      );
+      throw error;
     }
-    return { chat: context.plan.fallback, kind: "fallback" };
   }
 
   return Object.freeze({ cancel: cancelPreparingChat, execute });

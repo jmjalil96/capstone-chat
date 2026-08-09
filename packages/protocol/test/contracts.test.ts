@@ -134,6 +134,7 @@ describe("SessionResponseSchema", () => {
 });
 
 const validMailboxMessage = {
+  html: "<p>Confirma que este correo te pertenece.</p>",
   id: "b95e1b4f-f48b-427f-b923-4f0588cfac25",
   purpose: "verification",
   to: "employee@example.com",
@@ -170,9 +171,7 @@ describe("DevelopmentMailboxResponseSchema", () => {
 
   it.each([
     { messages: [validMailboxMessage], retained: 1 },
-    {
-      messages: [{ ...validMailboxMessage, html: "<p>Verification</p>" }],
-    },
+    { messages: [{ ...validMailboxMessage, providerId: "provider-secret" }] },
   ])("rejects extra development mailbox properties", (response) => {
     expect(Value.Check(DevelopmentMailboxResponseSchema, response)).toBe(false);
   });

@@ -71,6 +71,17 @@ export {
   AdminUsdSchema,
 } from "./admin.js";
 export {
+  CLIENT_ERROR_REPORT_MAX_ASSET_LENGTH,
+  CLIENT_ERROR_REPORT_MAX_POSITION,
+  CLIENT_ERROR_REPORT_MAX_RELEASE_LENGTH,
+  type ClientErrorKind,
+  ClientErrorKindSchema,
+  type ClientErrorReport,
+  ClientErrorReportSchema,
+  type ClientErrorRoute,
+  ClientErrorRouteSchema,
+} from "./client-error.js";
+export {
   ALTERNATIVE_CONTEXT_MAX_MESSAGE_IDS,
   type AlternativeContext,
   type AlternativeContextRequest,

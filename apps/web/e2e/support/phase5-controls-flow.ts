@@ -1,11 +1,42 @@
-import { expect, type Page } from "@playwright/test";
+import { expect, type Locator, type Page } from "@playwright/test";
 
 import { copy } from "../../src/copy";
-import { openDesktopConversation, phaseFiveBrowserFixtures } from "./phase5-fixture";
+import { openConversation, phaseFiveBrowserFixtures } from "./phase5-fixture";
 
 const simulatedResponse = "Esta es una respuesta simulada de Capstone Chat para desarrollo local.";
 
-export async function exerciseConversationControls(page: Page, projectName: string): Promise<void> {
+async function completeGenerationWithAdmissionRetry(
+  trigger: Locator,
+  completion: Locator,
+  admissionError: Locator,
+): Promise<void> {
+  let attempted = false;
+  await expect
+    .poll(
+      async () => {
+        if (await completion.isVisible().catch(() => false)) {
+          return true;
+        }
+        if (
+          (!attempted || (await admissionError.isVisible().catch(() => false))) &&
+          (await trigger.isVisible().catch(() => false)) &&
+          (await trigger.isEnabled().catch(() => false))
+        ) {
+          await trigger.click();
+          attempted = true;
+        }
+        return false;
+      },
+      { intervals: [250, 500, 1_000], timeout: 30_000 },
+    )
+    .toBe(true);
+}
+
+export async function exerciseConversationControls(
+  page: Page,
+  projectName: string,
+  isMobile: boolean,
+): Promise<void> {
   const title = Object.entries(phaseFiveBrowserFixtures.controlsTitles).find(
     ([project]) => project === projectName,
   )?.[1];
@@ -13,8 +44,10 @@ export async function exerciseConversationControls(page: Page, projectName: stri
     throw new Error(`No control fixture exists for ${projectName}`);
   }
 
-  await page.setViewportSize({ width: 1_280, height: 800 });
-  await openDesktopConversation(page, title);
+  if (!isMobile) {
+    await page.setViewportSize({ width: 1_280, height: 800 });
+  }
+  await openConversation(page, title, isMobile);
   const draft = page.getByRole("textbox", { name: copy.conversations.draft.label });
   await expect(draft).toHaveValue(phaseFiveBrowserFixtures.controlsDraft);
 
@@ -89,21 +122,36 @@ export async function exerciseConversationControls(page: Page, projectName: stri
     name: copy.conversations.messages.editLabel,
   });
   await committedEditor.fill(phaseFiveBrowserFixtures.controlsEditedRoot);
-  await rootMessageById.getByRole("button", { name: copy.conversations.messages.saveEdit }).click();
-  await expect(
-    page.getByText(phaseFiveBrowserFixtures.controlsEditedRoot, { exact: true }),
-  ).toBeVisible();
+  const editedRoot = page.getByText(phaseFiveBrowserFixtures.controlsEditedRoot, { exact: true });
+  const committedMessage = page
+    .locator(".message-user")
+    .filter({ hasText: phaseFiveBrowserFixtures.controlsEditedRoot });
+  const admissionError = page.getByText(copy.conversations.generation.errors.generationLimit, {
+    exact: true,
+  });
+  await completeGenerationWithAdmissionRetry(
+    rootMessageById.getByRole("button", { name: copy.conversations.messages.saveEdit }),
+    committedMessage.getByRole("button", { name: copy.conversations.messages.edit }),
+    admissionError,
+  );
+  await expect(editedRoot).toBeVisible();
   await expect(
     page.getByText(phaseFiveBrowserFixtures.controlsOriginalRoot, { exact: true }),
   ).toHaveCount(0);
-  await expect(page.getByText(simulatedResponse, { exact: true })).toBeVisible();
+  const generatedResponse = page.getByText(simulatedResponse, { exact: true });
+  await expect(generatedResponse).toBeVisible();
   await expect(draft).toHaveValue(phaseFiveBrowserFixtures.controlsDraft);
 
   const editedAnswer = page.locator(".message-assistant").filter({ hasText: simulatedResponse });
-  await editedAnswer.getByRole("button", { name: copy.conversations.messages.tryAgain }).click();
-  await expect(page.getByText(simulatedResponse, { exact: true })).toBeVisible();
   const retriedAnswer = page.locator(".message-assistant").filter({ hasText: simulatedResponse });
-  await expect(retriedAnswer.getByText("2 / 2", { exact: true })).toBeVisible();
+  const secondAlternative = retriedAnswer.getByText("2 / 2", { exact: true });
+  await completeGenerationWithAdmissionRetry(
+    editedAnswer.getByRole("button", { name: copy.conversations.messages.tryAgain }),
+    secondAlternative,
+    admissionError,
+  );
+  await expect(generatedResponse).toBeVisible();
+  await expect(secondAlternative).toBeVisible();
   await expect(
     page.locator(".message-user").filter({ hasText: phaseFiveBrowserFixtures.controlsEditedRoot }),
   ).toHaveCount(1);

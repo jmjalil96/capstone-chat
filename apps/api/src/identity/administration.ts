@@ -11,6 +11,7 @@ import {
 } from "../database/identity-schema.js";
 import { ApplicationError } from "../errors.js";
 import { canonicalUsd } from "../model-policy/money.js";
+import { normalizeApprovalEmail } from "./email-normalization.js";
 
 const employeePageSize = 50;
 const employeeCursorKind = "admin-employees";
@@ -44,6 +45,19 @@ interface EmployeeRow {
   readonly role: "admin" | "member";
   readonly userId: string | null;
 }
+
+type DeactivationSelector =
+  | {
+      readonly actorUserId: string;
+      readonly approvalId: string;
+      readonly kind: "approval";
+      readonly workspaceId: string;
+    }
+  | {
+      readonly kind: "identity";
+      readonly normalizedEmail: string;
+      readonly workspaceIdentity: string;
+    };
 
 function toEmployee(row: EmployeeRow): AdminEmployee {
   let status: AdminEmployee["status"];
@@ -244,23 +258,25 @@ export function createEmployeeAdministrationService(
     return get(workspaceId, approvalId);
   }
 
-  async function deactivate(input: {
-    readonly actorUserId: string;
-    readonly approvalId: string;
-    readonly workspaceId: string;
-  }): Promise<{
+  async function deactivateSelected(input: DeactivationSelector): Promise<{
     readonly employee: AdminEmployee;
     readonly repeated: boolean;
     readonly userId: string | null;
+    readonly workspaceId: string;
   }> {
     const outcome = await database.transaction(async (transaction) => {
       const workspaceRows = await transaction
         .select({ id: workspaces.id })
         .from(workspaces)
-        .where(eq(workspaces.id, input.workspaceId))
-        .limit(1)
+        .where(
+          input.kind === "approval"
+            ? eq(workspaces.id, input.workspaceId)
+            : eq(workspaces.identity, input.workspaceIdentity),
+        )
+        .limit(2)
         .for("update");
-      if (workspaceRows[0] === undefined) {
+      const workspace = workspaceRows[0];
+      if (workspace === undefined || workspaceRows.length !== 1) {
         throw new EmployeeAdministrationNotFoundError();
       }
       const approvalRows = await transaction
@@ -268,20 +284,27 @@ export function createEmployeeAdministrationService(
         .from(employeeApprovals)
         .where(
           and(
-            eq(employeeApprovals.workspaceId, input.workspaceId),
-            eq(employeeApprovals.id, input.approvalId),
+            eq(employeeApprovals.workspaceId, workspace.id),
+            input.kind === "approval"
+              ? eq(employeeApprovals.id, input.approvalId)
+              : eq(employeeApprovals.normalizedEmail, input.normalizedEmail),
           ),
         )
-        .limit(1)
+        .limit(2)
         .for("update");
       const approval = approvalRows[0];
-      if (approval === undefined) {
+      if (approval === undefined || approvalRows.length !== 1) {
         throw new EmployeeAdministrationNotFoundError();
       }
       if (approval.status === "revoked") {
-        return { repeated: true, userId: approval.userId };
+        return {
+          approvalId: approval.id,
+          repeated: true,
+          userId: approval.userId,
+          workspaceId: workspace.id,
+        };
       }
-      if (approval.userId === input.actorUserId) {
+      if (input.kind === "approval" && approval.userId === input.actorUserId) {
         throw new EmployeeAdministrationConflictError(
           "An administrator cannot deactivate their own approval",
         );
@@ -300,7 +323,7 @@ export function createEmployeeAdministrationService(
           )
           .where(
             and(
-              eq(employeeApprovals.workspaceId, input.workspaceId),
+              eq(employeeApprovals.workspaceId, workspace.id),
               eq(employeeApprovals.role, "admin"),
               eq(employeeApprovals.status, "activated"),
             ),
@@ -324,19 +347,55 @@ export function createEmployeeAdministrationService(
           .set({ deactivatedAt: changedAt, status: "deactivated", updatedAt: changedAt })
           .where(
             and(
-              eq(workspaceMemberships.workspaceId, input.workspaceId),
+              eq(workspaceMemberships.workspaceId, workspace.id),
               eq(workspaceMemberships.userId, approval.userId),
               eq(workspaceMemberships.status, "active"),
             ),
           );
       }
-      return { repeated: false, userId: approval.userId };
+      return {
+        approvalId: approval.id,
+        repeated: false,
+        userId: approval.userId,
+        workspaceId: workspace.id,
+      };
     });
-    const employee = await get(input.workspaceId, input.approvalId);
-    return Object.freeze({ employee, ...outcome });
+    const employee = await get(outcome.workspaceId, outcome.approvalId);
+    return Object.freeze({
+      employee,
+      repeated: outcome.repeated,
+      userId: outcome.userId,
+      workspaceId: outcome.workspaceId,
+    });
   }
 
-  return Object.freeze({ deactivate, get, list, pendingInvitationTarget, setSoftBudget });
+  async function deactivate(input: {
+    readonly actorUserId: string;
+    readonly approvalId: string;
+    readonly workspaceId: string;
+  }) {
+    return deactivateSelected({ ...input, kind: "approval" });
+  }
+
+  async function deactivateByIdentity(input: {
+    readonly email: string;
+    readonly workspaceIdentity: string;
+  }) {
+    return deactivateSelected({
+      kind: "identity",
+      normalizedEmail: normalizeApprovalEmail(input.email),
+      workspaceIdentity: input.workspaceIdentity,
+    });
+  }
+
+  return Object.freeze({
+    deactivate,
+    deactivateByIdentity,
+    get,
+    list,
+    pendingInvitationTarget,
+    setSoftBudget,
+  });
 }
 
 export type EmployeeAdministrationService = ReturnType<typeof createEmployeeAdministrationService>;

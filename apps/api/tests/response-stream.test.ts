@@ -17,6 +17,7 @@ import type {
 import { generationTuning } from "../src/generations/settings.js";
 
 const started: StartedResponse = {
+  admittedAt: new Date(),
   conversationId: "00000000-0000-4000-8000-000000000001",
   generationId: "00000000-0000-4000-8000-000000000002",
   messageId: "00000000-0000-4000-8000-000000000003",
@@ -52,6 +53,9 @@ const pendingStarted: StartedResponse = {
 
 type CompactionDependency = NonNullable<
   Parameters<typeof createResponseStreamCoordinator>[0]["compactions"]
+>;
+type ResponseStreamTelemetry = NonNullable<
+  Parameters<typeof createResponseStreamCoordinator>[0]["telemetry"]
 >;
 
 interface MemoryGenerationService {
@@ -134,6 +138,7 @@ async function streamUrl(
   prepareReply?: (reply: FastifyReply) => void,
   response = started,
   compactions?: CompactionDependency,
+  telemetry?: ResponseStreamTelemetry,
 ): Promise<string> {
   const server = Fastify();
   servers.push(server);
@@ -142,6 +147,7 @@ async function streamUrl(
     gateway,
     generations: memory.service,
     registry,
+    ...(telemetry === undefined ? {} : { telemetry }),
   });
   server.post("/stream", async (request, reply) => {
     prepareReply?.(reply);
@@ -474,6 +480,155 @@ describe("response stream normalization", () => {
       expect(memory.state).toMatchObject({ reason, status: "completed" });
     },
   );
+
+  it("records one safe model and workflow lifecycle for a completed chat", async () => {
+    const memory = memoryGenerationService();
+    const admittedAt = new Date(Date.now() - 1_000);
+    const coordinatorDelay = async (): Promise<void> => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    };
+    const originalRecordProviderMetadata = memory.service.recordProviderMetadata.bind(
+      memory.service,
+    );
+    const originalTerminalize = memory.service.terminalize.bind(memory.service);
+    const lifecycle: string[] = [];
+    memory.service = {
+      ...memory.service,
+      recordProviderMetadata: async (generationId, metadata) => {
+        await coordinatorDelay();
+        lifecycle.push("metadata.persisted");
+        return originalRecordProviderMetadata(generationId, metadata);
+      },
+      terminalize: async (generationId, input) => {
+        lifecycle.push("terminalization.started");
+        await coordinatorDelay();
+        return originalTerminalize(generationId, input);
+      },
+    } as GenerationService;
+    const modelCall = {
+      cancelRequested: vi.fn(),
+      firstToken: vi.fn(),
+      requestSent: vi.fn(),
+      responseStarted: vi.fn(),
+      settle: vi.fn(),
+    };
+    const telemetry = {
+      changeActiveEmployeeStreams: vi.fn(),
+      changeActiveProviderCalls: vi.fn((_purpose, change) => {
+        if (change === -1) {
+          lifecycle.push("provider.stopped");
+        }
+      }),
+      recordContextDecision: vi.fn(),
+      recordGeneration: vi.fn(),
+      recordResponseStarted: vi.fn(),
+      startModelCall: vi.fn(() => modelCall),
+    } satisfies ResponseStreamTelemetry;
+    const gateway: ModelGateway = {
+      async *stream() {
+        yield { transportElapsedMilliseconds: 12, type: "response.headers" };
+        yield {
+          metadata: { providerGenerationId: "synthetic-safe-generation" },
+          type: "generation.metadata",
+        };
+        yield {
+          text: "Safe response",
+          transportElapsedMilliseconds: 34,
+          type: "content.delta",
+        };
+        yield {
+          accounting: {
+            cachedTokens: 2,
+            costUsd: "0.000123",
+            metadata: {},
+            reasoningTokens: 1,
+          },
+          reason: "stop",
+          transportElapsedMilliseconds: 56,
+          type: "response.completed",
+          usage: { inputTokens: 11, outputTokens: 7 },
+        };
+      },
+    };
+    const events = await eventsFrom(
+      await fetch(
+        await streamUrl(
+          gateway,
+          memory,
+          undefined,
+          (reply) => {
+            const originalWrite = reply.raw.write.bind(reply.raw);
+            reply.raw.write = ((chunk: string | Uint8Array, encoding?: BufferEncoding) => {
+              const accepted =
+                encoding === undefined ? originalWrite(chunk) : originalWrite(chunk, encoding);
+              if (
+                accepted &&
+                typeof chunk === "string" &&
+                (chunk.includes('"type":"content.delta"') ||
+                  chunk.includes('"type":"response.completed"'))
+              ) {
+                setTimeout(() => reply.raw.emit("drain"), 20);
+                return false;
+              }
+              return accepted;
+            }) as typeof reply.raw.write;
+          },
+          { ...routedStarted, admittedAt, startedAt: new Date() },
+          undefined,
+          telemetry,
+        ),
+        { method: "POST" },
+      ),
+    );
+
+    expect(events.at(-1)?.type).toBe("response.completed");
+    expect(JSON.stringify(events)).not.toContain("response.headers");
+    expect(JSON.stringify(events)).not.toContain("transportElapsedMilliseconds");
+    expect(telemetry.changeActiveEmployeeStreams.mock.calls).toEqual([
+      ["balanced", 1],
+      ["balanced", -1],
+    ]);
+    expect(telemetry.changeActiveProviderCalls.mock.calls).toEqual([
+      ["chat", 1],
+      ["chat", -1],
+    ]);
+    expect(telemetry.recordContextDecision).toHaveBeenCalledOnce();
+    expect(telemetry.recordContextDecision).toHaveBeenCalledWith("balanced", "full");
+    expect(telemetry.recordGeneration).toHaveBeenCalledOnce();
+    expect(telemetry.recordGeneration).toHaveBeenCalledWith(
+      "balanced",
+      "chat",
+      "completed",
+      expect.any(Number),
+    );
+    expect(telemetry.recordResponseStarted).toHaveBeenCalledWith(
+      "balanced",
+      "chat",
+      expect.any(Number),
+    );
+    expect(telemetry.recordResponseStarted.mock.calls[0]?.[2]).toBeGreaterThanOrEqual(900);
+    expect(modelCall.requestSent).toHaveBeenCalledOnce();
+    expect(modelCall.responseStarted).toHaveBeenCalledWith(12);
+    expect(modelCall.firstToken).toHaveBeenCalledWith(34);
+    expect(modelCall.responseStarted.mock.invocationCallOrder[0]).toBeLessThan(
+      modelCall.firstToken.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
+    expect(modelCall.settle).toHaveBeenCalledOnce();
+    expect(modelCall.settle).toHaveBeenCalledWith({
+      cachedTokens: 2,
+      completionTokens: 7,
+      costUsd: "0.000123",
+      outcome: "completed",
+      promptTokens: 11,
+      providerDurationMs: 56,
+      reasoningTokens: 1,
+    });
+    expect(lifecycle).toEqual([
+      "metadata.persisted",
+      "provider.stopped",
+      "terminalization.started",
+    ]);
+  });
 
   it("passes recovered provider accounting into terminal persistence", async () => {
     const memory = memoryGenerationService();
@@ -1025,6 +1180,21 @@ describe("response stream normalization", () => {
     const registry = new ActiveStreamRegistry();
     let cancellationWrites = 0;
     let gatewaySignal: AbortSignal | undefined;
+    const modelCall = {
+      cancelRequested: vi.fn(),
+      firstToken: vi.fn(),
+      requestSent: vi.fn(),
+      responseStarted: vi.fn(),
+      settle: vi.fn(),
+    };
+    const telemetry = {
+      changeActiveEmployeeStreams: vi.fn(),
+      changeActiveProviderCalls: vi.fn(),
+      recordContextDecision: vi.fn(),
+      recordGeneration: vi.fn(),
+      recordResponseStarted: vi.fn(),
+      startModelCall: vi.fn(() => modelCall),
+    } satisfies ResponseStreamTelemetry;
     const gateway: ModelGateway = {
       async *stream(_request, signal) {
         gatewaySignal = signal;
@@ -1038,18 +1208,26 @@ describe("response stream normalization", () => {
         });
       },
     };
-    const url = await streamUrl(gateway, memory, registry, (reply) => {
-      const originalWrite = reply.raw.write.bind(reply.raw);
-      reply.raw.write = ((chunk: string | Uint8Array, encoding?: BufferEncoding) => {
-        const accepted =
-          encoding === undefined ? originalWrite(chunk) : originalWrite(chunk, encoding);
-        if (typeof chunk === "string" && chunk.includes('"type":"response.cancelled"')) {
-          cancellationWrites += 1;
-          return false;
-        }
-        return accepted;
-      }) as typeof reply.raw.write;
-    });
+    const url = await streamUrl(
+      gateway,
+      memory,
+      registry,
+      (reply) => {
+        const originalWrite = reply.raw.write.bind(reply.raw);
+        reply.raw.write = ((chunk: string | Uint8Array, encoding?: BufferEncoding) => {
+          const accepted =
+            encoding === undefined ? originalWrite(chunk) : originalWrite(chunk, encoding);
+          if (typeof chunk === "string" && chunk.includes('"type":"response.cancelled"')) {
+            cancellationWrites += 1;
+            return false;
+          }
+          return accepted;
+        }) as typeof reply.raw.write;
+      },
+      started,
+      undefined,
+      telemetry,
+    );
     const response = await fetch(url, { method: "POST" });
     const reader = response.body?.getReader();
     if (reader === undefined) {
@@ -1104,6 +1282,15 @@ describe("response stream normalization", () => {
     expect(memory.firstTokenAt).not.toBeNull();
     expect(gatewaySignal?.aborted).toBe(true);
     expect(cancellationWrites).toBe(1);
+    expect(modelCall.cancelRequested).toHaveBeenCalledOnce();
+    expect(modelCall.settle).toHaveBeenCalledOnce();
+    expect(modelCall.settle).toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: "cancelled" }),
+    );
+    expect(telemetry.changeActiveProviderCalls.mock.calls).toEqual([
+      ["chat", 1],
+      ["chat", -1],
+    ]);
   });
 
   it("keeps a cancellation that commits while shutdown releases its local fence", async () => {

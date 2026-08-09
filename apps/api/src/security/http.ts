@@ -1,8 +1,14 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
-import type { ApiConfig } from "../config.js";
+import type { ApiConfig, RuntimeMode } from "../config.js";
 import { ApplicationError } from "../errors.js";
 
 const mutationMethods = new Set(["DELETE", "PATCH", "POST", "PUT"]);
+
+export const httpServerTuning = Object.freeze({
+  incomingRequestTimeoutMilliseconds: 15_000,
+  ordinaryDrainMilliseconds: 5_000,
+  shutdownCleanupMilliseconds: 30_000,
+});
 
 const securityHeaders = Object.freeze({
   "content-security-policy": [
@@ -22,9 +28,16 @@ const securityHeaders = Object.freeze({
   "x-content-type-options": "nosniff",
 } as const);
 
-export function applySecurityHeaders(reply: FastifyReply): void {
+export function applySecurityHeaders(
+  reply: FastifyReply,
+  runtimeMode: RuntimeMode = "development",
+): void {
   for (const [name, value] of Object.entries(securityHeaders)) {
     void reply.header(name, value);
+  }
+
+  if (runtimeMode === "production") {
+    void reply.header("strict-transport-security", "max-age=31536000");
   }
 }
 

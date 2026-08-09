@@ -495,8 +495,10 @@ test("resets selected-branch scrolling when the conversation route parameter cha
   );
 });
 
-test("removes a password-reset token from the visible URL before input", async ({ page }) => {
-  await page.goto("/reset-password?token=browser-secret");
+test("removes a password-reset token fragment from the visible URL before input", async ({
+  page,
+}) => {
+  await page.goto("/reset-password#token=browser-secret");
 
   await expect(page).toHaveURL(/\/reset-password$/);
   await expect(

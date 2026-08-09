@@ -8,7 +8,7 @@ import { createCursorCodec } from "./conversations/cursor.js";
 import { type ConversationService, createConversationService } from "./conversations/service.js";
 import { type AppDatabase, createDatabase } from "./database/database.js";
 import { createDatabasePool, type DatabasePool } from "./database/pool.js";
-import { registerErrorHandling } from "./errors.js";
+import { ApplicationError, registerErrorHandling } from "./errors.js";
 import { ActiveStreamRegistry } from "./generations/active-streams.js";
 import {
   createGenerationAdministrationService,
@@ -26,6 +26,7 @@ import {
 } from "./generations/response-stream.js";
 import { createGenerationService, type GenerationService } from "./generations/service.js";
 import { generationTuning } from "./generations/settings.js";
+import { OrdinaryRequestDrain } from "./http-request-drain.js";
 import {
   createEmployeeAdministrationService,
   type EmployeeAdministrationService,
@@ -38,23 +39,40 @@ import { type BudgetService, createBudgetService } from "./model-policy/budget-s
 import { refreshClaimedCatalog } from "./model-policy/catalog-refresh.js";
 import {
   type CostControlMaintenance,
+  type CostControlMaintenanceOptions,
   createCostControlMaintenance,
 } from "./model-policy/maintenance.js";
 import { createModelPolicyService, type ModelPolicyService } from "./model-policy/service.js";
 import { createUsageService, type UsageService } from "./model-policy/usage-service.js";
+import { createClientErrorRateLimiter } from "./observability/client-error-rate-limit.js";
+import { createApplicationTelemetry } from "./observability/telemetry.js";
+import type { ApplicationTelemetry } from "./observability/telemetry-contract.js";
 import { OpenRouterCatalogClient } from "./openrouter/catalog-client.js";
 import { OpenRouterGateway } from "./openrouter/openrouter-gateway.js";
 import { operationalErrorMetadata } from "./operator-error.js";
 import { registerAdminEmployeeRoutes } from "./routes/admin.js";
 import { registerAdminModelRoutes } from "./routes/admin-models.js";
 import { registerAuthRoutes } from "./routes/auth.js";
+import { registerClientErrorRoute } from "./routes/client-errors.js";
 import { registerConversationRoutes } from "./routes/conversations.js";
 import { registerDevelopmentMailboxRoute } from "./routes/development-mailbox.js";
 import { registerHealthRoutes } from "./routes/health.js";
 import { registerModelTierRoutes } from "./routes/model-tiers.js";
 import { registerResponseRoutes } from "./routes/responses.js";
 import { registerSessionRoute } from "./routes/session.js";
-import { applySecurityHeaders, enforceCapstoneMutationBoundary } from "./security/http.js";
+import {
+  captureTrustedClientAddress,
+  resolveTrustedClientAddress,
+} from "./security/client-address.js";
+import {
+  applySecurityHeaders,
+  enforceCapstoneMutationBoundary,
+  httpServerTuning,
+} from "./security/http.js";
+import {
+  createKnownApplicationAssetValidator,
+  registerStaticApplication,
+} from "./static-application.js";
 
 export interface ApplicationDependencies {
   readonly authentication?: Authentication;
@@ -73,12 +91,15 @@ export interface ApplicationDependencies {
   readonly modelPolicy?: ModelPolicyService;
   readonly pool?: DatabasePool;
   readonly requestIdFactory?: () => string;
+  readonly refreshCatalog?: CostControlMaintenanceOptions["refreshCatalog"];
   readonly responseStreams?: ResponseStreamCoordinator;
   readonly streamRegistry?: ActiveStreamRegistry;
+  readonly telemetry?: ApplicationTelemetry;
   readonly usage?: UsageService;
 }
 
 export function createApplication(config: ApiConfig, dependencies: ApplicationDependencies = {}) {
+  const isKnownApplicationAsset = createKnownApplicationAssetValidator(config.webAssetsDirectory);
   const requestIdFactory = dependencies.requestIdFactory ?? randomUUID;
   const modelGateway =
     dependencies.modelGateway ??
@@ -103,8 +124,30 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
       disableRequestLogging: true,
       requestIdLogLabel: "requestId",
     }),
+    requestTimeout: httpServerTuning.incomingRequestTimeoutMilliseconds,
     trustProxy: config.trustProxy,
   }).setValidatorCompiler(TypeBoxValidatorCompiler);
+  const telemetry =
+    dependencies.telemetry ??
+    createApplicationTelemetry({
+      endpoint: config.otlpEndpoint,
+      environment: config.nodeEnv,
+      headers: config.otlpHeaders,
+      onExporterFailure(metadata) {
+        server.log.warn(metadata, "telemetry exporter operation failed");
+      },
+      release: config.deploymentRevision,
+    });
+  function observeTelemetry(
+    operation: "email-delivery" | "http-request",
+    observation: () => void,
+  ): void {
+    try {
+      observation();
+    } catch {
+      server.log.warn({ operation }, "telemetry instrumentation failed");
+    }
+  }
   const pool =
     dependencies.pool ??
     createDatabasePool(config.databaseUrl, (error) => {
@@ -112,7 +155,17 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
     });
   const lifecycle = createApplicationLifecycle(pool);
   const database = dependencies.database ?? createDatabase(pool as Pool);
-  const emailSender = dependencies.emailSender ?? createEmailSender(config.emailDelivery);
+  const emailSender =
+    dependencies.emailSender ??
+    createEmailSender(config.emailDelivery, {
+      emailFrom: config.emailFrom,
+      onDeliveryReport: (report) =>
+        observeTelemetry("email-delivery", () => telemetry.recordEmailDelivery(report)),
+      resendApiKey: config.resendApiKey,
+    });
+  if (config.nodeEnv === "production" && emailSender.kind !== "resend") {
+    throw new Error("Resend email delivery is required in production");
+  }
   const identity = dependencies.identity ?? createIdentityService(database);
   const authentication =
     dependencies.authentication ??
@@ -132,7 +185,7 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
     });
   const resolveActor = createActorResolver(authentication, identity);
   const cursorCodec = createCursorCodec(config.authSecret);
-  const budget = dependencies.budget ?? createBudgetService(database);
+  const budget = dependencies.budget ?? createBudgetService(database, { telemetry });
   const modelPolicy =
     dependencies.modelPolicy ?? createModelPolicyService(database, { cursorCodec });
   const conversations =
@@ -144,6 +197,7 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
       budget,
       mode: config.modelGateway === "openrouter" ? "openrouter" : "simulated",
       modelPolicy,
+      telemetry,
     });
   const compactions =
     dependencies.compactions ??
@@ -152,6 +206,7 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
       database,
       gateway: modelGateway,
       mode: config.modelGateway === "openrouter" ? "openrouter" : "simulated",
+      telemetry,
     });
   const streamRegistry = dependencies.streamRegistry ?? new ActiveStreamRegistry();
   const employeeAdministration =
@@ -159,7 +214,7 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
     createEmployeeAdministrationService(database, cursorCodec);
   const generationAdministration =
     dependencies.generationAdministration ??
-    createGenerationAdministrationService(database, budget);
+    createGenerationAdministrationService(database, budget, telemetry);
   const usage = dependencies.usage ?? createUsageService(database, cursorCodec);
   const responseStreams =
     dependencies.responseStreams ??
@@ -168,6 +223,7 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
       gateway: modelGateway,
       generations,
       registry: streamRegistry,
+      telemetry,
     });
   const catalogClient =
     config.modelGateway === "openrouter"
@@ -182,7 +238,8 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
         server.log.warn(metadata, "cost-control maintenance failed");
       },
       refreshCatalog:
-        catalogClient === undefined
+        dependencies.refreshCatalog ??
+        (catalogClient === undefined
           ? async () => Object.freeze({ available: 0, claimed: 0, unavailable: 0, updated: 0 })
           : (signal) =>
               refreshClaimedCatalog({
@@ -191,8 +248,26 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
                 modelPolicy,
                 ownerId: catalogRefreshOwnerId,
                 signal,
-              }),
+              })),
+      telemetry,
     });
+  const ordinaryRequestDrain = new OrdinaryRequestDrain();
+
+  server.addHook("onRoute", (options) => {
+    if (!options.url.startsWith("/api/")) {
+      return;
+    }
+    const handler = options.handler;
+    options.handler = async function trackedHandler(request, reply) {
+      try {
+        return await handler.call(this, request, reply);
+      } finally {
+        // A destroyed response can bypass onSend even though its handler keeps
+        // running, so resource shutdown must fence the handler promise itself.
+        ordinaryRequestDrain.completeHandler(request);
+      }
+    };
+  });
 
   server.addHook("preValidation", (request, _reply, done) => {
     try {
@@ -203,21 +278,34 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
     }
   });
 
+  server.addHook("onRequest", (request, reply, done) => {
+    captureTrustedClientAddress(request, config.nodeEnv);
+    applySecurityHeaders(reply, config.nodeEnv);
+    if (!ordinaryRequestDrain.track(request, reply)) {
+      done(new ApplicationError(503, "INTERNAL_ERROR", "El servicio se está reiniciando."));
+      return;
+    }
+    done();
+  });
+
   server.addHook("onSend", (request, reply, payload, done) => {
     void reply.header("x-request-id", request.id);
-    if (
-      request.url.startsWith("/api/conversations") ||
-      request.url.startsWith("/api/drafts") ||
-      request.url.startsWith("/api/model-tiers") ||
-      request.url.startsWith("/api/admin")
-    ) {
+    if (request.url === "/api" || request.url.startsWith("/api/")) {
       void reply.header("cache-control", "no-store");
     }
-    applySecurityHeaders(reply);
     done(null, payload);
   });
 
   server.addHook("onResponse", (request, reply, done) => {
+    observeTelemetry("http-request", () =>
+      telemetry.recordHttpRequest({
+        durationMs: reply.elapsedTime,
+        method: request.method,
+        requestId: request.id,
+        route: request.routeOptions.url,
+        statusCode: reply.statusCode,
+      }),
+    );
     request.log.info(
       {
         method: request.method,
@@ -230,8 +318,19 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
     done();
   });
 
-  registerErrorHandling(server);
+  const tryServeSpaShell =
+    config.webAssetsDirectory === null
+      ? undefined
+      : registerStaticApplication(server, config.webAssetsDirectory);
+  registerErrorHandling(server, tryServeSpaShell);
   registerHealthRoutes(server, lifecycle);
+  registerClientErrorRoute(server, {
+    isKnownAsset: isKnownApplicationAsset,
+    onReport: (report) => telemetry.recordClientError(report.kind, report.route),
+    rateLimiter: createClientErrorRateLimiter(database, config.authSecret),
+    release: config.deploymentRevision,
+    resolveClientAddress: resolveTrustedClientAddress,
+  });
   registerAuthRoutes(server, { authentication, config });
   registerSessionRoute(server, resolveActor);
   registerAdminEmployeeRoutes(server, {
@@ -272,12 +371,35 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
     registerDevelopmentMailboxRoute(server, config, emailSender);
   }
 
+  const observedPool = pool as DatabasePool & {
+    readonly idleCount?: unknown;
+    readonly totalCount?: unknown;
+    readonly waitingCount?: unknown;
+  };
+  let stopPoolObservation = (): void => undefined;
+  if (
+    typeof observedPool.idleCount === "number" &&
+    typeof observedPool.totalCount === "number" &&
+    typeof observedPool.waitingCount === "number"
+  ) {
+    try {
+      stopPoolObservation = telemetry.startDatabasePoolObservation(() => ({
+        idleCount: observedPool.idleCount as number,
+        totalCount: observedPool.totalCount as number,
+        waitingCount: observedPool.waitingCount as number,
+      }));
+    } catch {
+      server.log.warn({ operation: "database-pool" }, "telemetry instrumentation failed");
+    }
+  }
+
   let shutdownPromise: Promise<void> | undefined;
 
   function shutdown(): Promise<void> {
     shutdownPromise ??= (async () => {
       lifecycle.beginDraining();
       streamRegistry.beginDraining();
+      ordinaryRequestDrain.beginDraining();
       const shutdownErrors: unknown[] = [];
       const maintenanceStopPromise = maintenance.stop().catch((error: unknown) => {
         shutdownErrors.push(error);
@@ -286,15 +408,66 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
         shutdownErrors.push(error);
       });
 
-      if (!(await streamRegistry.waitForIdle(generationTuning.gracefulDrainMilliseconds))) {
-        streamRegistry.abortAll("shutdown");
-        await streamRegistry.waitForIdle(generationTuning.backpressureTimeoutMilliseconds);
+      const ordinaryIdle = await ordinaryRequestDrain.drainAndSeal(
+        httpServerTuning.ordinaryDrainMilliseconds,
+      );
+      // A response request transfers ownership by registering its stream lease
+      // before leaving the ordinary-request fence. Once this fence is sealed,
+      // a force-closed handler cannot create work behind the stream drain.
+      if (!ordinaryIdle) {
+        ordinaryRequestDrain.abortAll();
       }
+
+      const ordinaryCleanup = ordinaryIdle
+        ? Promise.resolve(true)
+        : ordinaryRequestDrain.waitForIdle(httpServerTuning.shutdownCleanupMilliseconds);
+      const streamsIdleAfterGrace = await streamRegistry.waitForIdle(
+        generationTuning.gracefulDrainMilliseconds,
+      );
+      if (!streamsIdleAfterGrace) {
+        streamRegistry.abortAll("shutdown");
+      }
+      const [ordinaryCleanupCompleted, streamWorkFenced] = await Promise.all([
+        ordinaryCleanup,
+        streamsIdleAfterGrace
+          ? Promise.resolve(true)
+          : streamRegistry.waitForIdle(httpServerTuning.shutdownCleanupMilliseconds),
+      ]);
+      const resourceFenceFailed =
+        (!ordinaryCleanupCompleted && !ordinaryRequestDrain.isIdle) || !streamWorkFenced;
+      // Both independently bounded lifetimes have settled. Terminate only
+      // residual idle or unparsed sockets before closing process-owned resources.
+      server.server.closeAllConnections();
       await closePromise;
       await maintenanceStopPromise;
 
+      if (resourceFenceFailed) {
+        shutdownErrors.push(new Error("Application shutdown could not fence in-flight work"));
+        if (shutdownErrors.length === 1) {
+          throw shutdownErrors[0];
+        }
+        throw new AggregateError(shutdownErrors, "application shutdown failed");
+      }
+
+      try {
+        await emailSender.close();
+      } catch (error: unknown) {
+        shutdownErrors.push(error);
+      }
+
+      try {
+        stopPoolObservation();
+      } catch {
+        server.log.warn({ operation: "database-pool" }, "telemetry instrumentation failed");
+      }
       try {
         await pool.end();
+      } catch (error: unknown) {
+        shutdownErrors.push(error);
+      }
+
+      try {
+        await telemetry.shutdown();
       } catch (error: unknown) {
         shutdownErrors.push(error);
       } finally {
@@ -332,6 +505,7 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
     server,
     shutdown,
     streamRegistry,
+    telemetry,
     usage,
   } as const;
 }

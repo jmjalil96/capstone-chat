@@ -73,6 +73,22 @@ describe("applySecurityHeaders", () => {
     });
     expect(reply.header).toHaveBeenCalledTimes(4);
   });
+
+  it("adds HSTS only for the production HTTPS deployment", () => {
+    const captured = new Map<string, string>();
+    const reply = {
+      header: vi.fn((name: string, value: string) => {
+        captured.set(name, value);
+        return reply;
+      }),
+    } as unknown as FastifyReply;
+
+    applySecurityHeaders(reply, "production");
+
+    expect(captured.get("strict-transport-security")).toBe("max-age=31536000");
+    expect(captured.get("strict-transport-security")).not.toContain("includeSubDomains");
+    expect(captured.get("strict-transport-security")).not.toContain("preload");
+  });
 });
 
 describe("enforceCapstoneMutationBoundary", () => {

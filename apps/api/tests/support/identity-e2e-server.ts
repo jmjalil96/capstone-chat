@@ -22,7 +22,11 @@ import { bootstrapSimulatedModelPolicy } from "./model-policy.js";
 
 const apiPort = 3011;
 const publicOrigin = "http://127.0.0.1:4173";
-const administratorEmail = "admin.browser@example.test";
+const identityBrowserAdministrators = Object.freeze([
+  Object.freeze({ email: "admin.chromium.browser@example.test", name: "Administradora Chromium" }),
+  Object.freeze({ email: "admin.firefox.browser@example.test", name: "Administradora Firefox" }),
+  Object.freeze({ email: "admin.webkit.browser@example.test", name: "Administradora WebKit" }),
+]);
 
 let application: ApiApplication | undefined;
 let container: StartedPostgreSqlContainer | undefined;
@@ -318,11 +322,22 @@ async function main(): Promise<void> {
     { emailSender },
   );
 
+  const primaryAdministrator = identityBrowserAdministrators[0];
+  if (primaryAdministrator === undefined) {
+    throw new Error("The browser identity fixture has no administrator");
+  }
   await application.identity.bootstrap({
-    adminEmail: administratorEmail,
+    adminEmail: primaryAdministrator.email,
     displayName: "Capstone Ecuador",
     workspaceIdentity: "capstone-ecuador",
   });
+  for (const administrator of identityBrowserAdministrators.slice(1)) {
+    await application.identity.approve({
+      email: administrator.email,
+      role: "admin",
+      workspaceIdentity: "capstone-ecuador",
+    });
+  }
   await bootstrapSimulatedModelPolicy(application.modelPolicy, "capstone-ecuador", {
     employeeActiveGenerationLimit: 2,
     monthlyBudgetUsd: "100",
@@ -364,10 +379,14 @@ async function main(): Promise<void> {
   }
   const verificationUrl = new URL(verificationLink);
   const verification = await application.server.inject({
-    method: "GET",
-    url: `${verificationUrl.pathname}${verificationUrl.search}`,
+    headers: { "content-type": "application/json", origin: publicOrigin },
+    method: "POST",
+    payload: {
+      token: new URLSearchParams(verificationUrl.hash.slice(1)).get("token"),
+    },
+    url: "/api/auth/verify-email",
   });
-  if (verification.statusCode !== 302) {
+  if (verification.statusCode !== 204) {
     throw new Error("The browser conversation employee could not verify");
   }
   const employeeRows = await application.database.query.user.findMany({
@@ -471,9 +490,11 @@ async function main(): Promise<void> {
     true,
     archivedSelected.conversation.revision,
   );
-  await emailSender.send(
-    createInvitationEmail(administratorEmail, new URL("/sign-up", publicOrigin).href),
-  );
+  for (const administrator of identityBrowserAdministrators) {
+    await emailSender.send(
+      createInvitationEmail(administrator.email, new URL("/sign-up", publicOrigin).href),
+    );
+  }
 
   await application.server.listen({ host: "127.0.0.1", port: apiPort });
   const readiness = await application.lifecycle.initialize();

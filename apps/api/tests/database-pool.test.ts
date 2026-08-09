@@ -12,6 +12,7 @@ describe("database pools", () => {
       expect(applicationPool.options).toMatchObject({
         application_name: "capstone-chat-api",
         max: 10,
+        options: "-c jit=off",
         query_timeout: 5_000,
       });
       expect(migrationPool.options).toMatchObject({

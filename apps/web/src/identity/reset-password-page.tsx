@@ -1,9 +1,10 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useLayoutEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router";
 
 import { copy } from "../copy";
 import { resetPassword } from "./auth-actions";
+import { clearIdentityCredential, readIdentityCredential } from "./credential-fragment";
 import { FieldError, FormMessage, useFeedbackAttempt } from "./form-feedback";
 import { IdentityPanel } from "./identity-panel";
 import {
@@ -25,26 +26,17 @@ export function ResetPasswordPage() {
     password: undefined,
     confirmation: undefined,
   });
-  const [{ invalid, token }] = useState(() => {
-    const parameters = new URLSearchParams(window.location.search);
-    return {
-      invalid: parameters.has("error"),
-      token: parameters.get("token"),
-    };
-  });
+  const [{ invalid, token }] = useState(() => readIdentityCredential("/reset-password"));
   const mutation = useMutation({
     mutationFn: resetPassword,
     onSuccess: async () => {
+      clearIdentityCredential("/reset-password");
       await queryClient.cancelQueries();
       queryClient.clear();
     },
   });
 
-  useLayoutEffect(() => {
-    if (window.location.search) {
-      window.history.replaceState(window.history.state, "", window.location.pathname);
-    }
-  }, []);
+  useEffect(() => () => clearIdentityCredential("/reset-password"), []);
 
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();

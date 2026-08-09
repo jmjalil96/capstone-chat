@@ -10,6 +10,7 @@
       "**",
       "!**/dist",
       "!**/coverage",
+      "!**/.claude",
       "!**/playwright-report",
       "!**/test-results",
       "!packages/brand"

@@ -11,6 +11,7 @@ import { createDatabasePool } from "../src/database/pool.js";
 
 const productTableNames = [
   "account",
+  "client_error_rate_limit_windows",
   "conversation_compactions",
   "conversations",
   "drafts",
@@ -19,6 +20,7 @@ const productTableNames = [
   "messages",
   "model_catalog",
   "openrouter_privacy_attestations",
+  "operational_recovery_markers",
   "rate_limit",
   "session",
   "user",
@@ -118,7 +120,7 @@ describe("PostgreSQL application schema", () => {
         "SELECT table_name AS \"tableName\" FROM information_schema.tables WHERE table_schema = 'public'",
       );
 
-      expect(appliedMigrations.rows).toHaveLength(5);
+      expect(appliedMigrations.rows).toHaveLength(6);
       expect(appliedMigrations.rows[0]?.hash).toMatch(/^[a-f0-9]{64}$/u);
       expect(Number(appliedMigrations.rows[0]?.createdAt)).toBeGreaterThan(0);
       expect(productTables.rows.map(({ tableName }) => tableName).sort()).toEqual(
@@ -184,7 +186,7 @@ describe("PostgreSQL application schema", () => {
         "SELECT table_name AS \"tableName\" FROM information_schema.tables WHERE table_schema = 'public' AND table_name IN ('conversations', 'drafts', 'messages') ORDER BY table_name",
       );
 
-      expect(migrations.rows).toHaveLength(5);
+      expect(migrations.rows).toHaveLength(6);
       expect(workspace.rows).toEqual([{ displayName: "Phase Two Preserved" }]);
       expect(phaseThreeTables.rows.map((row) => row.tableName)).toEqual([
         "conversations",
@@ -324,7 +326,7 @@ describe("PostgreSQL application schema", () => {
         "SELECT count(*)::text AS count FROM generations",
       );
 
-      expect(migrations.rows).toHaveLength(5);
+      expect(migrations.rows).toHaveLength(6);
       expect(preserved.rows).toEqual([
         {
           draftContent: "Borrador preservado",

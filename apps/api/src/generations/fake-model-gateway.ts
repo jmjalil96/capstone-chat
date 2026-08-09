@@ -4,6 +4,7 @@ import type {
   GenerationRequest,
   ModelGateway,
 } from "./model-gateway.js";
+import { createGatewayTransportClock } from "./model-gateway.js";
 import { generationTuning } from "./settings.js";
 
 export interface FakeGatewayStep {
@@ -56,6 +57,9 @@ const localFakeCompactionSteps: readonly FakeGatewayStep[] = Object.freeze([
 export interface FakeGatewayScripts {
   readonly chat?: readonly FakeGatewayStep[];
   readonly compaction?: readonly FakeGatewayStep[];
+  readonly resolve?:
+    | ((request: GenerationRequest) => readonly FakeGatewayStep[] | undefined)
+    | undefined;
 }
 
 function isStepArray(
@@ -91,13 +95,18 @@ async function waitForDelay(delayMilliseconds: number, signal: AbortSignal): Pro
 }
 
 export class FakeModelGateway implements ModelGateway {
+  readonly #resolve:
+    | ((request: GenerationRequest) => readonly FakeGatewayStep[] | undefined)
+    | undefined;
   readonly #steps: Readonly<Record<GenerationPurpose, readonly FakeGatewayStep[]>>;
 
   constructor(scripts: readonly FakeGatewayStep[] | FakeGatewayScripts = {}) {
     if (isStepArray(scripts)) {
+      this.#resolve = undefined;
       this.#steps = { chat: [...scripts], compaction: [...scripts] };
       return;
     }
+    this.#resolve = scripts.resolve;
     this.#steps = {
       chat: [...(scripts.chat ?? localFakeSteps)],
       compaction: [...(scripts.compaction ?? localFakeCompactionSteps)],
@@ -105,13 +114,48 @@ export class FakeModelGateway implements ModelGateway {
   }
 
   async *stream(request: GenerationRequest, signal: AbortSignal): AsyncIterable<GatewayEvent> {
-    for (const step of this.#steps[request.purpose]) {
+    const steps = this.#resolve?.(request) ?? this.#steps[request.purpose];
+    const transportClock = createGatewayTransportClock();
+    let emittedVisibleContent = false;
+    signal.throwIfAborted();
+    yield* transportClock.publish({
+      transportElapsedMilliseconds: transportClock.elapsedMilliseconds(),
+      type: "response.headers",
+    });
+    for (const step of steps) {
       const delayMilliseconds = step.delayMilliseconds ?? 0;
       if (delayMilliseconds > 0) {
         await waitForDelay(delayMilliseconds, signal);
       }
       signal.throwIfAborted();
-      yield step.event;
+      const transportElapsedMilliseconds = transportClock.elapsedMilliseconds();
+      if (step.event.type === "response.headers") {
+        yield* transportClock.publish({
+          ...step.event,
+          transportElapsedMilliseconds,
+        });
+        continue;
+      }
+      if (
+        step.event.type === "content.delta" &&
+        !emittedVisibleContent &&
+        step.event.text.length > 0
+      ) {
+        emittedVisibleContent = true;
+        yield* transportClock.publish({
+          ...step.event,
+          transportElapsedMilliseconds,
+        });
+        continue;
+      }
+      if (step.event.type === "response.completed" || step.event.type === "response.failed") {
+        yield* transportClock.publish({
+          ...step.event,
+          transportElapsedMilliseconds,
+        });
+        continue;
+      }
+      yield* transportClock.publish(step.event);
     }
   }
 }

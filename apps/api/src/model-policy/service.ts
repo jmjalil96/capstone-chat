@@ -1,4 +1,4 @@
-import { and, eq, isNull, lte, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { CursorCodec } from "../conversations/cursor.js";
 import { conversations } from "../database/conversation-schema.js";
 import type { AppDatabase, AppDatabaseExecutor, AppTransaction } from "../database/database.js";
@@ -122,6 +122,26 @@ interface ExistingPolicyRow {
   readonly tier: string;
 }
 
+interface ResolvedTierRow {
+  readonly approvedCatalogId: string | null;
+  readonly attestationVerifiedAt: Date | string | null;
+  readonly attestationVersion: string | null;
+  readonly available: boolean;
+  readonly catalogMaximumOutputTokens: number;
+  readonly completionPricePerToken: string;
+  readonly contextLength: number;
+  readonly employeeActiveGenerationLimit: number;
+  readonly enabled: boolean;
+  readonly maximumOutputTokens: number;
+  readonly metadataSource: string;
+  readonly monthlyBudgetUsd: string;
+  readonly promptPricePerToken: string;
+  readonly requestPriceUsd: string;
+  readonly reservationMarginBasisPoints: number;
+  readonly resolvedModel: string;
+  readonly tier: string;
+}
+
 function assertPositiveInteger(value: number, label: string): void {
   if (!Number.isSafeInteger(value) || value <= 0) {
     throw new ModelPolicyConflictError(`${label} must be a positive safe integer`);
@@ -140,6 +160,67 @@ function latestDate(...values: readonly Date[]): Date {
 
 function expectedSource(mode: ModelPolicyMode): "openrouter" | "simulated" {
   return mode;
+}
+
+function resolvedPrivacyIsVerified(
+  row: ResolvedTierRow,
+  mode: ModelPolicyMode,
+  checkedAt: Date,
+): boolean {
+  if (mode === "simulated") {
+    return true;
+  }
+  if (row.attestationVersion !== "openrouter-privacy-v1" || row.attestationVerifiedAt === null) {
+    return false;
+  }
+  const verifiedAt =
+    row.attestationVerifiedAt instanceof Date
+      ? row.attestationVerifiedAt
+      : new Date(row.attestationVerifiedAt);
+  const ageMilliseconds = checkedAt.getTime() - verifiedAt.getTime();
+  return ageMilliseconds >= 0 && ageMilliseconds <= costControlTuning.privacyAttestationLifetimeMs;
+}
+
+function toResolvedTierPolicy(
+  row: ResolvedTierRow | undefined,
+  tier: ModelTier,
+  mode: ModelPolicyMode,
+  checkedAt: Date,
+  requireEmployeeEnabled: boolean,
+): ResolvedTierPolicy {
+  if (
+    row === undefined ||
+    row.tier !== tier ||
+    (requireEmployeeEnabled && !row.enabled) ||
+    row.approvedCatalogId === null ||
+    !row.available ||
+    row.metadataSource !== expectedSource(mode) ||
+    row.maximumOutputTokens > row.catalogMaximumOutputTokens ||
+    !resolvedPrivacyIsVerified(row, mode, checkedAt)
+  ) {
+    throw new ModelPolicyUnavailableError("Requested tier is unavailable");
+  }
+  return Object.freeze({
+    completionPriceCeilingPerToken: applyReservationMarginToUnitPrice(
+      row.completionPricePerToken,
+      row.reservationMarginBasisPoints,
+    ),
+    contextLength: row.contextLength,
+    employeeActiveGenerationLimit: row.employeeActiveGenerationLimit,
+    maximumOutputTokens: row.maximumOutputTokens,
+    monthlyBudgetUsd: canonicalUsd(row.monthlyBudgetUsd),
+    promptPriceCeilingPerToken: applyReservationMarginToUnitPrice(
+      row.promptPricePerToken,
+      row.reservationMarginBasisPoints,
+    ),
+    requestPriceCeilingUsd: applyReservationMarginToUsd(
+      row.requestPriceUsd,
+      row.reservationMarginBasisPoints,
+    ),
+    reservationMarginBasisPoints: row.reservationMarginBasisPoints,
+    resolvedModel: row.resolvedModel,
+    tier,
+  });
 }
 
 function catalogMatches(row: ExistingPolicyRow, snapshot: CatalogModelSnapshot): boolean {
@@ -741,17 +822,26 @@ export function createModelPolicyService(
     return updated.length;
   }
 
-  async function resolveTierPolicy(
+  async function resolvedTierRows(
     executor: AppDatabaseExecutor,
     workspaceId: string,
-    tier: ModelTier,
-    mode: ModelPolicyMode,
-    requireEmployeeEnabled: boolean,
-  ): Promise<ResolvedTierPolicy> {
-    const checkedAt = now();
-    const rows = await executor
+    tiers: readonly ModelTier[],
+  ): Promise<readonly ResolvedTierRow[]> {
+    return executor
       .select({
         approvedCatalogId: workspaceCatalogApprovals.modelCatalogId,
+        attestationVerifiedAt: sql<Date | null>`(
+          SELECT privacy.verified_at
+          FROM openrouter_privacy_attestations AS privacy
+          WHERE privacy.workspace_id = ${workspaceModelPolicies.workspaceId}
+          LIMIT 1
+        )`,
+        attestationVersion: sql<string | null>`(
+          SELECT privacy.attestation_version
+          FROM openrouter_privacy_attestations AS privacy
+          WHERE privacy.workspace_id = ${workspaceModelPolicies.workspaceId}
+          LIMIT 1
+        )`,
         available: modelCatalog.available,
         catalogMaximumOutputTokens: modelCatalog.maximumOutputTokens,
         completionPricePerToken: modelCatalog.completionPricePerToken,
@@ -765,6 +855,7 @@ export function createModelPolicyService(
         reservationMarginBasisPoints: workspaceCostPolicies.reservationMarginBasisPoints,
         requestPriceUsd: modelCatalog.requestPriceUsd,
         resolvedModel: modelCatalog.openRouterModelId,
+        tier: workspaceModelPolicies.tier,
       })
       .from(workspaceModelPolicies)
       .innerJoin(
@@ -782,45 +873,58 @@ export function createModelPolicyService(
       .where(
         and(
           eq(workspaceModelPolicies.workspaceId, workspaceId),
-          eq(workspaceModelPolicies.tier, tier),
+          inArray(workspaceModelPolicies.tier, tiers),
         ),
       )
-      .limit(1)
       .for("share");
-    const row = rows[0];
-    if (
-      row === undefined ||
-      (requireEmployeeEnabled && !row.enabled) ||
-      row.approvedCatalogId === null ||
-      !row.available ||
-      row.metadataSource !== expectedSource(mode) ||
-      row.maximumOutputTokens > row.catalogMaximumOutputTokens ||
-      (mode === "openrouter" && !(await privacyIsVerified(executor, workspaceId, checkedAt)))
-    ) {
-      throw new ModelPolicyUnavailableError("Requested tier is unavailable");
-    }
+  }
 
-    return Object.freeze({
-      completionPriceCeilingPerToken: applyReservationMarginToUnitPrice(
-        row.completionPricePerToken,
-        row.reservationMarginBasisPoints,
-      ),
-      contextLength: row.contextLength,
-      employeeActiveGenerationLimit: row.employeeActiveGenerationLimit,
-      maximumOutputTokens: row.maximumOutputTokens,
-      monthlyBudgetUsd: canonicalUsd(row.monthlyBudgetUsd),
-      promptPriceCeilingPerToken: applyReservationMarginToUnitPrice(
-        row.promptPricePerToken,
-        row.reservationMarginBasisPoints,
-      ),
-      requestPriceCeilingUsd: applyReservationMarginToUsd(
-        row.requestPriceUsd,
-        row.reservationMarginBasisPoints,
-      ),
-      reservationMarginBasisPoints: row.reservationMarginBasisPoints,
-      resolvedModel: row.resolvedModel,
+  async function resolveTierPolicy(
+    executor: AppDatabaseExecutor,
+    workspaceId: string,
+    tier: ModelTier,
+    mode: ModelPolicyMode,
+    requireEmployeeEnabled: boolean,
+  ): Promise<ResolvedTierPolicy> {
+    const checkedAt = now();
+    const rows = await resolvedTierRows(executor, workspaceId, [tier]);
+    return toResolvedTierPolicy(rows[0], tier, mode, checkedAt, requireEmployeeEnabled);
+  }
+
+  async function resolveGenerationPolicies(
+    executor: AppDatabaseExecutor,
+    workspaceId: string,
+    tier: ModelTier,
+    mode: ModelPolicyMode,
+  ): Promise<{ readonly chat: ResolvedTierPolicy; readonly fast: ResolvedTierPolicy | null }> {
+    const checkedAt = now();
+    const requestedTiers = tier === "fast" ? (["fast"] as const) : ([tier, "fast"] as const);
+    const rows = await resolvedTierRows(executor, workspaceId, requestedTiers);
+    const chat = toResolvedTierPolicy(
+      rows.find((row) => row.tier === tier),
       tier,
-    });
+      mode,
+      checkedAt,
+      true,
+    );
+    if (tier === "fast") {
+      return Object.freeze({ chat, fast: chat });
+    }
+    let fast: ResolvedTierPolicy | null = null;
+    try {
+      fast = toResolvedTierPolicy(
+        rows.find((row) => row.tier === "fast"),
+        "fast",
+        mode,
+        checkedAt,
+        false,
+      );
+    } catch (error: unknown) {
+      if (!(error instanceof ModelPolicyUnavailableError)) {
+        throw error;
+      }
+    }
+    return Object.freeze({ chat, fast });
   }
 
   async function resolveTier(
@@ -900,6 +1004,7 @@ export function createModelPolicyService(
     readEmployeeTierPolicy,
     releaseCatalogRefresh,
     resolveCompactionTier,
+    resolveGenerationPolicies,
     resolveTier,
     setPreferredTier,
   });

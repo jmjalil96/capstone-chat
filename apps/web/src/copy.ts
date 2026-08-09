@@ -1,4 +1,11 @@
 export const copy = {
+  routeLoading: "Cargando la página…",
+  rootFailure: {
+    eyebrow: "Aplicación",
+    title: "No pudimos mostrar esta página",
+    description: "Recarga la aplicación para volver a intentarlo.",
+    reload: "Recargar aplicación",
+  },
   brand: {
     homeLabel: "Ir al inicio de Capstone Chat",
     productName: "Capstone Chat",
@@ -61,6 +68,7 @@ export const copy = {
       eyebrow: "Verificación",
       title: "Verifica tu correo",
       description: "Abre el enlace que enviamos a tu correo para continuar.",
+      verifying: "Estamos verificando tu correo…",
       verifiedTitle: "Correo verificado",
       verified: "Tu correo quedó verificado. Ya puedes iniciar sesión.",
       invalidTitle: "El enlace no es válido",
@@ -431,6 +439,8 @@ export const copy = {
       actionFailed: "No pudimos completar esta acción. Inténtalo de nuevo.",
       branchSelected: "Mostramos la alternativa seleccionada.",
       turnUndone: "Volvimos al turno anterior sin eliminar contenido.",
+      taskCompleted: "Tarea completada",
+      taskPending: "Tarea pendiente",
       markdownFallback: "No pudimos mostrar el formato de este mensaje. Todavía puedes copiarlo.",
       overflowLabel: "Este contenido se desplaza horizontalmente.",
     },

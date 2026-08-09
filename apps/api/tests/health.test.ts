@@ -34,6 +34,7 @@ describe("health routes", () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ status: "live" });
     expect(response.headers["x-request-id"]).toBe("request-123");
+    expect(response.headers["cache-control"]).toBe("no-store");
     expect(pool.query).not.toHaveBeenCalled();
     await application.shutdown();
   });
@@ -49,6 +50,7 @@ describe("health routes", () => {
 
     expect(response.statusCode).toBe(503);
     expect(response.json()).toEqual({ database: "unknown", status: "unavailable" });
+    expect(response.headers["cache-control"]).toBe("no-store");
     expect(pool.query).not.toHaveBeenCalled();
     await application.shutdown();
   });

@@ -36,6 +36,13 @@
       "when": 1786219479071,
       "tag": "0004_compaction_administration",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1786230000000,
+      "tag": "0005_observability_recovery",
+      "breakpoints": true
     }
   ]
 }

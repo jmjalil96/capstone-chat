@@ -3,20 +3,40 @@ import { expect, test } from "@playwright/test";
 
 import { copy } from "../src/copy";
 
-const administrator = {
-  email: "admin.browser@example.test",
-  name: "Administradora de Prueba",
-} as const;
+const administratorsByProject = Object.freeze({
+  chromium: Object.freeze({
+    email: "admin.chromium.browser@example.test",
+    name: "Administradora Chromium",
+  }),
+  "firefox-critical-streams": Object.freeze({
+    email: "admin.firefox.browser@example.test",
+    name: "Administradora Firefox",
+  }),
+  "webkit-critical-streams": Object.freeze({
+    email: "admin.webkit.browser@example.test",
+    name: "Administradora WebKit",
+  }),
+});
 const originalPassword = "browser-original-password";
 const changedPassword = "browser-changed-password";
 const resetPassword = "browser-reset-password";
 
+test.skip(
+  ({ channel, isMobile }) => channel !== undefined || isMobile,
+  "The identity lifecycle runs once per distinct browser engine to preserve production rate limits.",
+);
+
 interface MailboxMessage {
   readonly purpose: "invitation" | "password-reset" | "verification";
   readonly text: string;
+  readonly to: string;
 }
 
-async function deliveryLink(page: Page, purpose: MailboxMessage["purpose"]): Promise<string> {
+async function deliveryLink(
+  page: Page,
+  purpose: MailboxMessage["purpose"],
+  recipient: string,
+): Promise<string> {
   let captured: string | undefined;
 
   await expect
@@ -27,7 +47,9 @@ async function deliveryLink(page: Page, purpose: MailboxMessage["purpose"]): Pro
       }
 
       const mailbox = (await response.json()) as { messages?: MailboxMessage[] };
-      const message = mailbox.messages?.findLast((candidate) => candidate.purpose === purpose);
+      const message = mailbox.messages?.findLast(
+        (candidate) => candidate.purpose === purpose && candidate.to === recipient,
+      );
       captured = message?.text.match(/https?:\/\/[^\s]+/u)?.[0];
       return captured;
     })
@@ -39,7 +61,11 @@ async function deliveryLink(page: Page, purpose: MailboxMessage["purpose"]): Pro
   return captured;
 }
 
-async function signIn(page: Page, password: string): Promise<void> {
+async function signIn(
+  page: Page,
+  administrator: Readonly<{ email: string; name: string }>,
+  password: string,
+): Promise<void> {
   await page.goto("/sign-in");
   await page.getByLabel(copy.identity.common.emailLabel).fill(administrator.email);
   await page.getByLabel(copy.identity.common.passwordLabel, { exact: true }).fill(password);
@@ -52,8 +78,16 @@ async function signIn(page: Page, password: string): Promise<void> {
   ).toBeVisible();
 }
 
-test("completes the real approved identity lifecycle through the browser", async ({ page }) => {
-  const invitation = new URL(await deliveryLink(page, "invitation"));
+test("@critical-identity completes the real approved identity lifecycle through the browser", async ({
+  page,
+}, testInfo) => {
+  const administrator =
+    administratorsByProject[testInfo.project.name as keyof typeof administratorsByProject];
+  if (administrator === undefined) {
+    throw new Error(`The ${testInfo.project.name} identity administrator is not configured`);
+  }
+
+  const invitation = new URL(await deliveryLink(page, "invitation", administrator.email));
   expect(invitation.pathname).toBe("/sign-up");
   expect(invitation.search).toBe("");
 
@@ -72,14 +106,14 @@ test("completes the real approved identity lifecycle through the browser", async
     page.getByRole("heading", { level: 1, name: copy.identity.signIn.title }),
   ).toBeVisible();
 
-  const verificationLink = await deliveryLink(page, "verification");
+  const verificationLink = await deliveryLink(page, "verification", administrator.email);
   await page.goto(verificationLink);
   await expect(page).toHaveURL(/\/verify-email$/u);
   await expect(
     page.getByRole("heading", { level: 1, name: copy.identity.verifyEmail.verifiedTitle }),
   ).toBeVisible();
 
-  await signIn(page, originalPassword);
+  await signIn(page, administrator, originalPassword);
   const desktopSidebar = page.locator(".desktop-sidebar");
   await expect(desktopSidebar.getByText("Capstone Ecuador")).toBeVisible();
   await desktopSidebar.getByText(administrator.name, { exact: true }).click();
@@ -97,7 +131,7 @@ test("completes the real approved identity lifecycle through the browser", async
   await expect(
     page.getByRole("heading", { level: 1, name: copy.administration.employees.title }),
   ).toBeVisible();
-  const pendingEmployeeEmail = "phase7.pending@example.test";
+  const pendingEmployeeEmail = `phase8.pending.${testInfo.project.name}@example.test`;
   await page.getByLabel(copy.administration.employees.email).fill(pendingEmployeeEmail);
   await page.getByLabel(copy.administration.employees.role).selectOption("member");
   await page.getByRole("button", { name: copy.administration.employees.approve }).click();
@@ -150,7 +184,7 @@ test("completes the real approved identity lifecycle through the browser", async
     page.getByRole("heading", { level: 1, name: copy.identity.forgotPassword.successTitle }),
   ).toBeVisible();
 
-  const resetLink = await deliveryLink(page, "password-reset");
+  const resetLink = await deliveryLink(page, "password-reset", administrator.email);
   await page.goto(resetLink);
   await expect(page).toHaveURL(/\/reset-password$/u);
   await page.getByLabel(copy.identity.common.newPasswordLabel).fill(resetPassword);
@@ -160,10 +194,14 @@ test("completes the real approved identity lifecycle through the browser", async
     page.getByRole("heading", { level: 1, name: copy.identity.resetPassword.successTitle }),
   ).toBeVisible();
 
-  await signIn(page, resetPassword);
-  await desktopSidebar.getByText(administrator.name, { exact: true }).click();
-  await desktopSidebar.getByRole("button", { name: copy.conversations.navigation.signOut }).click();
-  await expect(
-    page.getByRole("heading", { level: 1, name: copy.identity.signIn.title }),
-  ).toBeVisible();
+  if (testInfo.project.name === "chromium") {
+    await signIn(page, administrator, resetPassword);
+    await desktopSidebar.getByText(administrator.name, { exact: true }).click();
+    await desktopSidebar
+      .getByRole("button", { name: copy.conversations.navigation.signOut })
+      .click();
+    await expect(
+      page.getByRole("heading", { level: 1, name: copy.identity.signIn.title }),
+    ).toBeVisible();
+  }
 });

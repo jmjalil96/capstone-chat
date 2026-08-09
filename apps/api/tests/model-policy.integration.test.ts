@@ -3,7 +3,7 @@ import type { AdminUpdateModelPolicyRequest } from "@capstone/protocol";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { and, eq } from "drizzle-orm";
 import { Pool } from "pg";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createCursorCodec } from "../src/conversations/cursor.js";
 import { user } from "../src/database/auth-schema.generated.js";
 import { conversations, messages } from "../src/database/conversation-schema.js";
@@ -1055,7 +1055,15 @@ describe.sequential("model policy and budget persistence", () => {
       throw new Error("Assistant insert failed");
     }
 
-    const budget = createBudgetService(database);
+    const recordReservationSettlement = vi.fn();
+    const recordReconciliation = vi.fn();
+    const budget = createBudgetService(database, {
+      telemetry: {
+        recordBudgetRejection: vi.fn(),
+        recordReconciliation,
+        recordReservationSettlement,
+      },
+    });
     const startedAt = new Date();
     const generationId = await database.transaction(async (transaction) => {
       const admission = await budget.lockAdmission(transaction, workspaceId, userId, startedAt);
@@ -1068,7 +1076,7 @@ describe.sequential("model policy and budget persistence", () => {
       const reservation = budget.reserveResolvedTier(admission, policy, 1_000n, startedAt);
       expect(reservation.reservedCostUsd).toBe("0.005");
       expect(reservation.reservationExpiresAt).toEqual(
-        new Date(startedAt.getTime() + 6 * 60 * 1_000),
+        new Date(startedAt.getTime() + costControlTuning.reservationExpiryMs),
       );
       const inserted = await transaction
         .insert(generations)
@@ -1174,7 +1182,9 @@ describe.sequential("model policy and budget persistence", () => {
       })
       .where(eq(generations.id, generationId));
     await expect(
-      budget.reconcileExpiredOnce(new Date(startedAt.getTime() + 6 * 60 * 1_000)),
+      budget.reconcileExpiredOnce(
+        new Date(startedAt.getTime() + costControlTuning.reservationExpiryMs),
+      ),
     ).resolves.toEqual({ inspected: 1, settled: 1, terminalized: 1 });
     expect(
       (await database.select().from(generations).where(eq(generations.id, generationId)))[0],
@@ -1184,6 +1194,14 @@ describe.sequential("model policy and budget persistence", () => {
       costUsd: "0.005000000000000000",
       errorCode: "STREAM_INTERRUPTED",
       status: "incomplete",
+    });
+    expect(recordReservationSettlement.mock.calls).toEqual([["actual"], ["actual"], ["expired"]]);
+    expect(recordReconciliation).toHaveBeenCalledOnce();
+    expect(recordReconciliation).toHaveBeenCalledWith({
+      claimed: 1,
+      errors: 0,
+      oldestDueLagMs: 0,
+      settled: 1,
     });
   });
 

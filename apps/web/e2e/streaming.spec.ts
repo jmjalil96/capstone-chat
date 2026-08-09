@@ -1,10 +1,24 @@
-import { expect, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 
 import { copy } from "../src/copy";
 import { browserMessage, browserUuid, installStreamingFixture } from "./support/streaming-fixture";
 
 const navigationFirstId = browserUuid(1);
 const navigationSecondId = browserUuid(2);
+
+async function navigateFromConversationMenu(page: Page, title: string): Promise<void> {
+  const desktopSidebar = page.locator(".desktop-sidebar");
+  if (await desktopSidebar.isVisible()) {
+    await desktopSidebar.getByRole("link", { name: title }).click();
+    return;
+  }
+
+  await page.getByRole("button", { name: copy.conversations.navigation.open }).click();
+  const drawer = page.getByRole("dialog", { name: copy.conversations.navigation.label });
+  await expect(drawer).toBeVisible();
+  await drawer.getByRole("link", { name: title }).click();
+  await expect(drawer).not.toBeVisible();
+}
 
 test("@critical-stream keeps conversation streams isolated across navigation and stops one safely", async ({
   page,
@@ -42,13 +56,12 @@ test("@critical-stream keeps conversation streams isolated across navigation and
   const draft = page.getByRole("textbox", { name: copy.conversations.draft.label });
   await draft.fill("Solicitud alfa");
   await expect(page.getByText(copy.conversations.draft.saved, { exact: true })).toBeVisible();
-  await draft.press("Enter");
+  await page.getByRole("button", { name: copy.conversations.generation.actions.send }).click();
   await expect(
     page.getByRole("button", { name: copy.conversations.generation.actions.stop }),
   ).toBeVisible();
 
-  const sidebar = page.locator(".desktop-sidebar");
-  await sidebar.getByRole("link", { name: "Conversación Beta" }).click();
+  await navigateFromConversationMenu(page, "Conversación Beta");
   await expect(page).toHaveURL(`/c/${navigationSecondId}`);
   await draft.fill("Solicitud beta");
   await page.getByRole("button", { name: copy.conversations.generation.actions.send }).click();
@@ -56,13 +69,13 @@ test("@critical-stream keeps conversation streams isolated across navigation and
     page.getByRole("button", { name: copy.conversations.generation.actions.stop }),
   ).toBeVisible();
 
-  await sidebar.getByRole("link", { name: "Conversación Alfa" }).click();
+  await navigateFromConversationMenu(page, "Conversación Alfa");
   await expect(page.getByText("Respuesta alfa completa.", { exact: true })).toBeVisible();
   await expect(
     page.getByRole("button", { name: copy.conversations.generation.actions.send }),
   ).toBeVisible();
 
-  await sidebar.getByRole("link", { name: "Conversación Beta" }).click();
+  await navigateFromConversationMenu(page, "Conversación Beta");
   await expect(page.getByText("Respuesta beta parcial.", { exact: true })).toBeVisible();
   await draft.fill("Borrador beta conservado.");
   await expect(page.getByText(copy.conversations.draft.saved, { exact: true })).toBeVisible();
@@ -94,6 +107,7 @@ test("@critical-stream keeps conversation streams isolated across navigation and
 });
 
 test("@critical-stream follows growth, respects manual scrolling, and jumps to the latest output", async ({
+  isMobile,
   page,
 }) => {
   const conversationId = browserUuid(60);
@@ -236,8 +250,15 @@ test("@critical-stream follows growth, respects manual scrolling, and jumps to t
   );
   expect(grownGeometry.distanceFromBottom).toBeLessThan(3);
 
-  await scroll.hover();
-  await page.mouse.wheel(0, -700);
+  if (isMobile) {
+    await scroll.evaluate((container) => {
+      container.scrollTop = Math.max(0, container.scrollTop - 700);
+      container.dispatchEvent(new Event("scroll"));
+    });
+  } else {
+    await scroll.hover();
+    await page.mouse.wheel(0, -700);
+  }
   await expect
     .poll(() => scroll.evaluate((container) => container.scrollTop))
     .toBeLessThan(grownGeometry.scrollTop - 96);

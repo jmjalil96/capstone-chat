@@ -1,5 +1,5 @@
 import { createHmac } from "node:crypto";
-import type { Page } from "@playwright/test";
+import { expect, type Locator, type Page } from "@playwright/test";
 
 import {
   conversationBrowserAuthentication,
@@ -68,7 +68,23 @@ export async function rejectClipboardWrites(page: Page): Promise<void> {
   });
 }
 
-export async function openAuthenticatedBrowserEmployee(page: Page): Promise<void> {
+async function openConversationSidebar(page: Page, isMobile: boolean): Promise<Locator> {
+  if (!isMobile) {
+    const sidebar = page.locator(".desktop-sidebar");
+    await expect(sidebar).toBeVisible();
+    return sidebar;
+  }
+
+  await page.getByRole("button", { name: copy.conversations.navigation.open }).click();
+  const drawer = page.getByRole("dialog", { name: copy.conversations.navigation.label });
+  await expect(drawer).toBeVisible();
+  return drawer;
+}
+
+export async function openAuthenticatedBrowserEmployee(
+  page: Page,
+  isMobile = false,
+): Promise<void> {
   const signature = createHmac("sha256", conversationBrowserAuthentication.secret)
     .update(conversationBrowserAuthentication.sessionToken)
     .digest("base64");
@@ -88,18 +104,38 @@ export async function openAuthenticatedBrowserEmployee(page: Page): Promise<void
   );
   await page.goto("/");
   await sessionReady;
-  await page
-    .locator(".desktop-sidebar")
-    .getByLabel(copy.conversations.navigation.account)
-    .waitFor();
-  await page
-    .locator(".desktop-sidebar")
-    .getByText(conversationBrowserEmployee.name, { exact: true })
-    .waitFor();
+  await page.getByRole("heading", { level: 1, name: copy.conversations.newChat.title }).waitFor();
+  const sidebar = await openConversationSidebar(page, isMobile);
+  await sidebar.getByLabel(copy.conversations.navigation.account).waitFor();
+  await sidebar.getByText(conversationBrowserEmployee.name, { exact: true }).waitFor();
+  if (isMobile) {
+    await sidebar.getByRole("button", { name: copy.conversations.navigation.close }).click();
+    await expect(sidebar).not.toBeVisible();
+  }
   await page.waitForLoadState("networkidle");
 }
 
-export async function openDesktopConversation(page: Page, title: string): Promise<void> {
-  await page.locator(".desktop-sidebar").getByRole("link", { name: title }).click();
+export async function followConversationSidebarLink(
+  page: Page,
+  name: string,
+  isMobile: boolean,
+): Promise<void> {
+  const sidebar = await openConversationSidebar(page, isMobile);
+  await sidebar.getByRole("link", { name }).click();
+  if (isMobile) {
+    await expect(sidebar).not.toBeVisible();
+  }
+}
+
+export async function openConversation(
+  page: Page,
+  title: string,
+  isMobile: boolean,
+): Promise<void> {
+  await followConversationSidebarLink(page, title, isMobile);
   await page.getByRole("heading", { level: 1, name: title }).waitFor();
+}
+
+export async function openDesktopConversation(page: Page, title: string): Promise<void> {
+  await openConversation(page, title, false);
 }

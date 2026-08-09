@@ -8,6 +8,13 @@ import type {
 } from "@capstone/protocol";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { hasUnsupportedControlCharacter } from "../conversations/content.js";
+import { promoteToStreamingResponse } from "../http-request-drain.js";
+import type {
+  ApplicationTelemetry,
+  ModelCallTelemetry,
+  TelemetryContextMode,
+  TelemetryOutcome,
+} from "../observability/telemetry-contract.js";
 import { applySecurityHeaders } from "../security/http.js";
 import type { ActiveStreamRegistry } from "./active-streams.js";
 import type { CompactionService } from "./compaction-service.js";
@@ -21,6 +28,7 @@ import type {
   GenerationRequest,
   ModelGateway,
 } from "./model-gateway.js";
+import { gatewayTransportElapsedMilliseconds } from "./model-gateway.js";
 import type {
   DurableGenerationState,
   GenerationService,
@@ -60,7 +68,7 @@ export class NdjsonWriter {
 
   start(requestId: string): void {
     void this.#reply.code(200);
-    void this.#reply.header("cache-control", "no-store");
+    void this.#reply.header("cache-control", "no-store, no-transform");
     void this.#reply.header("content-type", "application/x-ndjson");
     void this.#reply.header("x-content-type-options", "nosniff");
     void this.#reply.header("x-request-id", requestId);
@@ -331,14 +339,34 @@ export function createResponseStreamCoordinator(dependencies: {
   readonly gateway: ModelGateway;
   readonly generations: GenerationService;
   readonly registry: ActiveStreamRegistry;
+  readonly telemetry?:
+    | Pick<
+        ApplicationTelemetry,
+        | "changeActiveEmployeeStreams"
+        | "changeActiveProviderCalls"
+        | "recordContextDecision"
+        | "recordGeneration"
+        | "recordResponseStarted"
+        | "startModelCall"
+      >
+    | undefined;
 }) {
   const { gateway, generations, registry } = dependencies;
+
+  function observe(action: () => void): void {
+    try {
+      action();
+    } catch {
+      // Telemetry cannot affect streaming or durable recovery.
+    }
+  }
 
   async function stream(
     started: StartedResponse,
     request: FastifyRequest,
     reply: FastifyReply,
   ): Promise<void> {
+    const workflowStartedAt = performance.now();
     let assistantContent = "";
     let assistantBytes = 0;
     let accountingSettled = false;
@@ -346,10 +374,38 @@ export function createResponseStreamCoordinator(dependencies: {
     let providerGenerationId: string | null = null;
     let terminal = false;
     let usageLookupAttempted = false;
-    const lease = registry.register(started.generationId, () => ({
-      content: assistantContent,
-      firstTokenAt,
-    }));
+    let contextMode: TelemetryContextMode =
+      started.request.derivedContext !== undefined
+        ? "compacted"
+        : started.contextWarning === true
+          ? "fallback"
+          : "full";
+    let modelAccounting: GatewayAccounting | undefined;
+    let modelCall: ModelCallTelemetry | undefined;
+    let modelCallStartedAt = 0;
+    let modelCallStoppedAt: number | undefined;
+    let modelTransportDurationMilliseconds: number | undefined;
+    let modelCancellationObserved = false;
+    let modelOutcome: TelemetryOutcome = "failed";
+    let modelOutcomeObserved = false;
+    let modelUsage: GatewayUsage | undefined;
+    let providerCallActive = false;
+    let providerHeadersObserved = false;
+    let providerTokenObserved = false;
+    const promotion = promoteToStreamingResponse(request, () =>
+      registry.register(started.generationId, () => ({
+        content: assistantContent,
+        firstTokenAt,
+      })),
+    );
+    if (promotion.kind === "closed") {
+      // The ordinary-request deadline already expired. Its connection has
+      // been force-closed and process-owned resources may be shutting down,
+      // so the durable admission is left for bounded reconciliation instead
+      // of starting untracked cleanup behind the stream fence.
+      return;
+    }
+    const lease = promotion.value;
     const disconnected = new AbortController();
     const durableStateMonitorController = new AbortController();
     const gatewayController = new AbortController();
@@ -364,6 +420,99 @@ export function createResponseStreamCoordinator(dependencies: {
       AbortSignal.any([lease.signal, disconnected.signal]),
     );
     const checkpoints = new CheckpointScheduler(generations, started.generationId, Date.now());
+
+    function startModelObservation(requestForGateway: GenerationRequest): void {
+      modelCallStartedAt = performance.now();
+      observe(() => {
+        modelCall = dependencies.telemetry?.startModelCall({
+          contextMode,
+          generationId: started.generationId,
+          privacyPolicyVersion:
+            requestForGateway.route === undefined ? "not_applicable" : "openrouter-privacy-v1",
+          purpose: "chat",
+          tier: started.request.modelTier,
+        });
+      });
+      observe(() => modelCall?.requestSent());
+      providerCallActive = true;
+      observe(() => dependencies.telemetry?.changeActiveProviderCalls("chat", 1));
+    }
+
+    function observeGatewayEvent(event: GatewayEvent): void {
+      if (event.type === "response.headers" && !providerHeadersObserved) {
+        providerHeadersObserved = true;
+        observe(() =>
+          modelCall?.responseStarted(
+            gatewayTransportElapsedMilliseconds(event) ?? performance.now() - modelCallStartedAt,
+          ),
+        );
+      }
+      if (event.type === "content.delta" && !providerTokenObserved) {
+        providerTokenObserved = true;
+        observe(() =>
+          modelCall?.firstToken(
+            gatewayTransportElapsedMilliseconds(event) ?? performance.now() - modelCallStartedAt,
+          ),
+        );
+      }
+      if (event.type === "response.completed") {
+        modelTransportDurationMilliseconds =
+          gatewayTransportElapsedMilliseconds(event) ?? performance.now() - modelCallStartedAt;
+        stopProviderObservation();
+        modelOutcomeObserved = true;
+        modelOutcome = "completed";
+        modelUsage = event.usage;
+        modelAccounting = event.accounting;
+      } else if (event.type === "response.failed") {
+        modelTransportDurationMilliseconds =
+          gatewayTransportElapsedMilliseconds(event) ?? performance.now() - modelCallStartedAt;
+        stopProviderObservation();
+        modelOutcomeObserved = true;
+        modelOutcome = event.providerOutcome === undefined ? "failed" : "completed";
+        modelUsage = event.usage;
+        modelAccounting = event.accounting?.actual;
+      }
+    }
+
+    function settleModelObservation(fallbackOutcome: TelemetryOutcome): void {
+      if (modelCall === undefined) {
+        return;
+      }
+      stopProviderObservation();
+      const providerDurationMs =
+        modelTransportDurationMilliseconds ??
+        (modelCallStoppedAt ?? performance.now()) - modelCallStartedAt;
+      const settledCall = modelCall;
+      modelCall = undefined;
+      observe(() =>
+        settledCall.settle({
+          cachedTokens: modelAccounting?.cachedTokens,
+          completionTokens: modelUsage?.outputTokens,
+          costUsd: modelAccounting?.costUsd,
+          outcome: modelOutcomeObserved ? modelOutcome : fallbackOutcome,
+          promptTokens: modelUsage?.inputTokens,
+          providerDurationMs,
+          reasoningTokens: modelAccounting?.reasoningTokens,
+        }),
+      );
+    }
+
+    function stopProviderObservation(): void {
+      modelCallStoppedAt ??= performance.now();
+      if (!providerCallActive) {
+        return;
+      }
+      providerCallActive = false;
+      observe(() => dependencies.telemetry?.changeActiveProviderCalls("chat", -1));
+    }
+
+    function observeModelCancellation(): void {
+      if (modelCancellationObserved) {
+        return;
+      }
+      modelCancellationObserved = true;
+      observe(() => modelCall?.cancelRequested());
+    }
 
     const connectionClosed = (): void => {
       if (!reply.raw.writableFinished && !disconnected.signal.aborted) {
@@ -439,6 +588,8 @@ export function createResponseStreamCoordinator(dependencies: {
       usage: GatewayUsage,
       accounting: GatewayAccounting,
     ): Promise<void> {
+      modelUsage = usage;
+      modelAccounting = accounting;
       providerGenerationId = accounting.metadata.providerGenerationId ?? providerGenerationId;
       accountingSettled =
         (await generations.settleAccounting(started.generationId, usage, accounting)) ||
@@ -469,6 +620,9 @@ export function createResponseStreamCoordinator(dependencies: {
     }
 
     async function settleLateEvent(event: GatewayEvent): Promise<void> {
+      if (event.type === "response.headers") {
+        return;
+      }
       if (event.type === "generation.metadata") {
         await persistProviderMetadata(event.metadata);
         return;
@@ -553,6 +707,9 @@ export function createResponseStreamCoordinator(dependencies: {
     }
 
     try {
+      observe(() =>
+        dependencies.telemetry?.changeActiveEmployeeStreams(started.request.modelTier, 1),
+      );
       writer.start(request.id);
       const startedEvent: ResponseStartedEvent = {
         conversationId: started.conversationId,
@@ -563,6 +720,13 @@ export function createResponseStreamCoordinator(dependencies: {
         userMessageId: started.userMessageId,
       };
       await writer.write(startedEvent);
+      observe(() =>
+        dependencies.telemetry?.recordResponseStarted(
+          started.request.modelTier,
+          "chat",
+          Date.now() - started.admittedAt.getTime(),
+        ),
+      );
 
       let chatRequest: GenerationRequest = started.request;
       if (started.compaction !== undefined) {
@@ -589,6 +753,7 @@ export function createResponseStreamCoordinator(dependencies: {
           ...result.chat.request,
           ...(started.request.route === undefined ? {} : { route: started.request.route }),
         };
+        contextMode = result.kind === "compacted" ? "compacted" : "fallback";
         await writer.write(
           result.kind === "compacted"
             ? { type: "context.compacted" }
@@ -601,7 +766,16 @@ export function createResponseStreamCoordinator(dependencies: {
         });
       }
 
+      observe(() =>
+        dependencies.telemetry?.recordContextDecision(started.request.modelTier, contextMode),
+      );
+      startModelObservation(chatRequest);
+
       for await (const event of gateway.stream(chatRequest, gatewaySignal)) {
+        observeGatewayEvent(event);
+        if (event.type === "response.headers") {
+          continue;
+        }
         const state = await generations.readState(started.generationId);
         if (state === null) {
           throw new GatewayOutputError("GENERATION_FAILED");
@@ -755,13 +929,20 @@ export function createResponseStreamCoordinator(dependencies: {
         terminal = true;
         break;
       }
+      stopProviderObservation();
 
       if (!terminal) {
         await fail("GENERATION_FAILED");
         terminal = true;
       }
     } catch (error: unknown) {
+      stopProviderObservation();
+      modelOutcome = isAbortError(error) || gatewaySignal.aborted ? "cancelled" : "failed";
+      modelOutcomeObserved = true;
       const state = await generations.readState(started.generationId).catch(() => null);
+      if (lease.signal.aborted || state?.status === "cancelled") {
+        observeModelCancellation();
+      }
       if (state !== null && state.status !== "active" && state.status !== "preparing") {
         terminal = await durableTerminalEvent(state).catch(() => true);
       } else if (state?.status === "active") {
@@ -801,24 +982,52 @@ export function createResponseStreamCoordinator(dependencies: {
         }
       }
     } finally {
-      durableStateMonitorController.abort("stream-settled");
-      if (!gatewayController.signal.aborted) {
-        gatewayController.abort("disconnect");
-      }
-      await durableStateMonitor;
-      await checkpoints.settle();
-      if (!accountingSettled && providerGenerationId !== null) {
-        const recovered = await lookupAccounting().catch(() => undefined);
-        if (recovered !== undefined) {
-          await settleAfterTerminal(recovered.usage, recovered.accounting).catch(() => undefined);
+      try {
+        durableStateMonitorController.abort("stream-settled");
+        if (!gatewayController.signal.aborted) {
+          gatewayController.abort("disconnect");
         }
+        await durableStateMonitor;
+        await checkpoints.settle();
+        if (!accountingSettled && providerGenerationId !== null) {
+          const recovered = await lookupAccounting().catch(() => undefined);
+          if (recovered !== undefined) {
+            await settleAfterTerminal(recovered.usage, recovered.accounting).catch(() => undefined);
+          }
+        }
+        reply.raw.removeListener("close", connectionClosed);
+        reply.raw.removeListener("error", connectionError);
+        if (!reply.raw.destroyed && !reply.raw.writableEnded) {
+          reply.raw.end();
+        }
+        const finalState = await generations.readState(started.generationId).catch(() => null);
+        const workflowOutcome: TelemetryOutcome =
+          finalState?.status === "completed"
+            ? "completed"
+            : finalState?.status === "cancelled"
+              ? "cancelled"
+              : finalState?.status === "incomplete"
+                ? "incomplete"
+                : "failed";
+        if (workflowOutcome === "cancelled") {
+          observeModelCancellation();
+        }
+        stopProviderObservation();
+        settleModelObservation(workflowOutcome);
+        observe(() =>
+          dependencies.telemetry?.recordGeneration(
+            started.request.modelTier,
+            "chat",
+            workflowOutcome,
+            performance.now() - workflowStartedAt,
+          ),
+        );
+        observe(() =>
+          dependencies.telemetry?.changeActiveEmployeeStreams(started.request.modelTier, -1),
+        );
+      } finally {
+        lease.release();
       }
-      reply.raw.removeListener("close", connectionClosed);
-      reply.raw.removeListener("error", connectionError);
-      if (!reply.raw.destroyed && !reply.raw.writableEnded) {
-        reply.raw.end();
-      }
-      lease.release();
     }
   }
 

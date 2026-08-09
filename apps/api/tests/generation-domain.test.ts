@@ -14,6 +14,7 @@ import {
 } from "../src/generations/response-stream.js";
 import type { GenerationService } from "../src/generations/service.js";
 import { generationTuning } from "../src/generations/settings.js";
+import { createApplicationTelemetry } from "../src/observability/telemetry.js";
 import { OpenRouterGateway } from "../src/openrouter/openrouter-gateway.js";
 
 describe("Phase 4 generation configuration", () => {
@@ -24,7 +25,7 @@ describe("Phase 4 generation configuration", () => {
       checkpointMilliseconds: 250,
       durableStatePollMilliseconds: 250,
       fakeChunkDelayMilliseconds: 400,
-      gracefulDrainMilliseconds: 10_000,
+      gracefulDrainMilliseconds: 4 * 60 * 1_000,
       maximumAssistantBytes: 1_048_576,
       maximumContextBytes: 1_048_576,
       maximumNdjsonLineBytes: 65_536,
@@ -49,21 +50,35 @@ describe("Phase 4 generation configuration", () => {
   });
 
   it("selects OpenRouter and prohibits an injected local fake gateway in production", async () => {
-    const production = loadConfig({
-      BETTER_AUTH_SECRET: "production-auth-secret-longer-than-thirty-two-characters",
-      DATABASE_URL: "postgresql://capstone:capstone@example.invalid/capstone",
-      EMAIL_DELIVERY: "disabled",
-      MODEL_GATEWAY: "openrouter",
-      NODE_ENV: "production",
-      OPENROUTER_API_KEY: "test-openrouter-key-never-sent",
-      PUBLIC_ORIGIN: "https://chat.capstone.example",
+    const production = Object.freeze({
+      ...loadConfig({
+        BETTER_AUTH_SECRET: "production-auth-secret-longer-than-thirty-two-characters",
+        DATABASE_URL: "postgresql://capstone:capstone@example.invalid/capstone",
+        EMAIL_DELIVERY: "resend",
+        EMAIL_FROM: "Capstone Chat <no-reply@mail.capstone.com.ec>",
+        MODEL_GATEWAY: "openrouter",
+        NODE_ENV: "production",
+        OPENROUTER_API_KEY: "test-openrouter-key-never-sent",
+        OTEL_EXPORTER_OTLP_ENDPOINT: "https://otlp.nr-data.net",
+        OTEL_EXPORTER_OTLP_HEADERS: "api-key=test-license-key-never-sent",
+        PUBLIC_ORIGIN: "https://chat.capstone.com.ec",
+        RENDER_GIT_COMMIT: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        RESEND_API_KEY: "test-resend-key-never-sent",
+      }),
+      webAssetsDirectory: null,
     });
-    const application = createApplication(production);
+    const telemetry = createApplicationTelemetry({
+      endpoint: null,
+      environment: "test",
+      headers: {},
+      release: "test",
+    });
+    const application = createApplication(production, { telemetry });
     expect(application.modelGateway).toBeInstanceOf(OpenRouterGateway);
     await application.shutdown();
-    expect(() => createApplication(production, { modelGateway: new FakeModelGateway() })).toThrow(
-      "FakeModelGateway is prohibited",
-    );
+    expect(() =>
+      createApplication(production, { modelGateway: new FakeModelGateway(), telemetry }),
+    ).toThrow("FakeModelGateway is prohibited");
   });
 });
 
@@ -340,8 +355,48 @@ describe("FakeModelGateway", () => {
       compactionEvents.push(event);
     }
 
-    expect(chatEvents).toEqual([{ text: "chat fixture", type: "content.delta" }]);
-    expect(compactionEvents).toEqual([{ text: "compaction fixture", type: "content.delta" }]);
+    expect(chatEvents).toEqual([
+      { transportElapsedMilliseconds: expect.any(Number), type: "response.headers" },
+      {
+        text: "chat fixture",
+        transportElapsedMilliseconds: expect.any(Number),
+        type: "content.delta",
+      },
+    ]);
+    expect(compactionEvents).toEqual([
+      { transportElapsedMilliseconds: expect.any(Number), type: "response.headers" },
+      {
+        text: "compaction fixture",
+        transportElapsedMilliseconds: expect.any(Number),
+        type: "content.delta",
+      },
+    ]);
+  });
+
+  it("allows an injected harness to resolve a request-specific script", async () => {
+    const gateway = new FakeModelGateway({
+      chat: [{ event: { text: "ordinary fixture", type: "content.delta" } }],
+      resolve: (resolvedRequest) =>
+        resolvedRequest.message.text === "load canary"
+          ? [{ event: { text: "resolved canary", type: "content.delta" } }]
+          : undefined,
+    });
+    const events = [];
+    for await (const event of gateway.stream(
+      { ...request, message: { role: "user", text: "load canary" } },
+      new AbortController().signal,
+    )) {
+      events.push(event);
+    }
+
+    expect(events).toEqual([
+      { transportElapsedMilliseconds: expect.any(Number), type: "response.headers" },
+      {
+        text: "resolved canary",
+        transportElapsedMilliseconds: expect.any(Number),
+        type: "content.delta",
+      },
+    ]);
   });
 });
 

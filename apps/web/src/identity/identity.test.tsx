@@ -20,6 +20,7 @@ const authMocks = vi.hoisted(() => ({
   signIn: vi.fn(),
   signOut: vi.fn(),
   signUp: vi.fn(),
+  verifyEmail: vi.fn(),
 }));
 
 vi.mock("./auth-actions", () => authMocks);
@@ -82,7 +83,11 @@ function sessionResponse(fixture: SessionFixture): Response {
   return response({ unexpected: true }, 200);
 }
 
-function renderRoute(path: string, sessionFixture: SessionFixture = "authenticated") {
+function renderRoute(
+  path: string,
+  sessionFixture: SessionFixture = "authenticated",
+  strict = false,
+) {
   window.history.replaceState(null, "", path);
   let draftWritesFail = false;
   const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
@@ -144,11 +149,12 @@ function renderRoute(path: string, sessionFixture: SessionFixture = "authenticat
   const router = createMemoryRouter(appRoutes, { initialEntries: [path] });
   const user = userEvent.setup();
 
-  render(
+  const application = (
     <QueryClientProvider client={queryClient}>
       <RouterProvider router={router} />
-    </QueryClientProvider>,
+    </QueryClientProvider>
   );
+  render(strict ? <StrictMode>{application}</StrictMode> : application);
 
   return {
     fetchMock,
@@ -166,6 +172,7 @@ afterEach(() => {
   vi.clearAllMocks();
   vi.unstubAllGlobals();
   window.localStorage.clear();
+  window.sessionStorage.clear();
   window.history.replaceState(null, "", "/");
 });
 
@@ -557,14 +564,43 @@ describe("identity routes", () => {
     expect(screen.queryByText("ana@example.test")).not.toBeInTheDocument();
   });
 
-  it("keeps verification outcomes generic and removes callback values from the URL", async () => {
-    renderRoute("/verify-email?verified=1&token=must-not-remain");
+  it("captures a verification fragment before the JSON request and removes it from the URL", async () => {
+    authMocks.verifyEmail.mockImplementation(async () => {
+      expect(window.location.hash).toBe("");
+      expect(window.location.search).toBe("");
+    });
+    renderRoute("/verify-email#token=verification-secret", "authenticated", true);
 
     expect(
       await screen.findByRole("heading", { name: copy.identity.verifyEmail.verifiedTitle }),
     ).toBeVisible();
+    expect(authMocks.verifyEmail.mock.calls[0]?.[0]).toBe("verification-secret");
+    expect(authMocks.verifyEmail).toHaveBeenCalledTimes(1);
     expect(window.location.search).toBe("");
-    expect(document.body).not.toHaveTextContent("must-not-remain");
+    expect(window.location.hash).toBe("");
+    expect(document.body).not.toHaveTextContent("verification-secret");
+    expect(window.localStorage).toHaveLength(0);
+    expect(window.sessionStorage).toHaveLength(0);
+  });
+
+  it("keeps malformed and rejected verification fragments on the generic recovery path", async () => {
+    renderRoute("/verify-email#token=first&token=second");
+
+    expect(
+      await screen.findByRole("heading", { name: copy.identity.verifyEmail.invalidTitle }),
+    ).toBeVisible();
+    expect(authMocks.verifyEmail).not.toHaveBeenCalled();
+    expect(window.location.hash).toBe("");
+
+    cleanup();
+    authMocks.verifyEmail.mockRejectedValue(new Error("expired provider detail"));
+    renderRoute("/verify-email#token=expired-secret");
+
+    expect(
+      await screen.findByRole("heading", { name: copy.identity.verifyEmail.invalidTitle }),
+    ).toBeVisible();
+    expect(document.body).not.toHaveTextContent("expired-secret");
+    expect(document.body).not.toHaveTextContent("expired provider detail");
   });
 
   it("requests password recovery without revealing account existence", async () => {
@@ -587,9 +623,10 @@ describe("identity routes", () => {
 
   it("captures a reset token in memory and removes it from the visible URL before submission", async () => {
     authMocks.resetPassword.mockResolvedValue(undefined);
-    const { user } = renderRoute("/reset-password?token=reset-secret");
+    const { user } = renderRoute("/reset-password#token=reset-secret");
 
     expect(window.location.search).toBe("");
+    expect(window.location.hash).toBe("");
     const password = screen.getByLabelText(copy.identity.common.newPasswordLabel);
     const confirmation = screen.getByLabelText(copy.identity.common.confirmPasswordLabel);
     expect(password).toHaveAttribute("autocomplete", "new-password");
@@ -609,6 +646,8 @@ describe("identity routes", () => {
         selector: ".form-message",
       }),
     ).toHaveFocus();
+    expect(window.localStorage).toHaveLength(0);
+    expect(window.sessionStorage).toHaveLength(0);
   });
 
   it("changes a password with explicit other-session revocation semantics", async () => {

@@ -1,3 +1,4 @@
+import { createConnection } from "node:net";
 import { describe, expect, it, vi } from "vitest";
 import { createApplication } from "../src/app.js";
 import { loadConfig } from "../src/config.js";
@@ -11,9 +12,13 @@ import type {
   StartedResponse,
 } from "../src/generations/service.js";
 import { generationTuning } from "../src/generations/settings.js";
+import type { EmailSender } from "../src/identity/email.js";
 import type { CostControlMaintenance } from "../src/model-policy/maintenance.js";
+import type { ApplicationTelemetry } from "../src/observability/telemetry-contract.js";
+import { httpServerTuning } from "../src/security/http.js";
 
 const completingResponse: StartedResponse = {
+  admittedAt: new Date(),
   conversationId: "00000000-0000-4000-8000-000000000011",
   generationId: "00000000-0000-4000-8000-000000000012",
   messageId: "00000000-0000-4000-8000-000000000013",
@@ -29,6 +34,7 @@ const completingResponse: StartedResponse = {
 };
 
 const stalledResponse: StartedResponse = {
+  admittedAt: new Date(),
   conversationId: "00000000-0000-4000-8000-000000000021",
   generationId: "00000000-0000-4000-8000-000000000022",
   messageId: "00000000-0000-4000-8000-000000000023",
@@ -57,7 +63,475 @@ async function streamEvents(response: Response): Promise<readonly Record<string,
     .map((line) => JSON.parse(line) as Record<string, unknown>);
 }
 
+function shutdownResourceSpies() {
+  const closeEmail = vi.fn(async () => undefined);
+  const shutdownTelemetry = vi.fn(async () => undefined);
+  return {
+    closeEmail,
+    emailSender: {
+      close: closeEmail,
+      kind: "disabled",
+      send: vi.fn(async () => undefined),
+    } satisfies EmailSender,
+    shutdownTelemetry,
+    telemetry: { shutdown: shutdownTelemetry } as unknown as ApplicationTelemetry,
+  };
+}
+
 describe("graceful shutdown", () => {
+  it("lets a valid ordinary request finish during its short drain", async () => {
+    const pool: DatabasePool = {
+      end: vi.fn(async () => undefined),
+      query: vi.fn(async () => ({ rows: [{ result: 1 }] })),
+    };
+    const application = createApplication(loadConfig({ NODE_ENV: "test" }), { pool });
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    application.server.get("/api/test/ordinary-drain", async () => {
+      entered.resolve();
+      await release.promise;
+      return { drained: true };
+    });
+    await application.server.listen({ host: "127.0.0.1", port: 0 });
+    await application.lifecycle.initialize();
+    const address = application.server.server.address();
+    if (address === null || typeof address === "string") {
+      throw new Error("Synthetic shutdown listener did not expose a port");
+    }
+
+    const responsePromise = fetch(`http://127.0.0.1:${address.port}/api/test/ordinary-drain`, {
+      headers: { connection: "close" },
+    });
+    await entered.promise;
+    const shutdown = application.shutdown();
+    expect(application.lifecycle.phase).toBe("draining");
+    release.resolve();
+
+    const response = await responsePromise;
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ drained: true });
+    await expect(shutdown).resolves.toBeUndefined();
+    expect(pool.end).toHaveBeenCalledOnce();
+  });
+
+  it("fences a response promoted after shutdown behind its terminal write", async () => {
+    const routeEntered = Promise.withResolvers<void>();
+    const releaseRoute = Promise.withResolvers<void>();
+    const terminalWriteEntered = Promise.withResolvers<void>();
+    const releaseTerminalWrite = Promise.withResolvers<void>();
+    let state: DurableGenerationState = {
+      assistantMessageId: completingResponse.messageId,
+      conversationId: completingResponse.conversationId,
+      errorCode: null,
+      reason: null,
+      revision: completingResponse.revision,
+      status: "active",
+    };
+    const generations = {
+      checkpoint: vi.fn(async () => false),
+      readState: vi.fn(async () => ({ ...state })),
+      terminalize: vi.fn(
+        async (_generationId: string, input: Parameters<GenerationService["terminalize"]>[1]) => {
+          terminalWriteEntered.resolve();
+          await releaseTerminalWrite.promise;
+          state = {
+            assistantMessageId: state.assistantMessageId,
+            conversationId: state.conversationId,
+            errorCode: input.errorCode,
+            reason: input.reason,
+            revision: (state.revision ?? 0) + 1,
+            status: input.status,
+          };
+          return { ...state, won: true };
+        },
+      ),
+    } as unknown as GenerationService;
+    const gateway: ModelGateway = {
+      async *stream(_request, signal) {
+        signal.throwIfAborted();
+        yield {
+          reason: "stop",
+          type: "response.completed",
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+    };
+    const streamRegistry = new ActiveStreamRegistry();
+    const end = vi.fn(async () => {
+      expect(streamRegistry.size).toBe(0);
+      expect(state).toMatchObject({
+        errorCode: "STREAM_INTERRUPTED",
+        reason: "error",
+        status: "failed",
+      });
+    });
+    const pool: DatabasePool = {
+      end,
+      query: vi.fn(async () => ({ rows: [{ result: 1 }] })),
+    };
+    const application = createApplication(loadConfig({ NODE_ENV: "test" }), {
+      generations,
+      modelGateway: gateway,
+      pool,
+      streamRegistry,
+    });
+    application.server.get("/api/test/promote-during-shutdown", async (request, reply) => {
+      routeEntered.resolve();
+      await releaseRoute.promise;
+      await application.responseStreams.stream(completingResponse, request, reply);
+    });
+    await application.server.listen({ host: "127.0.0.1", port: 0 });
+    await application.lifecycle.initialize();
+    const address = application.server.server.address();
+    if (address === null || typeof address === "string") {
+      throw new Error("Synthetic shutdown listener did not expose a port");
+    }
+
+    const responsePromise = fetch(
+      `http://127.0.0.1:${address.port}/api/test/promote-during-shutdown`,
+      {
+        headers: { connection: "close" },
+      },
+    );
+    await routeEntered.promise;
+    const shutdown = application.shutdown();
+    releaseRoute.resolve();
+    await terminalWriteEntered.promise;
+
+    expect(streamRegistry.size).toBe(1);
+    expect(end).not.toHaveBeenCalled();
+    releaseTerminalWrite.resolve();
+
+    const response = await responsePromise;
+    expect(response.status).toBe(200);
+    await response.text();
+    await expect(shutdown).resolves.toBeUndefined();
+    expect(generations.terminalize).toHaveBeenCalledOnce();
+    expect(end).toHaveBeenCalledOnce();
+  });
+
+  it("seals a force-closed ordinary handler against post-deadline stream work", async () => {
+    const routeEntered = Promise.withResolvers<void>();
+    const releaseRoute = Promise.withResolvers<void>();
+    const routeFinished = Promise.withResolvers<void>();
+    const generations = {
+      checkpoint: vi.fn(async () => false),
+      readState: vi.fn(async () => null),
+      terminalize: vi.fn(),
+    } as unknown as GenerationService;
+    const gateway: ModelGateway = {
+      async *stream() {
+        yield {
+          reason: "stop",
+          type: "response.completed",
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+    };
+    const streamRegistry = new ActiveStreamRegistry();
+    const pool: DatabasePool = {
+      end: vi.fn(async () => undefined),
+      query: vi.fn(async () => ({ rows: [{ result: 1 }] })),
+    };
+    const application = createApplication(loadConfig({ NODE_ENV: "test" }), {
+      generations,
+      modelGateway: gateway,
+      pool,
+      streamRegistry,
+    });
+    application.server.get("/api/test/promote-after-deadline", async (request, reply) => {
+      routeEntered.resolve();
+      try {
+        await releaseRoute.promise;
+        await application.responseStreams.stream(stalledResponse, request, reply);
+      } finally {
+        routeFinished.resolve();
+      }
+    });
+    await application.server.listen({ host: "127.0.0.1", port: 0 });
+    await application.lifecycle.initialize();
+    const address = application.server.server.address();
+    if (address === null || typeof address === "string") {
+      throw new Error("Synthetic shutdown listener did not expose a port");
+    }
+
+    const responsePromise = fetch(
+      `http://127.0.0.1:${address.port}/api/test/promote-after-deadline`,
+      {
+        headers: { connection: "close" },
+      },
+    ).catch(() => undefined);
+    await routeEntered.promise;
+
+    vi.useFakeTimers();
+    let fakeTimers = true;
+    let shutdown: Promise<void>;
+    try {
+      shutdown = application.shutdown();
+      await vi.advanceTimersByTimeAsync(httpServerTuning.ordinaryDrainMilliseconds);
+      expect(pool.end).not.toHaveBeenCalled();
+      releaseRoute.resolve();
+      await routeFinished.promise;
+      await vi.advanceTimersByTimeAsync(0);
+      vi.useRealTimers();
+      fakeTimers = false;
+      await shutdown;
+    } finally {
+      if (fakeTimers) {
+        vi.useRealTimers();
+      }
+    }
+    await responsePromise;
+    expect(application.lifecycle.phase).toBe("stopped");
+    expect(pool.end).toHaveBeenCalledOnce();
+    expect(streamRegistry.size).toBe(0);
+    expect(generations.checkpoint).not.toHaveBeenCalled();
+    expect(generations.readState).not.toHaveBeenCalled();
+    expect(generations.terminalize).not.toHaveBeenCalled();
+  });
+
+  it("keeps a force-closed ordinary handler ahead of database shutdown", async () => {
+    const routeEntered = Promise.withResolvers<void>();
+    const releaseRoute = Promise.withResolvers<void>();
+    const lateQueryEntered = Promise.withResolvers<void>();
+    const releaseLateQuery = Promise.withResolvers<void>();
+    const routeFinished = Promise.withResolvers<void>();
+    const end = vi.fn(async () => undefined);
+    const query = vi.fn(async (queryText: string) => {
+      if (queryText === "SELECT 1") {
+        return { rows: [{ result: 1 }] };
+      }
+      lateQueryEntered.resolve();
+      await releaseLateQuery.promise;
+      return { rows: [{ result: 2 }] };
+    });
+    const pool: DatabasePool = { end, query };
+    const application = createApplication(loadConfig({ NODE_ENV: "test" }), { pool });
+    application.server.get("/api/test/late-ordinary-database", async () => {
+      routeEntered.resolve();
+      try {
+        await releaseRoute.promise;
+        await pool.query("select 2");
+        return { completed: true };
+      } finally {
+        routeFinished.resolve();
+      }
+    });
+    await application.server.listen({ host: "127.0.0.1", port: 0 });
+    await application.lifecycle.initialize();
+    const address = application.server.server.address();
+    if (address === null || typeof address === "string") {
+      throw new Error("Synthetic shutdown listener did not expose a port");
+    }
+    const responsePromise = fetch(
+      `http://127.0.0.1:${address.port}/api/test/late-ordinary-database`,
+      {
+        headers: { connection: "close" },
+      },
+    ).catch(() => undefined);
+    await routeEntered.promise;
+
+    vi.useFakeTimers();
+    let fakeTimers = true;
+    let shutdown: Promise<void>;
+    try {
+      shutdown = application.shutdown();
+      await vi.advanceTimersByTimeAsync(httpServerTuning.ordinaryDrainMilliseconds);
+      expect(end).not.toHaveBeenCalled();
+      vi.useRealTimers();
+      fakeTimers = false;
+
+      releaseRoute.resolve();
+      await lateQueryEntered.promise;
+      expect(end).not.toHaveBeenCalled();
+      releaseLateQuery.resolve();
+      await routeFinished.promise;
+      await shutdown;
+    } finally {
+      releaseRoute.resolve();
+      releaseLateQuery.resolve();
+      if (fakeTimers) {
+        vi.useRealTimers();
+      }
+    }
+    await responsePromise;
+    expect(query).toHaveBeenCalledWith("select 2");
+    expect(end).toHaveBeenCalledOnce();
+    expect(application.lifecycle.phase).toBe("stopped");
+  });
+
+  it("fails closed when a force-closed ordinary handler misses its cleanup fence", async () => {
+    const routeEntered = Promise.withResolvers<void>();
+    const releaseRoute = Promise.withResolvers<void>();
+    const routeFinished = Promise.withResolvers<void>();
+    const end = vi.fn(async () => undefined);
+    const pool: DatabasePool = {
+      end,
+      query: vi.fn(async () => ({ rows: [{ result: 1 }] })),
+    };
+    const resources = shutdownResourceSpies();
+    const application = createApplication(loadConfig({ NODE_ENV: "test" }), {
+      emailSender: resources.emailSender,
+      pool,
+      telemetry: resources.telemetry,
+    });
+    application.server.get("/api/test/stuck-ordinary-handler", async () => {
+      routeEntered.resolve();
+      try {
+        await releaseRoute.promise;
+        return { completed: true };
+      } finally {
+        routeFinished.resolve();
+      }
+    });
+    await application.server.listen({ host: "127.0.0.1", port: 0 });
+    await application.lifecycle.initialize();
+    const address = application.server.server.address();
+    if (address === null || typeof address === "string") {
+      throw new Error("Synthetic shutdown listener did not expose a port");
+    }
+    const responsePromise = fetch(
+      `http://127.0.0.1:${address.port}/api/test/stuck-ordinary-handler`,
+      {
+        headers: { connection: "close" },
+      },
+    ).catch(() => undefined);
+    await routeEntered.promise;
+
+    vi.useFakeTimers();
+    try {
+      const shutdown = application.shutdown();
+      const rejected = expect(shutdown).rejects.toThrow(
+        "Application shutdown could not fence in-flight work",
+      );
+      await vi.advanceTimersByTimeAsync(httpServerTuning.ordinaryDrainMilliseconds);
+      await vi.advanceTimersByTimeAsync(httpServerTuning.shutdownCleanupMilliseconds);
+      await rejected;
+      expect(end).not.toHaveBeenCalled();
+      expect(resources.closeEmail).not.toHaveBeenCalled();
+      expect(resources.shutdownTelemetry).not.toHaveBeenCalled();
+      expect(application.lifecycle.phase).toBe("draining");
+    } finally {
+      releaseRoute.resolve();
+      vi.useRealTimers();
+    }
+    await routeFinished.promise;
+    await responsePromise;
+  });
+
+  it("leaves process-owned resources open when an aborted stream misses the final fence", async () => {
+    const end = vi.fn(async () => undefined);
+    const pool: DatabasePool = {
+      end,
+      query: vi.fn(async () => ({ rows: [{ result: 1 }] })),
+    };
+    const streamRegistry = new ActiveStreamRegistry();
+    const stalledLease = streamRegistry.register("00000000-0000-4000-8000-000000000099");
+    const resources = shutdownResourceSpies();
+    const application = createApplication(loadConfig({ NODE_ENV: "test" }), {
+      emailSender: resources.emailSender,
+      pool,
+      streamRegistry,
+      telemetry: resources.telemetry,
+    });
+
+    vi.useFakeTimers();
+    try {
+      const shutdown = application.shutdown();
+      const rejected = expect(shutdown).rejects.toThrow(
+        "Application shutdown could not fence in-flight work",
+      );
+      await vi.advanceTimersByTimeAsync(generationTuning.gracefulDrainMilliseconds);
+      expect(stalledLease.signal.aborted).toBe(true);
+      expect(stalledLease.signal.reason).toBe("shutdown");
+      expect(end).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(httpServerTuning.shutdownCleanupMilliseconds);
+      await rejected;
+      expect(end).not.toHaveBeenCalled();
+      expect(resources.closeEmail).not.toHaveBeenCalled();
+      expect(resources.shutdownTelemetry).not.toHaveBeenCalled();
+      expect(application.lifecycle.phase).toBe("draining");
+    } finally {
+      stalledLease.release();
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds a partial ordinary request without shortening the stream drain", async () => {
+    const pool: DatabasePool = {
+      end: vi.fn(async () => undefined),
+      query: vi.fn(async () => ({ rows: [{ result: 1 }] })),
+    };
+    const streamRegistry = new ActiveStreamRegistry();
+    const activeStream = streamRegistry.register("00000000-0000-4000-8000-000000000001");
+    const application = createApplication(loadConfig({ NODE_ENV: "test" }), {
+      pool,
+      streamRegistry,
+    });
+    const partialRequestEntered = Promise.withResolvers<void>();
+    application.server.post(
+      "/api/test/partial-request",
+      {
+        onRequest: (_request, _reply, done) => {
+          partialRequestEntered.resolve();
+          done();
+        },
+      },
+      async () => ({ unexpected: true }),
+    );
+    expect(application.server.server.requestTimeout).toBe(15_000);
+    await application.server.listen({ host: "127.0.0.1", port: 0 });
+    await application.lifecycle.initialize();
+    const address = application.server.server.address();
+    if (address === null || typeof address === "string") {
+      throw new Error("Synthetic shutdown listener did not expose a port");
+    }
+
+    const socket = createConnection({ host: "127.0.0.1", port: address.port });
+    await new Promise<void>((resolve, reject) => {
+      socket.once("connect", resolve);
+      socket.once("error", reject);
+    });
+    socket.write(
+      [
+        "POST /api/test/partial-request HTTP/1.1",
+        `Host: 127.0.0.1:${address.port}`,
+        "Content-Type: application/json",
+        "Content-Length: 100",
+        "Connection: keep-alive",
+        "",
+        "{",
+      ].join("\r\n"),
+    );
+    await partialRequestEntered.promise;
+
+    const socketClosed = new Promise<void>((resolve) => socket.once("close", resolve));
+    vi.useFakeTimers();
+    let fakeTimers = true;
+    let shutdown: Promise<void>;
+    try {
+      shutdown = application.shutdown();
+      await vi.advanceTimersByTimeAsync(httpServerTuning.ordinaryDrainMilliseconds);
+      expect(activeStream.signal.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(generationTuning.gracefulDrainMilliseconds - 1);
+      expect(activeStream.signal.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(activeStream.signal.aborted).toBe(true);
+      vi.useRealTimers();
+      fakeTimers = false;
+      await socketClosed;
+      activeStream.release();
+    } finally {
+      activeStream.release();
+      if (fakeTimers) {
+        vi.useRealTimers();
+      }
+    }
+    await expect(shutdown).resolves.toBeUndefined();
+    expect(application.lifecycle.phase).toBe("stopped");
+    expect(pool.end).toHaveBeenCalledOnce();
+  });
+
   it("stops HTTP and closes the database pool once", async () => {
     let maintenanceStopped = false;
     const maintenance: CostControlMaintenance = {
@@ -223,7 +697,7 @@ describe("graceful shutdown", () => {
       pool,
       streamRegistry,
     });
-    application.server.get("/test/shutdown-stream/:kind", async (request, reply) => {
+    application.server.get("/api/test/shutdown-stream/:kind", async (request, reply) => {
       const { kind } = request.params as { readonly kind: string };
       await application.responseStreams.stream(
         kind === "completing" ? completingResponse : stalledResponse,
@@ -237,7 +711,7 @@ describe("graceful shutdown", () => {
     if (address === null || typeof address === "string") {
       throw new Error("Synthetic shutdown listener did not expose a port");
     }
-    const baseUrl = `http://127.0.0.1:${address.port}/test/shutdown-stream`;
+    const baseUrl = `http://127.0.0.1:${address.port}/api/test/shutdown-stream`;
     const [completingHttpResponse, stalledHttpResponse] = await Promise.all([
       fetch(`${baseUrl}/completing`, { headers: { connection: "close" } }),
       fetch(`${baseUrl}/stalled`, { headers: { connection: "close" } }),

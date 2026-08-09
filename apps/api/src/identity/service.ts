@@ -35,13 +35,6 @@ export interface BootstrapResult extends ApprovalResult {
   readonly workspaceIdentity: string;
 }
 
-export interface DeactivationResult {
-  readonly alreadyRevoked: boolean;
-  readonly normalizedEmail: string;
-  readonly userId: string | null;
-  readonly workspaceId: string;
-}
-
 export type ActivationResult = "activated" | "already-active" | "blocked" | "missing";
 
 export class IdentityConflictError extends Error {
@@ -433,66 +426,11 @@ export function createIdentityService(database: AppDatabase) {
     });
   }
 
-  async function deactivate(input: {
-    email: string;
-    workspaceIdentity: string;
-  }): Promise<DeactivationResult> {
-    const normalizedEmail = normalizeEmail(input.email);
-
-    return database.transaction(async (transaction) => {
-      const approvalRows = await transaction
-        .select({ approval: employeeApprovals, workspaceId: workspaces.id })
-        .from(employeeApprovals)
-        .innerJoin(workspaces, eq(employeeApprovals.workspaceId, workspaces.id))
-        .where(
-          and(
-            eq(workspaces.identity, input.workspaceIdentity),
-            eq(employeeApprovals.normalizedEmail, normalizedEmail),
-          ),
-        )
-        .for("update");
-      const row = approvalRows[0];
-      if (row === undefined || approvalRows.length !== 1) {
-        throw new IdentityConflictError("The employee approval does not exist or is ambiguous");
-      }
-
-      const alreadyRevoked = row.approval.status === "revoked";
-      const now = new Date();
-      if (!alreadyRevoked) {
-        await transaction
-          .update(employeeApprovals)
-          .set({ revokedAt: now, status: "revoked", updatedAt: now })
-          .where(eq(employeeApprovals.id, row.approval.id));
-      }
-
-      if (row.approval.userId !== null) {
-        await transaction
-          .update(workspaceMemberships)
-          .set({ deactivatedAt: now, status: "deactivated", updatedAt: now })
-          .where(
-            and(
-              eq(workspaceMemberships.workspaceId, row.workspaceId),
-              eq(workspaceMemberships.userId, row.approval.userId),
-              eq(workspaceMemberships.status, "active"),
-            ),
-          );
-      }
-
-      return {
-        alreadyRevoked,
-        normalizedEmail,
-        userId: row.approval.userId,
-        workspaceId: row.workspaceId,
-      };
-    });
-  }
-
   return Object.freeze({
     activateMembership,
     approve,
     bootstrap,
     canSignIn,
-    deactivate,
     findActiveMemberships,
     findPendingApproval,
     linkRegisteredUser,

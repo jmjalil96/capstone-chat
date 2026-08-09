@@ -1,0 +1,68 @@
+# yaml-language-server: $schema=https://render.com/schema/render.yaml.json
+
+previews:
+  generation: "off"
+
+services:
+  - type: web
+    name: capstone-chat
+    runtime: docker
+    branch: main
+    # Local constrained load rejected smaller candidates; Pro Plus remains a Render candidate.
+    plan: pro_plus
+    region: virginia
+    numInstances: 1
+    dockerContext: .
+    dockerfilePath: ./apps/api/Dockerfile
+    autoDeployTrigger: checksPass
+    preDeployCommand: node apps/api/dist/database/migrate-command.js
+    healthCheckPath: /api/health/ready
+    maxShutdownDelaySeconds: 270
+    domains:
+      - chat.capstone.com.ec
+    renderSubdomainPolicy: disabled
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: HOST
+        value: 0.0.0.0
+      - key: PUBLIC_ORIGIN
+        value: https://chat.capstone.com.ec
+      - key: DATABASE_URL
+        fromDatabase:
+          name: capstone-chat-postgres
+          property: connectionString
+      - key: BETTER_AUTH_SECRET
+        generateValue: true
+      - key: MODEL_GATEWAY
+        value: openrouter
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: EMAIL_DELIVERY
+        value: resend
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        value: Capstone Chat <no-reply@mail.capstone.com.ec>
+      - key: OTEL_EXPORTER_OTLP_ENDPOINT
+        sync: false
+      - key: OTEL_EXPORTER_OTLP_HEADERS
+        sync: false
+      - key: LOG_LEVEL
+        value: info
+
+databases:
+  - name: capstone-chat-postgres
+    databaseName: capstone_chat
+    user: capstone_chat
+    # Candidate only; replace with the smallest size that passes the authorized load rehearsal.
+    plan: basic-256mb
+    diskSizeGB: 15
+    storageAutoscalingEnabled: false
+    region: virginia
+    postgresMajorVersion: "18"
+    connectionPool: none
+    highAvailability:
+      enabled: false
+    readReplicas: []
+    ipAllowList: []

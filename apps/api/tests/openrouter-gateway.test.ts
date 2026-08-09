@@ -75,18 +75,25 @@ function encodedChunks(value: string, size: number): readonly Uint8Array[] {
 async function collect(
   gateway: OpenRouterGateway,
   signal: AbortSignal = new AbortController().signal,
+  includeTransportTiming = false,
 ): Promise<readonly GatewayEvent[]> {
-  return collectRequest(gateway, request, signal);
+  return collectRequest(gateway, request, signal, includeTransportTiming);
 }
 
 async function collectRequest(
   gateway: OpenRouterGateway,
   generationRequest: GenerationRequest,
   signal: AbortSignal = new AbortController().signal,
+  includeTransportTiming = false,
 ): Promise<readonly GatewayEvent[]> {
   const events: GatewayEvent[] = [];
   for await (const event of gateway.stream(generationRequest, signal)) {
-    events.push(event);
+    if (includeTransportTiming || event.type === "generation.metadata") {
+      events.push(event);
+      continue;
+    }
+    const { transportElapsedMilliseconds: _transportElapsedMilliseconds, ...withoutTiming } = event;
+    events.push(withoutTiming as GatewayEvent);
   }
   return events;
 }
@@ -145,6 +152,7 @@ describe("OpenRouterGateway", () => {
       /debug|session|stream_options|temperature|top_p|tools|usage\.include/u,
     );
     expect(events).toEqual([
+      { type: "response.headers" },
       {
         metadata: { providerGenerationId: "gen-synthetic" },
         type: "generation.metadata",
@@ -175,6 +183,154 @@ describe("OpenRouterGateway", () => {
       },
     ]);
     expect(JSON.stringify(events)).not.toContain("never-observed");
+  });
+
+  it("emits the header boundary before delayed SSE even without a generation response header", async () => {
+    let bodyController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          bodyController = controller;
+        },
+      }),
+      { headers: { "content-type": "text/event-stream" }, status: 200 },
+    );
+    const gateway = new OpenRouterGateway({
+      apiKey: "test-key-never-sent",
+      fetch: async () => response,
+    });
+    const iterator = gateway.stream(request, new AbortController().signal)[Symbol.asyncIterator]();
+
+    await expect(iterator.next()).resolves.toMatchObject({
+      done: false,
+      value: {
+        transportElapsedMilliseconds: expect.any(Number),
+        type: "response.headers",
+      },
+    });
+
+    const sse = [
+      'data: {"id":"gen-delayed","model":"resolved/model-v1","provider":"provider-delayed","choices":[{"index":0,"delta":{"content":"[delayed]"},"finish_reason":null}]}\n\n',
+      'data: {"id":"gen-delayed","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"cost":"0.000001"}}\n\n',
+      "data: [DONE]\n\n",
+    ].join("");
+    bodyController?.enqueue(new TextEncoder().encode(sse));
+    bodyController?.close();
+
+    const remaining: GatewayEvent[] = [];
+    for (;;) {
+      const result = await iterator.next();
+      if (result.done) {
+        break;
+      }
+      remaining.push(result.value);
+    }
+    expect(remaining.map((event) => event.type)).toEqual([
+      "generation.metadata",
+      "content.delta",
+      "response.completed",
+    ]);
+  });
+
+  it("excludes async-iterator consumer suspension from transport milestones", async () => {
+    vi.useFakeTimers();
+    const sse = [
+      'data: {"id":"gen-suspended","model":"resolved/model-v1","provider":"provider-suspended","choices":[{"index":0,"delta":{"content":"[visible]"},"finish_reason":null}]}\n\n',
+      'data: {"id":"gen-suspended","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"cost":"0.000001"}}\n\n',
+      "data: [DONE]\n\n",
+    ].join("");
+    const iterator = new OpenRouterGateway({
+      apiKey: "test-key-never-sent",
+      fetch: async () =>
+        streamResponse([new TextEncoder().encode(sse)], {
+          "x-generation-id": "gen-suspended",
+        }),
+    })
+      .stream(request, new AbortController().signal)
+      [Symbol.asyncIterator]();
+
+    const events: GatewayEvent[] = [];
+    for (const suspensionMilliseconds of [0, 5_000, 7_000, 11_000, 13_000]) {
+      await vi.advanceTimersByTimeAsync(suspensionMilliseconds);
+      const result = await iterator.next();
+      expect(result.done).toBe(false);
+      if (!result.done) {
+        events.push(result.value);
+      }
+    }
+    await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
+
+    expect(events.map((event) => event.type)).toEqual([
+      "response.headers",
+      "generation.metadata",
+      "generation.metadata",
+      "content.delta",
+      "response.completed",
+    ]);
+    const headers = events[0];
+    const firstToken = events[3];
+    const terminal = events[4];
+    expect(headers?.type).toBe("response.headers");
+    expect(firstToken?.type).toBe("content.delta");
+    expect(terminal?.type).toBe("response.completed");
+    if (
+      headers?.type !== "response.headers" ||
+      firstToken?.type !== "content.delta" ||
+      terminal?.type !== "response.completed"
+    ) {
+      throw new Error("Synthetic OpenRouter lifecycle was incomplete");
+    }
+    expect(headers.transportElapsedMilliseconds).toBeLessThan(10);
+    expect(firstToken.transportElapsedMilliseconds).toBeLessThan(10);
+    expect(terminal.transportElapsedMilliseconds).toBeLessThan(10);
+  });
+
+  it("emits the header boundary before reading a delayed HTTP error body", async () => {
+    let bodyController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          bodyController = controller;
+        },
+      }),
+      { headers: { "content-type": "application/json" }, status: 503 },
+    );
+    const gateway = new OpenRouterGateway({
+      apiKey: "test-key-never-sent",
+      fetch: async () => response,
+    });
+    const iterator = gateway.stream(request, new AbortController().signal)[Symbol.asyncIterator]();
+
+    await expect(iterator.next()).resolves.toMatchObject({
+      done: false,
+      value: {
+        transportElapsedMilliseconds: expect.any(Number),
+        type: "response.headers",
+      },
+    });
+    const terminal = iterator.next();
+    let terminalSettled = false;
+    void terminal.finally(() => {
+      terminalSettled = true;
+    });
+    await Promise.resolve();
+    expect(terminalSettled).toBe(false);
+
+    bodyController?.enqueue(
+      new TextEncoder().encode(
+        JSON.stringify({ error: { code: 503, metadata: { error_type: "server" } } }),
+      ),
+    );
+    bodyController?.close();
+    await expect(terminal).resolves.toMatchObject({
+      done: false,
+      value: {
+        errorCode: "GENERATION_FAILED",
+        providerErrorType: "server",
+        transportElapsedMilliseconds: expect.any(Number),
+        type: "response.failed",
+      },
+    });
   });
 
   it("serializes typed derived context in its exact chat wire position", async () => {
@@ -289,6 +445,7 @@ describe("OpenRouterGateway", () => {
 
     expect(calls).toEqual(["https://openrouter.ai/api/v1/chat/completions"]);
     expect(events).toEqual([
+      { type: "response.headers" },
       {
         metadata: { providerGenerationId: "gen-terminal" },
         type: "generation.metadata",
@@ -373,6 +530,7 @@ describe("OpenRouterGateway", () => {
       "https://openrouter.ai/api/v1/generation?id=gen-refusal",
     ]);
     expect(events).toEqual([
+      { type: "response.headers" },
       {
         accounting: {
           cachedTokens: 1,
@@ -426,6 +584,7 @@ describe("OpenRouterGateway", () => {
       "https://openrouter.ai/api/v1/generation?id=gen-filter",
     ]);
     expect(events).toEqual([
+      { type: "response.headers" },
       {
         metadata: { providerGenerationId: "gen-filter" },
         type: "generation.metadata",
@@ -458,6 +617,7 @@ describe("OpenRouterGateway", () => {
     );
 
     expect(events).toEqual([
+      { type: "response.headers" },
       {
         metadata: { providerGenerationId: "gen-stream-validation" },
         type: "generation.metadata",
@@ -514,6 +674,7 @@ describe("OpenRouterGateway", () => {
       "https://openrouter.ai/api/v1/generation?id=gen-recovered",
     ]);
     expect(events).toEqual([
+      { type: "response.headers" },
       {
         metadata: { providerGenerationId: "gen-recovered" },
         type: "generation.metadata",
@@ -760,6 +921,7 @@ describe("OpenRouterGateway", () => {
       "https://openrouter.ai/api/v1/generation?id=gen-filter-unavailable",
     ]);
     expect(events).toEqual([
+      { type: "response.headers" },
       {
         accounting: {
           metadata: { providerGenerationId: "gen-filter-unavailable" },
@@ -792,6 +954,7 @@ describe("OpenRouterGateway", () => {
       }),
     );
     expect(events).toEqual([
+      { type: "response.headers" },
       {
         accounting: { spendRisk: "unknown" },
         errorCode: "GENERATION_FAILED",
@@ -839,6 +1002,7 @@ describe("OpenRouterGateway", () => {
       );
 
       expect(events).toEqual([
+        { type: "response.headers" },
         {
           accounting: { spendRisk },
           errorCode,
@@ -902,6 +1066,7 @@ describe("OpenRouterGateway", () => {
     );
 
     expect(events).toEqual([
+      { type: "response.headers" },
       {
         accounting: { spendRisk: "unknown" },
         errorCode: "GENERATION_FAILED",
@@ -923,6 +1088,7 @@ describe("OpenRouterGateway", () => {
     );
 
     expect(events).toEqual([
+      { type: "response.headers" },
       {
         accounting: {
           actual: { costUsd: "0", metadata: {} },
@@ -949,13 +1115,14 @@ describe("OpenRouterGateway", () => {
       apiKey: "test-key-never-sent",
       fetch: hangingTransport,
     });
-    const timedOut = collect(gateway);
+    const timedOut = collect(gateway, new AbortController().signal, true);
     await vi.advanceTimersByTimeAsync(10_000);
     await expect(timedOut).resolves.toEqual([
       {
         accounting: { spendRisk: "unknown" },
         errorCode: "GENERATION_TIMEOUT",
         providerErrorType: "timeout",
+        transportElapsedMilliseconds: 10_000,
         type: "response.failed",
       },
     ]);
@@ -966,20 +1133,64 @@ describe("OpenRouterGateway", () => {
     await expect(aborted).rejects.toMatchObject({ name: "AbortError" });
   });
 
+  it("starts the first-token timeout before publishing successful SSE headers", async () => {
+    vi.useFakeTimers();
+    const gateway = new OpenRouterGateway({
+      apiKey: "test-key-never-sent",
+      fetch: async (_input, init) =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              init?.signal?.addEventListener(
+                "abort",
+                () =>
+                  controller.error(
+                    init.signal?.reason ?? new DOMException("aborted", "AbortError"),
+                  ),
+                { once: true },
+              );
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" }, status: 200 },
+        ),
+    });
+    const iterator = gateway.stream(request, new AbortController().signal)[Symbol.asyncIterator]();
+
+    await expect(iterator.next()).resolves.toMatchObject({
+      done: false,
+      value: { type: "response.headers" },
+    });
+    await vi.advanceTimersByTimeAsync(60_000);
+    const terminal = await iterator.next();
+
+    expect(terminal).toMatchObject({
+      done: false,
+      value: {
+        errorCode: "GENERATION_TIMEOUT",
+        providerErrorType: "timeout",
+        type: "response.failed",
+      },
+    });
+    if (!terminal.done && terminal.value.type === "response.failed") {
+      expect(terminal.value.transportElapsedMilliseconds).toBeLessThan(10);
+    }
+    await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
+  });
+
   it.each([
-    ["first visible token", ": processing\n\n", 5_000, 30_000, false],
+    ["first visible token", ": processing\n\n", 5_000, 60_000, false],
     [
       "inactivity",
       'data: {"choices":[{"delta":{"content":"[delta]"},"finish_reason":null}]}\n\n',
       null,
-      30_000,
+      45_000,
       true,
     ],
     [
       "total generation",
       'data: {"choices":[{"delta":{"content":"[delta]"},"finish_reason":null}]}\n\n',
       25_000,
-      120_000,
+      5 * 60_000,
       true,
     ],
   ] as const)(

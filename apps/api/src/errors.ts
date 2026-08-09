@@ -28,8 +28,15 @@ function sendErrorEnvelope(reply: FastifyReply, statusCode: number, error: ApiEr
   void reply.code(statusCode).serializer(serializer).send(error);
 }
 
-export function registerErrorHandling(fastify: FastifyInstance): void {
+export function registerErrorHandling(
+  fastify: FastifyInstance,
+  tryHandleNotFound?: ((request: FastifyRequest, reply: FastifyReply) => boolean) | undefined,
+): void {
   fastify.setNotFoundHandler((request, reply) => {
+    if (tryHandleNotFound?.(request, reply) === true) {
+      return;
+    }
+
     sendErrorEnvelope(reply, 404, {
       code: "NOT_FOUND",
       message: errorCopy.notFound,

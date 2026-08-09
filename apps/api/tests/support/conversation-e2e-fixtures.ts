@@ -131,8 +131,12 @@ export const phaseFiveBrowserFixtures = Object.freeze({
   controlsOriginalBranchText: "Continuación seleccionada de la primera alternativa.",
   controlsOriginalRoot: "Solicitud raíz original para los controles.",
   controlsTitles: Object.freeze({
+    "android-chrome-critical": "Controles preservados Android",
+    "chrome-critical": "Controles preservados Chrome",
     chromium: "Controles preservados Chromium",
+    "edge-critical": "Controles preservados Edge",
     "firefox-critical-streams": "Controles preservados Firefox",
+    "iphone-webkit-critical": "Controles preservados iPhone",
     "webkit-critical-streams": "Controles preservados WebKit",
   }),
   galleryAlternative: "Alternativa completa preservada para la galería.",

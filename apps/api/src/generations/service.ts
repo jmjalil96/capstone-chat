@@ -1,10 +1,11 @@
 import type {
   CreateResponseRequest,
+  GenerationModelTier,
   ResponseState,
   ResponseStateResponse,
   StoredGenerationErrorCode,
 } from "@capstone/protocol";
-import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   createInitialTitle,
   hasUnsupportedControlCharacter,
@@ -12,7 +13,7 @@ import {
   parseMessageContent,
 } from "../conversations/content.js";
 import { conversationCompactions } from "../database/compaction-schema.js";
-import { conversations, drafts, messages } from "../database/conversation-schema.js";
+import { conversations, messages } from "../database/conversation-schema.js";
 import type { AppDatabase } from "../database/database.js";
 import { generations } from "../database/generation-schema.js";
 import { isPostgresError } from "../database/postgres-error.js";
@@ -34,13 +35,14 @@ import {
   ModelPolicyUnavailableError,
   type ResolvedTierPolicy,
 } from "../model-policy/service.js";
+import type { ApplicationTelemetry } from "../observability/telemetry-contract.js";
 import {
   type ContextPlan,
   ContextPlanTooLargeError,
   type PendingContextPlan,
   planContext,
 } from "./context-planner.js";
-import { loadContextWindow } from "./context-service.js";
+import { type ContextWindow, loadContextWindow } from "./context-service.js";
 import type {
   GatewayAccounting,
   GatewayCompletionReason,
@@ -75,9 +77,40 @@ interface SelectedPathMessageRow {
   readonly role: "assistant" | "user";
 }
 
+interface PreloadedContextWindow {
+  readonly endpointMessageId: string | null;
+  readonly maximumSourceBytes: number;
+  readonly revision: number;
+  readonly window: ContextWindow;
+}
+
+interface InsertedResponseMessagesRow extends Record<string, unknown> {
+  readonly assistantMessageId: string;
+  readonly userMessageId: string;
+}
+
+interface CommittedDraftResponseRow extends Record<string, unknown> {
+  readonly draftDeleted: boolean;
+  readonly revision: number | null;
+}
+
+interface AdmissionConversationRow extends Record<string, unknown> {
+  readonly activeGeneration: boolean | null;
+  readonly archivedAt: Date | null;
+  readonly conversationId: string | null;
+  readonly draftContent: string | null;
+  readonly draftId: string | null;
+  readonly draftRevision: number | null;
+  readonly idempotencyFound: boolean;
+  readonly revision: number | null;
+  readonly selectedLeafMessageId: string | null;
+  readonly title: string | null;
+}
+
 type DatabaseTransaction = Parameters<Parameters<AppDatabase["transaction"]>[0]>[0];
 
 export interface StartedResponse {
+  readonly admittedAt: Date;
   readonly compaction?: {
     readonly fastPolicy: ResolvedTierPolicy;
     readonly plan: PendingContextPlan;
@@ -90,6 +123,7 @@ export interface StartedResponse {
   readonly messageId: string;
   readonly request: GenerationRequest;
   readonly revision: number;
+  readonly startedAt?: Date;
   readonly userMessageId: string;
 }
 
@@ -219,6 +253,12 @@ export interface GenerationServiceOptions {
   readonly budget?: BudgetService;
   readonly mode?: ModelPolicyMode;
   readonly modelPolicy?: ModelPolicyService;
+  readonly telemetry?:
+    | Pick<
+        ApplicationTelemetry,
+        "recordCancellation" | "recordReservationSettlement" | "recordSettlement"
+      >
+    | undefined;
 }
 
 export function createGenerationService(
@@ -228,6 +268,13 @@ export function createGenerationService(
   const budget = options.budget ?? createBudgetService(database);
   const mode = options.mode ?? "simulated";
   const modelPolicy = options.modelPolicy ?? createModelPolicyService(database);
+  function observe(action: () => void): void {
+    try {
+      action();
+    } catch {
+      // Telemetry cannot affect generation authority or persistence.
+    }
+  }
   async function assertEmptyConversation(
     transaction: DatabaseTransaction,
     conversationId: string,
@@ -279,12 +326,65 @@ export function createGenerationService(
     return target;
   }
 
+  async function preloadSelectedContext(
+    actor: RequestActor,
+    conversationId: string,
+    input: CreateResponseRequest,
+  ): Promise<PreloadedContextWindow | null> {
+    if (input.source !== "draft" && input.source !== "continue") {
+      return null;
+    }
+    const rows = await database
+      .select({
+        archivedAt: conversations.archivedAt,
+        revision: conversations.revision,
+        selectedLeafMessageId: conversations.selectedLeafMessageId,
+      })
+      .from(conversations)
+      .where(ownedConversationWhere(actor, conversationId))
+      .limit(1);
+    const conversation = rows[0];
+    if (
+      conversation === undefined ||
+      conversation.archivedAt !== null ||
+      conversation.revision !== input.observedRevision ||
+      conversation.selectedLeafMessageId !== input.parentMessageId
+    ) {
+      return null;
+    }
+
+    const policies = await modelPolicy.resolveGenerationPolicies(
+      database,
+      actor.workspace.id,
+      input.modelTier,
+      mode,
+    );
+    const resolvedTier = policies.chat;
+    const fastTier = policies.fast;
+    const maximumSourceBytes = Math.min(
+      generationTuning.maximumContextBytes,
+      fastTier?.contextLength ?? resolvedTier.contextLength,
+    );
+    return Object.freeze({
+      endpointMessageId: conversation.selectedLeafMessageId,
+      maximumSourceBytes,
+      revision: conversation.revision,
+      window: await loadContextWindow(
+        database,
+        conversationId,
+        conversation.selectedLeafMessageId,
+        maximumSourceBytes,
+      ),
+    });
+  }
+
   async function startResponse(
     actor: RequestActor,
     conversationId: string,
     idempotencyKey: string,
     input: CreateResponseRequest,
   ): Promise<StartedResponse> {
+    const admittedAt = new Date();
     const submittedMessageText =
       input.source === "draft" || input.source === "edit"
         ? normalizeStoredText(input.content[0]?.text ?? "")
@@ -301,22 +401,11 @@ export function createGenerationService(
       }
     }
 
-    const existingIdempotency = await database
-      .select({ id: generations.id })
-      .from(generations)
-      .where(
-        and(
-          eq(generations.workspaceId, actor.workspace.id),
-          eq(generations.userId, actor.employee.id),
-          eq(generations.idempotencyKey, idempotencyKey),
-        ),
-      )
-      .limit(1);
-    if (existingIdempotency.length !== 0) {
-      return generationAlreadyExists();
-    }
-
     try {
+      // Selected-branch reconstruction is bounded but query-heavy. It is immutable at a matching
+      // conversation revision, so prepare it before taking the workspace-wide budget lock and
+      // revalidate that revision, endpoint, and policy-derived byte bound inside the transaction.
+      const preloadedContext = await preloadSelectedContext(actor, conversationId, input);
       return await database.transaction(async (transaction) => {
         const startedAt = new Date();
         const admission = await budget.lockAdmission(
@@ -326,44 +415,90 @@ export function createGenerationService(
           startedAt,
         );
 
-        const idempotentRows = await transaction
-          .select({ id: generations.id })
-          .from(generations)
-          .where(
-            and(
-              eq(generations.workspaceId, actor.workspace.id),
-              eq(generations.userId, actor.employee.id),
-              eq(generations.idempotencyKey, idempotencyKey),
-            ),
+        // This keeps idempotency ahead of the active-conversation conflict while spending one
+        // serialized round trip under the workspace budget lock. An idempotent retry deliberately
+        // skips the conversation lock entirely.
+        const admissionRows = await transaction.execute<AdmissionConversationRow>(sql`
+          WITH idempotency AS MATERIALIZED (
+            SELECT EXISTS (
+              SELECT 1
+              FROM generations AS existing_generation
+              WHERE existing_generation.workspace_id = ${actor.workspace.id}::uuid
+                AND existing_generation.user_id = ${actor.employee.id}
+                AND existing_generation.idempotency_key = ${idempotencyKey}::uuid
+            ) AS found
+          ),
+          locked_conversation AS MATERIALIZED (
+            SELECT
+              conversation.id,
+              conversation.archived_at,
+              conversation.revision,
+              conversation.selected_leaf_message_id,
+              conversation.title,
+              EXISTS (
+                SELECT 1
+                FROM generations AS active_generation
+                WHERE active_generation.conversation_id = conversation.id
+                  AND active_generation.status IN ('preparing', 'active')
+                  AND (active_generation.purpose IS NULL OR active_generation.purpose = 'chat')
+              ) AS active_generation
+            FROM conversations AS conversation
+            CROSS JOIN idempotency
+            WHERE NOT idempotency.found
+              AND conversation.id = ${conversationId}::uuid
+              AND conversation.workspace_id = ${actor.workspace.id}::uuid
+              AND conversation.user_id = ${actor.employee.id}
+            LIMIT 1
+            FOR UPDATE OF conversation
+          ),
+          locked_draft AS MATERIALIZED (
+            SELECT draft.id, draft.content, draft.revision
+            FROM drafts AS draft
+            CROSS JOIN locked_conversation
+            WHERE ${input.source === "draft"}
+              AND draft.workspace_id = ${actor.workspace.id}::uuid
+              AND draft.user_id = ${actor.employee.id}
+              AND draft.conversation_id = locked_conversation.id
+            LIMIT 1
+            FOR UPDATE OF draft
           )
-          .limit(1);
-        if (idempotentRows.length !== 0) {
+          SELECT
+            idempotency.found AS "idempotencyFound",
+            locked_conversation.id AS "conversationId",
+            locked_conversation.archived_at AS "archivedAt",
+            locked_conversation.revision,
+            locked_conversation.selected_leaf_message_id AS "selectedLeafMessageId",
+            locked_conversation.title,
+            locked_conversation.active_generation AS "activeGeneration",
+            locked_draft.id AS "draftId",
+            locked_draft.content AS "draftContent",
+            locked_draft.revision AS "draftRevision"
+          FROM idempotency
+          LEFT JOIN locked_conversation ON true
+          LEFT JOIN locked_draft ON true
+        `);
+        const conversationAdmission = admissionRows.rows[0];
+        if (conversationAdmission === undefined) {
+          throw new Error("Generation admission returned no row");
+        }
+        if (conversationAdmission.idempotencyFound) {
           return generationAlreadyExists();
         }
-
-        const conversationRows = await transaction
-          .select()
-          .from(conversations)
-          .where(ownedConversationWhere(actor, conversationId))
-          .limit(1)
-          .for("update");
-        const conversation = conversationRows[0];
-        if (conversation === undefined) {
+        if (
+          conversationAdmission.conversationId === null ||
+          conversationAdmission.revision === null
+        ) {
           return notFound();
         }
+        const conversation = {
+          activeGeneration: conversationAdmission.activeGeneration === true,
+          archivedAt: conversationAdmission.archivedAt,
+          revision: conversationAdmission.revision,
+          selectedLeafMessageId: conversationAdmission.selectedLeafMessageId,
+          title: conversationAdmission.title,
+        };
 
-        const activeRows = await transaction
-          .select({ id: generations.id })
-          .from(generations)
-          .where(
-            and(
-              eq(generations.conversationId, conversationId),
-              inArray(generations.status, ["preparing", "active"]),
-              or(isNull(generations.purpose), eq(generations.purpose, "chat")),
-            ),
-          )
-          .limit(1);
-        if (activeRows.length !== 0) {
+        if (conversation.activeGeneration) {
           return generationActive();
         }
         if (conversation.archivedAt !== null) {
@@ -391,27 +526,14 @@ export function createGenerationService(
             if (conversation.selectedLeafMessageId === null) {
               await assertEmptyConversation(transaction, conversationId);
             }
-            const draftRows = await transaction
-              .select()
-              .from(drafts)
-              .where(
-                and(
-                  eq(drafts.workspaceId, actor.workspace.id),
-                  eq(drafts.userId, actor.employee.id),
-                  eq(drafts.conversationId, conversationId),
-                ),
-              )
-              .limit(1)
-              .for("update");
-            const draft = draftRows[0];
             if (
-              draft === undefined ||
-              draft.revision !== draftRevision ||
-              draft.content !== messageText
+              conversationAdmission.draftId === null ||
+              conversationAdmission.draftRevision !== draftRevision ||
+              conversationAdmission.draftContent !== messageText
             ) {
               return draftChanged();
             }
-            consumedDraftId = draft.id;
+            consumedDraftId = conversationAdmission.draftId;
             break;
           }
           case "continue": {
@@ -497,35 +619,30 @@ export function createGenerationService(
           throw new ApplicationError(413, "MESSAGE_TOO_LARGE", generationCopy.messageTooLarge);
         }
 
-        const resolvedTier = await modelPolicy.resolveTier(
+        const policies = await modelPolicy.resolveGenerationPolicies(
           transaction,
           actor.workspace.id,
           input.modelTier,
           mode,
         );
-        let fastTier: ResolvedTierPolicy | null = input.modelTier === "fast" ? resolvedTier : null;
-        if (fastTier === null) {
-          try {
-            fastTier = await modelPolicy.resolveCompactionTier(
-              transaction,
-              actor.workspace.id,
-              mode,
-            );
-          } catch (error: unknown) {
-            if (!(error instanceof ModelPolicyUnavailableError)) {
-              throw error;
-            }
-          }
-        }
-        const window = await loadContextWindow(
-          transaction,
-          conversationId,
-          historyEndpointId,
-          Math.min(
-            generationTuning.maximumContextBytes,
-            fastTier?.contextLength ?? resolvedTier.contextLength,
-          ),
+        const resolvedTier = policies.chat;
+        const fastTier = policies.fast;
+        const maximumSourceBytes = Math.min(
+          generationTuning.maximumContextBytes,
+          fastTier?.contextLength ?? resolvedTier.contextLength,
         );
+        const window =
+          preloadedContext !== null &&
+          preloadedContext.revision === conversation.revision &&
+          preloadedContext.endpointMessageId === historyEndpointId &&
+          preloadedContext.maximumSourceBytes === maximumSourceBytes
+            ? preloadedContext.window
+            : await loadContextWindow(
+                transaction,
+                conversationId,
+                historyEndpointId,
+                maximumSourceBytes,
+              );
         let contextPlan: ContextPlan;
         try {
           contextPlan = planContext({
@@ -555,36 +672,52 @@ export function createGenerationService(
           startedAt,
         );
 
+        let assistantMessageId: string | undefined;
         if (insertUserMessage) {
-          const userRows = await transaction
+          const inserted = await transaction.execute<InsertedResponseMessagesRow>(sql`
+            WITH user_message AS (
+              INSERT INTO messages (conversation_id, parent_message_id, role, content)
+              VALUES (
+                ${conversationId}::uuid,
+                ${userParentMessageId}::uuid,
+                'user',
+                ${JSON.stringify(toStoredContent(messageText))}::jsonb
+              )
+              RETURNING id
+            ),
+            assistant_message AS (
+              INSERT INTO messages (conversation_id, parent_message_id, role, content)
+              SELECT
+                ${conversationId}::uuid,
+                user_message.id,
+                'assistant',
+                ${JSON.stringify(toStoredContent(""))}::jsonb
+              FROM user_message
+              RETURNING id
+            )
+            SELECT
+              user_message.id AS "userMessageId",
+              assistant_message.id AS "assistantMessageId"
+            FROM user_message
+            CROSS JOIN assistant_message
+          `);
+          const row = inserted.rows[0];
+          userMessageId = row?.userMessageId;
+          assistantMessageId = row?.assistantMessageId;
+        } else if (userMessageId !== undefined) {
+          const assistantRows = await transaction
             .insert(messages)
             .values({
-              content: toStoredContent(messageText),
+              content: toStoredContent(""),
               conversationId,
-              parentMessageId: userParentMessageId,
-              role: "user",
+              parentMessageId: userMessageId,
+              role: "assistant",
             })
             .returning({ id: messages.id });
-          userMessageId = userRows[0]?.id;
-          if (userMessageId === undefined) {
-            throw new Error("User message insertion returned no row");
-          }
+          assistantMessageId = assistantRows[0]?.id;
         }
-        if (userMessageId === undefined) {
-          throw new Error("Response source did not resolve a user message");
-        }
-        const assistantRows = await transaction
-          .insert(messages)
-          .values({
-            content: toStoredContent(""),
-            conversationId,
-            parentMessageId: userMessageId,
-            role: "assistant",
-          })
-          .returning();
-        const assistantMessage = assistantRows[0];
-        if (assistantMessage === undefined) {
-          throw new Error("Assistant message insertion returned no row");
+        if (userMessageId === undefined || assistantMessageId === undefined) {
+          throw new Error("Response message insertion returned no row");
         }
 
         const contextParameters =
@@ -603,7 +736,7 @@ export function createGenerationService(
         const generationRows = await transaction
           .insert(generations)
           .values({
-            assistantMessageId: assistantMessage.id,
+            assistantMessageId,
             conversationId,
             createdAt: startedAt,
             effectiveParameters: {
@@ -663,42 +796,71 @@ export function createGenerationService(
         }
 
         const now = new Date();
-        const updatedRows = await transaction
-          .update(conversations)
-          .set({
-            revision: conversation.revision + 1,
-            selectedLeafMessageId: assistantMessage.id,
-            preferredTier: input.modelTier,
-            title:
-              input.source === "edit" || input.source === "retry"
-                ? conversation.title
-                : (conversation.title ?? createInitialTitle(messageText)),
-            updatedAt: now,
-          })
-          .where(
-            and(
-              ownedConversationWhere(actor, conversationId),
-              eq(conversations.revision, input.observedRevision),
-            ),
-          )
-          .returning({ revision: conversations.revision });
-        const updated = updatedRows[0];
-        if (updated === undefined) {
-          return changed();
-        }
+        let updatedRevision: number | undefined;
         if (consumedDraftId !== undefined) {
-          const deleted = await transaction
-            .delete(drafts)
-            .where(and(eq(drafts.id, consumedDraftId), eq(drafts.revision, draftRevision ?? -1)))
-            .returning({ id: drafts.id });
-          if (deleted.length !== 1) {
+          const committed = await transaction.execute<CommittedDraftResponseRow>(sql`
+            WITH updated_conversation AS (
+              UPDATE conversations AS conversation
+              SET
+                revision = ${conversation.revision + 1},
+                selected_leaf_message_id = ${assistantMessageId}::uuid,
+                preferred_tier = ${input.modelTier},
+                title = ${conversation.title ?? createInitialTitle(messageText)},
+                updated_at = ${now}
+              WHERE conversation.id = ${conversationId}::uuid
+                AND conversation.workspace_id = ${actor.workspace.id}::uuid
+                AND conversation.user_id = ${actor.employee.id}
+                AND conversation.revision = ${input.observedRevision}
+              RETURNING revision
+            ),
+            deleted_draft AS (
+              DELETE FROM drafts AS draft
+              WHERE draft.id = ${consumedDraftId}::uuid
+                AND draft.revision = ${draftRevision ?? -1}
+              RETURNING id
+            )
+            SELECT
+              (SELECT revision FROM updated_conversation) AS revision,
+              EXISTS (SELECT 1 FROM deleted_draft) AS "draftDeleted"
+          `);
+          const row = committed.rows[0];
+          if (row?.revision === null || row?.revision === undefined) {
+            return changed();
+          }
+          if (!row.draftDeleted) {
             return draftChanged();
+          }
+          updatedRevision = row.revision;
+        } else {
+          const updatedRows = await transaction
+            .update(conversations)
+            .set({
+              revision: conversation.revision + 1,
+              selectedLeafMessageId: assistantMessageId,
+              preferredTier: input.modelTier,
+              title:
+                input.source === "edit" || input.source === "retry"
+                  ? conversation.title
+                  : (conversation.title ?? createInitialTitle(messageText)),
+              updatedAt: now,
+            })
+            .where(
+              and(
+                ownedConversationWhere(actor, conversationId),
+                eq(conversations.revision, input.observedRevision),
+              ),
+            )
+            .returning({ revision: conversations.revision });
+          updatedRevision = updatedRows[0]?.revision;
+          if (updatedRevision === undefined) {
+            return changed();
           }
         }
 
         const plannedChatRequest =
           contextPlan.mode === "pending" ? contextPlan.fallback.request : contextPlan.request;
         return {
+          admittedAt,
           ...(contextPlan.mode === "pending" && fastTier !== null
             ? {
                 compaction: {
@@ -712,7 +874,7 @@ export function createGenerationService(
           ...(contextPlan.mode === "fallback" ? { contextWarning: true as const } : {}),
           conversationId,
           generationId: generation.id,
-          messageId: assistantMessage.id,
+          messageId: assistantMessageId,
           request: {
             ...plannedChatRequest,
             ...(mode === "openrouter"
@@ -728,7 +890,8 @@ export function createGenerationService(
               : {}),
             systemPrompt,
           },
-          revision: updated.revision,
+          revision: updatedRevision,
+          startedAt,
           userMessageId,
         };
       });
@@ -891,8 +1054,13 @@ export function createGenerationService(
       readonly status: TerminalStatus;
     },
   ): Promise<TerminalGenerationResult> {
+    const settlementStartedAt = performance.now();
     const locationRows = await database
-      .select({ conversationId: generations.conversationId })
+      .select({
+        conversationId: generations.conversationId,
+        purpose: generations.purpose,
+        requestedTier: generations.requestedTier,
+      })
       .from(generations)
       .where(eq(generations.id, generationId))
       .limit(1);
@@ -901,7 +1069,8 @@ export function createGenerationService(
       throw new Error("Generation disappeared during terminalization");
     }
 
-    return database.transaction(async (transaction) => {
+    let settledReservation = false;
+    const result = await database.transaction(async (transaction) => {
       const conversationRows =
         location.conversationId === null
           ? []
@@ -994,6 +1163,7 @@ export function createGenerationService(
         if (generation.accountingStatus === "reserved" && !settled) {
           throw new Error("Authoritative generation accounting could not be settled");
         }
+        settledReservation = generation.accountingStatus === "reserved" && settled;
       } else if (input.settleDeterministicZero && generation.accountingStatus === "reserved") {
         const settled = await budget.settleAuthoritativeUsageInTransaction(
           transaction,
@@ -1004,6 +1174,7 @@ export function createGenerationService(
         if (!settled) {
           throw new Error("Deterministic zero-cost accounting could not be settled");
         }
+        settledReservation = true;
       }
       await transaction
         .update(generations)
@@ -1040,6 +1211,26 @@ export function createGenerationService(
         won: true,
       };
     });
+    if (
+      result.won &&
+      (location.requestedTier === "fast" ||
+        location.requestedTier === "balanced" ||
+        location.requestedTier === "pro")
+    ) {
+      const purpose = location.purpose === "compaction" ? "compaction" : "chat";
+      observe(() =>
+        options.telemetry?.recordSettlement(
+          location.requestedTier as GenerationModelTier,
+          purpose,
+          input.status,
+          performance.now() - settlementStartedAt,
+        ),
+      );
+    }
+    if (result.won && settledReservation) {
+      observe(() => options.telemetry?.recordReservationSettlement("actual"));
+    }
+    return result;
   }
 
   async function cancel(
@@ -1048,6 +1239,7 @@ export function createGenerationService(
     generationId: string,
     captureLocalPartial?: () => LocalCancellationPartial | undefined,
   ): Promise<boolean> {
+    const cancellationStartedAt = performance.now();
     const scopedRows = await database
       .select({ id: generations.id })
       .from(generations)
@@ -1064,7 +1256,9 @@ export function createGenerationService(
       return notFound();
     }
 
-    return database.transaction(async (transaction) => {
+    let cancelledTier: GenerationModelTier | undefined;
+    let releasedReservation = false;
+    const cancelled = await database.transaction(async (transaction) => {
       const conversationRows = await transaction
         .select({ revision: conversations.revision })
         .from(conversations)
@@ -1136,6 +1330,7 @@ export function createGenerationService(
         if (!settled) {
           throw new Error("Preparing chat accounting could not be released during cancellation");
         }
+        releasedReservation = true;
       }
       await transaction
         .update(generations)
@@ -1157,8 +1352,29 @@ export function createGenerationService(
         .update(conversations)
         .set({ revision: conversation.revision + 1, updatedAt: now })
         .where(eq(conversations.id, conversationId));
+      if (
+        generation.requestedTier === "fast" ||
+        generation.requestedTier === "balanced" ||
+        generation.requestedTier === "pro"
+      ) {
+        cancelledTier = generation.requestedTier;
+      }
       return true;
     });
+    if (cancelled && cancelledTier !== undefined) {
+      observe(() =>
+        options.telemetry?.recordCancellation(
+          cancelledTier as GenerationModelTier,
+          "chat",
+          "cancelled",
+          performance.now() - cancellationStartedAt,
+        ),
+      );
+      if (releasedReservation) {
+        observe(() => options.telemetry?.recordReservationSettlement("actual"));
+      }
+    }
+    return cancelled;
   }
 
   async function responseStates(
@@ -1231,7 +1447,8 @@ export function createGenerationService(
     conversationId: string,
     observedRevision: number,
   ): Promise<string | null> {
-    return database.transaction(async (transaction) => {
+    let settledReservations = 0;
+    const activeGenerationId = await database.transaction(async (transaction) => {
       const conversationRows = await transaction
         .select({ revision: conversations.revision })
         .from(conversations)
@@ -1279,12 +1496,13 @@ export function createGenerationService(
           activeGeneration.status === "preparing" &&
           activeGeneration.accountingStatus === "reserved"
         ) {
-          await budget.settleAuthoritativeUsageInTransaction(
+          const settled = await budget.settleAuthoritativeUsageInTransaction(
             transaction,
             activeGeneration.id,
             { completionTokens: 0, costUsd: "0", promptTokens: 0 },
             now,
           );
+          settledReservations += settled ? 1 : 0;
         }
         await transaction
           .update(generations)
@@ -1336,6 +1554,10 @@ export function createGenerationService(
       }
       return activeGenerationId;
     });
+    for (let index = 0; index < settledReservations; index += 1) {
+      observe(() => options.telemetry?.recordReservationSettlement("actual"));
+    }
+    return activeGenerationId;
   }
 
   return Object.freeze({

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const client = vi.hoisted(() => ({
   changePassword: vi.fn(),
@@ -21,6 +21,7 @@ import {
   signIn,
   signOut,
   signUp,
+  verifyEmail,
 } from "./auth-actions";
 
 beforeEach(() => {
@@ -39,6 +40,10 @@ beforeEach(() => {
   }
 });
 
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
 describe("auth actions", () => {
   it("uses Better Auth email/password endpoints with same-origin callbacks", async () => {
     await signUp({ name: "Ana", email: "ana@example.test", password: "abcdefghijkl" });
@@ -49,15 +54,41 @@ describe("auth actions", () => {
       name: "Ana",
       email: "ana@example.test",
       password: "abcdefghijkl",
-      callbackURL: new URL("/verify-email?verified=1", window.location.origin).toString(),
     });
     expect(client.sendVerificationEmail).toHaveBeenCalledWith({
       email: "ana@example.test",
-      callbackURL: new URL("/verify-email?verified=1", window.location.origin).toString(),
     });
     expect(client.requestPasswordReset).toHaveBeenCalledWith({
       email: "ana@example.test",
       redirectTo: new URL("/reset-password", window.location.origin).toString(),
+    });
+  });
+
+  it("submits verification credentials only in a same-origin JSON body", async () => {
+    const request = vi.fn<typeof fetch>(async () => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", request);
+
+    await verifyEmail("verification-secret");
+
+    expect(request).toHaveBeenCalledWith("/api/auth/verify-email", {
+      body: JSON.stringify({ token: "verification-secret" }),
+      cache: "no-store",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    expect(String(request.mock.calls[0]?.[0])).not.toContain("verification-secret");
+  });
+
+  it("normalizes verification endpoint failures", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(null, { status: 400 })),
+    );
+
+    await expect(verifyEmail("invalid-secret")).rejects.toMatchObject({
+      name: "AuthActionError",
+      status: 400,
     });
   });
 

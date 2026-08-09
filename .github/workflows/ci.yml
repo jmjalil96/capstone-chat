@@ -55,8 +55,17 @@ jobs:
       - name: Check formatting and lint
         run: pnpm check
 
+      - name: Check repository boundaries and credential literals
+        run: pnpm verify:repository
+
+      - name: Validate deployment and recovery artifacts
+        run: pnpm verify:operations
+
       - name: Check TypeScript
         run: pnpm typecheck
+
+      - name: Audit production dependencies
+        run: pnpm audit --prod --audit-level high
 
       - name: Apply migrations to a clean database
         run: pnpm db:migrate
@@ -70,19 +79,34 @@ jobs:
 
       - name: Build production applications
         run: pnpm build
+        env:
+          RENDER_GIT_COMMIT: ${{ github.sha }}
+
+      - name: Report and verify the production web bundle
+        run: pnpm report:bundle
 
       - name: Build production API image
-        run: docker build --file apps/api/Dockerfile --tag capstone-chat-api:ci .
+        run: docker build --build-arg RENDER_GIT_COMMIT="$GITHUB_SHA" --file apps/api/Dockerfile --tag capstone-chat-api:ci .
 
       - name: Verify API image runtime contents and user
         run: |
           test "$(docker image inspect capstone-chat-api:ci --format '{{.Config.User}}')" = "node"
-          docker run --rm --entrypoint sh capstone-chat-api:ci -ec '
+          docker run --rm --env EXPECTED_REVISION="$GITHUB_SHA" --entrypoint sh capstone-chat-api:ci -ec '
             test "$(id -u)" -ne 0
             test -f /app/apps/api/dist/server.js
             test -d /app/apps/api/migrations
             test -n "$(find /app/apps/api/migrations -maxdepth 1 -name \*.sql -print -quit)"
+            test -f /app/apps/web/dist/index.html
+            test -n "$(find /app/apps/web/dist/assets -maxdepth 1 -type f -print -quit)"
+            test -z "$(find /app/apps/api/dist /app/apps/web/dist /app/packages/protocol/dist -type f -name \*.map -print -quit)"
+            test ! -d /app/apps/api/tests
+            test ! -d /app/apps/web/e2e
+            test -z "$(find /app/apps/api /app/apps/web -maxdepth 2 -type f -name .env\* -print -quit)"
+            grep -R -F -l "$EXPECTED_REVISION" /app/apps/web/dist/assets >/dev/null
           '
+
+      - name: Start and smoke the production image
+        run: pnpm smoke:container -- capstone-chat-api:ci "$GITHUB_SHA"
 
   playwright:
     name: Playwright identity, conversation, and streaming suite
@@ -113,9 +137,9 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Install supported browsers
-        run: pnpm --filter @capstone/web exec playwright install --with-deps chromium firefox webkit
+        run: pnpm --filter @capstone/web exec playwright install --with-deps chromium firefox webkit chrome msedge
 
-      - name: Run identity, conversation, and streaming browser tests
+      - name: Run identity, conversation, streaming, mobile, and accessibility browser tests
         run: pnpm test:e2e
 
       - name: Retain Playwright artifacts

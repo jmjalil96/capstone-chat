@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import type { AppTransaction } from "../database/database.js";
+import type { AppDatabaseExecutor } from "../database/database.js";
 import type { ApplicableCompaction, ContextTurn } from "./context-planner.js";
 import { contextCompactionTuning } from "./context-planner.js";
 
@@ -46,7 +46,7 @@ function parseTurns(value: unknown, label: string): readonly ContextTurn[] {
 }
 
 export async function loadContextWindow(
-  transaction: AppTransaction,
+  transaction: AppDatabaseExecutor,
   conversationId: string,
   endpointMessageId: string | null,
   maximumSourceBytes: number,

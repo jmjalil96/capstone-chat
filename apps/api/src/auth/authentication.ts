@@ -94,10 +94,10 @@ export function createAuthentication(input: {
       minPasswordLength: 12,
       requireEmailVerification: true,
       revokeSessionsOnPasswordReset: true,
-      sendResetPassword: async ({ user, url }) => {
+      sendResetPassword: async ({ token, user }) => {
         dispatchIdentityEmail(
           emailSender,
-          createPasswordResetEmail(user.email, url),
+          createPasswordResetEmail(user.email, config.publicOrigin, token),
           events.emailDeliveryFailed,
         );
       },
@@ -120,10 +120,10 @@ export function createAuthentication(input: {
       autoSignInAfterVerification: false,
       sendOnSignIn: false,
       sendOnSignUp: true,
-      sendVerificationEmail: async ({ user, url }) => {
+      sendVerificationEmail: async ({ token, user }) => {
         dispatchIdentityEmail(
           emailSender,
-          createVerificationEmail(user.email, url),
+          createVerificationEmail(user.email, config.publicOrigin, token),
           events.emailDeliveryFailed,
         );
       },

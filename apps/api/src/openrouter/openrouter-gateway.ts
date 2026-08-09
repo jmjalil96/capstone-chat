@@ -14,7 +14,10 @@ import type {
   GenerationRequest,
   ModelGateway,
 } from "../generations/model-gateway.js";
-import { generationRequestMessages } from "../generations/model-gateway.js";
+import {
+  createGatewayTransportClock,
+  generationRequestMessages,
+} from "../generations/model-gateway.js";
 import { canonicalUsd, unitPricePerMillion } from "../model-policy/money.js";
 import {
   canonicalProviderDecimal,
@@ -461,6 +464,7 @@ export class OpenRouterGateway implements ModelGateway, GenerationAccountingGate
   }
 
   async *stream(request: GenerationRequest, signal: AbortSignal): AsyncIterable<GatewayEvent> {
+    let transportClock: ReturnType<typeof createGatewayTransportClock> | undefined;
     const totalController = new AbortController();
     const headerController = new AbortController();
     const activityController = new AbortController();
@@ -479,15 +483,17 @@ export class OpenRouterGateway implements ModelGateway, GenerationAccountingGate
       signal.throwIfAborted();
       const route = normalizeRoute(request.route);
       const body = requestBody(request, route);
+      const serializedBody = JSON.stringify(body);
       const upstreamSignal = AbortSignal.any([
         signal,
         totalController.signal,
         headerController.signal,
         activityController.signal,
       ]);
+      transportClock = createGatewayTransportClock();
       submitted = true;
       const response = await this.#fetch(chatCompletionsUrl, {
-        body: JSON.stringify(body),
+        body: serializedBody,
         headers: {
           accept: "text/event-stream",
           authorization: `Bearer ${this.#apiKey}`,
@@ -496,8 +502,22 @@ export class OpenRouterGateway implements ModelGateway, GenerationAccountingGate
         method: "POST",
         signal: upstreamSignal,
       });
+      const responseHeadersElapsedMilliseconds = transportClock.elapsedMilliseconds();
       clearTimer(headerTimer);
       headerTimer = null;
+      const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+      const successfulSseResponse =
+        response.ok && contentType.startsWith("text/event-stream") && response.body !== null;
+      if (successfulSseResponse) {
+        firstTokenTimer = setAbortTimer(
+          activityController,
+          openRouterTuning.firstVisibleTokenTimeoutMilliseconds,
+        );
+      }
+      yield* transportClock.publish({
+        transportElapsedMilliseconds: responseHeadersElapsedMilliseconds,
+        type: "response.headers",
+      });
       const headerGenerationId = response.headers.get("x-generation-id");
       if (headerGenerationId !== null) {
         metadata = metadataFrom(metadata, { id: headerGenerationId });
@@ -512,19 +532,14 @@ export class OpenRouterGateway implements ModelGateway, GenerationAccountingGate
           "pre-provider",
         );
       }
-      const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
-      if (!contentType.startsWith("text/event-stream") || response.body === null) {
+      if (!successfulSseResponse || response.body === null) {
         await response.body?.cancel().catch(() => undefined);
         throw ambiguousFailure("GENERATION_FAILED", metadata);
       }
       if (Object.keys(metadata).length > 0) {
-        yield { metadata, type: "generation.metadata" };
+        yield* transportClock.publish({ metadata, type: "generation.metadata" });
       }
 
-      firstTokenTimer = setAbortTimer(
-        activityController,
-        openRouterTuning.firstVisibleTokenTimeoutMilliseconds,
-      );
       const resetInactivity = (): void => {
         clearTimer(inactivityTimer);
         inactivityTimer = setAbortTimer(
@@ -608,16 +623,19 @@ export class OpenRouterGateway implements ModelGateway, GenerationAccountingGate
               ...(payload.model === undefined ? {} : { model: payload.model }),
               ...(payload.provider === undefined ? {} : { provider: payload.provider }),
             });
-            if (metadataChanged(metadata, nextMetadata)) {
+            const providerMetadataChanged = metadataChanged(metadata, nextMetadata);
+            if (providerMetadataChanged) {
               if (emittedVisibleContent && metadataChangesAfterContent(metadata, nextMetadata)) {
                 throw ambiguousFailure("GENERATION_FAILED", metadata);
               }
               metadata = nextMetadata;
-              yield { metadata, type: "generation.metadata" };
             }
             const eventUsage =
               payload.usage === undefined ? undefined : normalizeUsage(payload.usage, metadata);
             if (payload.error !== undefined) {
+              if (providerMetadataChanged) {
+                yield* transportClock.publish({ metadata, type: "generation.metadata" });
+              }
               throw failureForProviderError(
                 errorTypeFromEnvelope({ error: payload.error }),
                 metadata,
@@ -638,11 +656,24 @@ export class OpenRouterGateway implements ModelGateway, GenerationAccountingGate
               normalizedUsage = eventUsage;
             }
             const text = contentFromChunk(payload);
-            if (text !== null) {
+            let firstTokenElapsedMilliseconds: number | undefined;
+            if (text !== null && !emittedVisibleContent) {
               clearTimer(firstTokenTimer);
               firstTokenTimer = null;
+              firstTokenElapsedMilliseconds = transportClock.elapsedMilliseconds();
+            }
+            if (providerMetadataChanged) {
+              yield* transportClock.publish({ metadata, type: "generation.metadata" });
+            }
+            if (text !== null) {
               emittedVisibleContent = true;
-              yield { text, type: "content.delta" };
+              yield* transportClock.publish({
+                text,
+                ...(firstTokenElapsedMilliseconds === undefined
+                  ? {}
+                  : { transportElapsedMilliseconds: firstTokenElapsedMilliseconds }),
+                type: "content.delta",
+              });
             }
           }
         }
@@ -701,34 +732,39 @@ export class OpenRouterGateway implements ModelGateway, GenerationAccountingGate
                 usage: normalizedUsage.usage,
               };
       }
-      yield {
+      yield* transportClock.publish({
         accounting: normalizedUsage.accounting,
         reason: terminalReason,
+        transportElapsedMilliseconds: transportClock.elapsedMilliseconds(),
         type: "response.completed",
         usage: normalizedUsage.usage,
-      };
+      });
     } catch (error: unknown) {
       if (signal.aborted) {
         throw abortError(signal.reason);
       }
+      transportClock ??= createGatewayTransportClock();
       if (
         headerController.signal.aborted ||
         activityController.signal.aborted ||
         totalController.signal.aborted
       ) {
-        yield failureEvent(
-          withAuthoritativeUsage(
-            {
-              accounting: {
-                ...(Object.keys(metadata).length === 0 ? {} : { metadata }),
-                spendRisk: submitted ? "unknown" : "none",
+        yield* transportClock.publish({
+          ...failureEvent(
+            withAuthoritativeUsage(
+              {
+                accounting: {
+                  ...(Object.keys(metadata).length === 0 ? {} : { metadata }),
+                  spendRisk: submitted ? "unknown" : "none",
+                },
+                errorCode: "GENERATION_TIMEOUT",
+                providerErrorType: "timeout",
               },
-              errorCode: "GENERATION_TIMEOUT",
-              providerErrorType: "timeout",
-            },
-            normalizedUsage,
+              normalizedUsage,
+            ),
           ),
-        );
+          transportElapsedMilliseconds: transportClock.elapsedMilliseconds(),
+        });
         return;
       }
       if (error instanceof OpenRouterAdapterError) {
@@ -772,40 +808,50 @@ export class OpenRouterGateway implements ModelGateway, GenerationAccountingGate
             }
           }
           if (actual !== undefined && usage !== undefined && providerMetadataAccepted) {
-            yield {
+            yield* transportClock.publish({
               accounting: actual,
               reason: failure.providerOutcome,
+              transportElapsedMilliseconds: transportClock.elapsedMilliseconds(),
               type: "response.completed",
               usage,
-            };
+            });
             return;
           }
-          yield failureEvent({
-            ...failure,
-            accounting: {
-              ...failure.accounting,
-              ...(actual === undefined ? {} : { actual }),
-            },
-            ...(usage === undefined ? {} : { usage }),
-            ...(usageLookupAttempted === undefined ? {} : { usageLookupAttempted }),
+          yield* transportClock.publish({
+            ...failureEvent({
+              ...failure,
+              accounting: {
+                ...failure.accounting,
+                ...(actual === undefined ? {} : { actual }),
+              },
+              ...(usage === undefined ? {} : { usage }),
+              ...(usageLookupAttempted === undefined ? {} : { usageLookupAttempted }),
+            }),
+            transportElapsedMilliseconds: transportClock.elapsedMilliseconds(),
           });
           return;
         }
-        yield failureEvent(failure);
+        yield* transportClock.publish({
+          ...failureEvent(failure),
+          transportElapsedMilliseconds: transportClock.elapsedMilliseconds(),
+        });
         return;
       }
-      yield failureEvent(
-        withAuthoritativeUsage(
-          {
-            accounting: {
-              ...(Object.keys(metadata).length === 0 ? {} : { metadata }),
-              spendRisk: submitted ? "unknown" : "none",
+      yield* transportClock.publish({
+        ...failureEvent(
+          withAuthoritativeUsage(
+            {
+              accounting: {
+                ...(Object.keys(metadata).length === 0 ? {} : { metadata }),
+                spendRisk: submitted ? "unknown" : "none",
+              },
+              errorCode: "GENERATION_FAILED",
             },
-            errorCode: "GENERATION_FAILED",
-          },
-          normalizedUsage,
+            normalizedUsage,
+          ),
         ),
-      );
+        transportElapsedMilliseconds: transportClock.elapsedMilliseconds(),
+      });
     } finally {
       clearTimer(headerTimer);
       clearTimer(firstTokenTimer);

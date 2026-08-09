@@ -1,14 +1,10 @@
-import { and, asc, count, eq, gt, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, lte, or, sql } from "drizzle-orm";
 import { conversationCompactions } from "../database/compaction-schema.js";
 import { conversations } from "../database/conversation-schema.js";
 import type { AppDatabase, AppTransaction } from "../database/database.js";
 import { generations } from "../database/generation-schema.js";
-import { workspaceMemberships, workspaces } from "../database/identity-schema.js";
-import {
-  type WorkspaceBudgetPeriod,
-  workspaceBudgetConsumptionUsd,
-  workspaceBudgetPeriod,
-} from "./budget-period.js";
+import type { ApplicationTelemetry } from "../observability/telemetry-contract.js";
+import type { WorkspaceBudgetPeriod } from "./budget-period.js";
 import {
   addUsd,
   calculateReservationUsd,
@@ -85,6 +81,18 @@ export interface ReconciliationResult {
   readonly terminalized: number;
 }
 
+interface AdmissionAuthorityRow extends Record<string, unknown> {
+  readonly membershipFound: boolean;
+  readonly workspaceFound: boolean;
+}
+
+interface AdmissionStateRow extends Record<string, unknown> {
+  readonly activeGenerationCount: number | string;
+  readonly consumedUsd: string;
+  readonly periodEnd: Date | string | null;
+  readonly periodStart: Date | string | null;
+}
+
 function safeDate(...values: readonly (Date | string | null)[]): Date {
   const timestamp = Math.max(
     ...values
@@ -109,59 +117,113 @@ function optionalNonempty(value: string | null | undefined, label: string): stri
   return trimmed;
 }
 
-export function createBudgetService(database: AppDatabase) {
+export interface BudgetServiceOptions {
+  readonly telemetry?:
+    | Pick<
+        ApplicationTelemetry,
+        "recordBudgetRejection" | "recordReconciliation" | "recordReservationSettlement"
+      >
+    | undefined;
+}
+
+export function createBudgetService(database: AppDatabase, options: BudgetServiceOptions = {}) {
+  function observe(action: () => void): void {
+    try {
+      action();
+    } catch {
+      // Telemetry cannot affect budget authority or settlement.
+    }
+  }
+
   async function lockAdmission(
     transaction: AppTransaction,
     workspaceId: string,
     userId: string,
     at: Date,
   ): Promise<BudgetAdmission> {
-    const workspaceRows = await transaction
-      .select({ id: workspaces.id })
-      .from(workspaces)
-      .where(eq(workspaces.id, workspaceId))
-      .limit(1)
-      .for("update");
-    if (workspaceRows[0] === undefined) {
+    // Keep the established workspace -> membership lock order. The state query intentionally runs
+    // afterward: under READ COMMITTED a statement that waited for a lock retains its earlier
+    // snapshot, while this second statement sees reservations committed by the previous holder.
+    const authorityResult = await transaction.execute<AdmissionAuthorityRow>(sql`
+      WITH locked_workspace AS MATERIALIZED (
+        SELECT workspace.id, workspace.timezone
+        FROM workspaces AS workspace
+        WHERE workspace.id = ${workspaceId}::uuid
+        FOR UPDATE OF workspace
+      ),
+      locked_membership AS MATERIALIZED (
+        SELECT membership.id
+        FROM workspace_memberships AS membership
+        INNER JOIN locked_workspace AS workspace
+          ON workspace.id = membership.workspace_id
+        WHERE membership.user_id = ${userId}
+          AND membership.status = 'active'
+        FOR UPDATE OF membership
+      )
+      SELECT
+        EXISTS (SELECT 1 FROM locked_workspace) AS "workspaceFound",
+        EXISTS (SELECT 1 FROM locked_membership) AS "membershipFound"
+    `);
+    const authority = authorityResult.rows[0];
+    if (authority === undefined || !authority.workspaceFound) {
       throw new BudgetAdmissionError("Workspace is unavailable");
     }
-
-    const membershipRows = await transaction
-      .select({ id: workspaceMemberships.id })
-      .from(workspaceMemberships)
-      .where(
-        and(
-          eq(workspaceMemberships.workspaceId, workspaceId),
-          eq(workspaceMemberships.userId, userId),
-          eq(workspaceMemberships.status, "active"),
-        ),
-      )
-      .limit(1)
-      .for("update");
-    if (membershipRows[0] === undefined) {
+    if (!authority.membershipFound) {
       throw new BudgetAdmissionError("Active workspace membership is unavailable");
     }
 
-    const period = await workspaceBudgetPeriod(transaction, workspaceId, at);
-    if (period === null) {
+    const stateResult = await transaction.execute<AdmissionStateRow>(sql`
+      WITH budget_period AS MATERIALIZED (
+        SELECT
+          date_trunc('month', ${at}::timestamptz AT TIME ZONE workspace.timezone)
+            AT TIME ZONE workspace.timezone AS period_start,
+          (date_trunc('month', ${at}::timestamptz AT TIME ZONE workspace.timezone)
+            + interval '1 month') AT TIME ZONE workspace.timezone AS period_end
+        FROM workspaces AS workspace
+        WHERE workspace.id = ${workspaceId}::uuid
+      )
+      SELECT
+        period.period_start AS "periodStart",
+        period.period_end AS "periodEnd",
+        COUNT(generation.id) FILTER (
+          WHERE generation.user_id = ${userId}
+            AND generation.status IN ('preparing', 'active')
+            AND (generation.purpose IS NULL OR generation.purpose = 'chat')
+        )::integer AS "activeGenerationCount",
+        COALESCE(SUM(
+          CASE
+            WHEN generation.budget_period_start = period.period_start
+              AND generation.budget_period_end = period.period_end
+              AND generation.accounting_status IN ('reserved', 'actual', 'estimated')
+            THEN CASE
+              WHEN generation.accounting_status = 'reserved'
+                THEN generation.reserved_cost_usd
+              ELSE generation.cost_usd
+            END
+            ELSE 0::numeric
+          END
+        ), 0::numeric)::text AS "consumedUsd"
+      FROM budget_period AS period
+      LEFT JOIN generations AS generation
+        ON generation.workspace_id = ${workspaceId}::uuid
+      GROUP BY period.period_start, period.period_end
+    `);
+    const row = stateResult.rows[0];
+    if (row === undefined || row.periodStart === null || row.periodEnd === null) {
       throw new BudgetAdmissionError("Workspace budget period is unavailable");
     }
-    const activeRows = await transaction
-      .select({ value: count() })
-      .from(generations)
-      .where(
-        and(
-          eq(generations.workspaceId, workspaceId),
-          eq(generations.userId, userId),
-          inArray(generations.status, ["preparing", "active"]),
-          or(isNull(generations.purpose), eq(generations.purpose, "chat")),
-        ),
-      );
-    const consumedUsd = await workspaceBudgetConsumptionUsd(transaction, workspaceId, period);
+    const activeGenerationCount = Number(row.activeGenerationCount);
+    if (!Number.isSafeInteger(activeGenerationCount) || activeGenerationCount < 0) {
+      throw new BudgetAdmissionError("Active generation count is unavailable");
+    }
+    const period = Object.freeze({
+      end: row.periodEnd instanceof Date ? row.periodEnd : new Date(row.periodEnd),
+      start: row.periodStart instanceof Date ? row.periodStart : new Date(row.periodStart),
+    });
 
     return Object.freeze({
-      activeGenerationCount: activeRows[0]?.value ?? 0,
-      consumedUsd,
+      activeGenerationCount,
+      consumedUsd: canonicalUsd(row.consumedUsd, "workspace consumption"),
       period,
       userId,
       workspaceId,
@@ -186,6 +248,7 @@ export function createBudgetService(database: AppDatabase) {
       enforceEmployeeLimit &&
       admission.activeGenerationCount >= policy.employeeActiveGenerationLimit
     ) {
+      observe(() => options.telemetry?.recordBudgetRejection(policy.tier, "chat"));
       throw new EmployeeGenerationLimitError();
     }
 
@@ -198,6 +261,12 @@ export function createBudgetService(database: AppDatabase) {
     });
     const afterReservation = addUsd([admission.consumedUsd, reservedCostUsd]);
     if (compareDecimal(afterReservation, policy.monthlyBudgetUsd) > 0) {
+      observe(() =>
+        options.telemetry?.recordBudgetRejection(
+          policy.tier,
+          enforceEmployeeLimit ? "chat" : "compaction",
+        ),
+      );
       throw new WorkspaceBudgetExceededError();
     }
 
@@ -231,7 +300,7 @@ export function createBudgetService(database: AppDatabase) {
       return false;
     }
 
-    return database.transaction(async (transaction) => {
+    const settled = await database.transaction(async (transaction) => {
       if (location.conversationId !== null) {
         await transaction
           .select({ id: conversations.id })
@@ -242,6 +311,10 @@ export function createBudgetService(database: AppDatabase) {
       }
       return settleAuthoritativeUsageInTransaction(transaction, generationId, usage, settledAt);
     });
+    if (settled) {
+      observe(() => options.telemetry?.recordReservationSettlement("actual"));
+    }
+    return settled;
   }
 
   async function settleAuthoritativeUsageInTransaction(
@@ -316,6 +389,7 @@ export function createBudgetService(database: AppDatabase) {
     }
     let cursor: { readonly id: string; readonly reservationExpiresAt: Date } | null = null;
     let inspected = 0;
+    let oldestDueLagMs = 0;
     let settled = 0;
     let terminalized = 0;
 
@@ -354,6 +428,10 @@ export function createBudgetService(database: AppDatabase) {
         }
         cursor = { id: candidate.id, reservationExpiresAt: candidate.reservationExpiresAt };
         inspected += 1;
+        oldestDueLagMs = Math.max(
+          oldestDueLagMs,
+          at.getTime() - candidate.reservationExpiresAt.getTime(),
+        );
 
         const result = await database.transaction(async (transaction) => {
           if (candidate.conversationId !== null) {
@@ -435,9 +513,20 @@ export function createBudgetService(database: AppDatabase) {
         });
         settled += result.settled ? 1 : 0;
         terminalized += result.terminalized ? 1 : 0;
+        if (result.settled) {
+          observe(() => options.telemetry?.recordReservationSettlement("expired"));
+        }
       }
     }
 
+    observe(() =>
+      options.telemetry?.recordReconciliation({
+        claimed: inspected,
+        errors: 0,
+        oldestDueLagMs,
+        settled,
+      }),
+    );
     return Object.freeze({ inspected, settled, terminalized });
   }
 

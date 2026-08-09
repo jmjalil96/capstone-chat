@@ -15,6 +15,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import {
+  type ComponentType,
   lazy,
   Suspense,
   useCallback,
@@ -58,9 +59,16 @@ import {
 import { useConversationResponseStates } from "./response-state";
 import { useRouteHeading } from "./route-heading";
 
-const MessageContent = lazy(() =>
-  import("./message-content").then(({ MessageContent: component }) => ({ default: component })),
-);
+let messageContentModule: Promise<{ default: ComponentType<MessageContentProps> }> | undefined;
+
+function loadMessageContent() {
+  messageContentModule ??= import("./message-content").then(({ MessageContent: component }) => ({
+    default: component,
+  }));
+  return messageContentModule;
+}
+
+const MessageContent = lazy(loadMessageContent);
 
 interface DeferredMessageContentProps extends MessageContentProps {
   readonly onReady: () => void;
@@ -196,6 +204,10 @@ export function branchPresentationMessages(
 
 export function ConversationPage() {
   const { conversationId = "" } = useParams();
+  useEffect(() => {
+    // A first streamed delta must not wait for the Markdown renderer's network and parse cost.
+    void loadMessageContent();
+  }, []);
   const location = useLocation();
   const navigate = useNavigate();
   const focusComposerOnArrival =

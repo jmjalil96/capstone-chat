@@ -5,13 +5,23 @@ import type { AppDatabase } from "../database/database.js";
 import { generations } from "../database/generation-schema.js";
 import { workspaces } from "../database/identity-schema.js";
 import type { BudgetService } from "../model-policy/budget-service.js";
+import type { ApplicationTelemetry } from "../observability/telemetry-contract.js";
 
 const cancellationBatchSize = 100;
 
 export function createGenerationAdministrationService(
   database: AppDatabase,
   budget: BudgetService,
+  telemetry?: Pick<ApplicationTelemetry, "recordReservationSettlement">,
 ) {
+  function observe(action: () => void): void {
+    try {
+      action();
+    } catch {
+      // Telemetry cannot affect employee deactivation or accounting authority.
+    }
+  }
+
   async function cancelEmployeeWork(
     workspaceId: string,
     userId: string,
@@ -26,7 +36,7 @@ export function createGenerationAdministrationService(
           .limit(1)
           .for("update");
         if (workspaceRows[0] === undefined) {
-          return { hadCandidates: false, ids: [] };
+          return { hadCandidates: false, ids: [], settledReservations: 0 };
         }
 
         const candidates = await transaction
@@ -42,7 +52,7 @@ export function createGenerationAdministrationService(
           .orderBy(asc(generations.conversationId), asc(generations.id))
           .limit(cancellationBatchSize);
         if (candidates.length === 0) {
-          return { hadCandidates: false, ids: [] };
+          return { hadCandidates: false, ids: [], settledReservations: 0 };
         }
 
         const conversationIds = [
@@ -85,6 +95,7 @@ export function createGenerationAdministrationService(
           .for("update");
 
         const batchIds: string[] = [];
+        let settledReservations = 0;
         const revisedConversations = new Set<string>();
         for (const generation of activeRows) {
           const completedAt = new Date(
@@ -102,6 +113,7 @@ export function createGenerationAdministrationService(
                 "Preparing chat accounting could not be released during deactivation",
               );
             }
+            settledReservations += 1;
           }
           const updated = await transaction
             .update(generations)
@@ -147,8 +159,11 @@ export function createGenerationAdministrationService(
             revisedConversations.add(generation.conversationId);
           }
         }
-        return { hadCandidates: true, ids: batchIds };
+        return { hadCandidates: true, ids: batchIds, settledReservations };
       });
+      for (let index = 0; index < batch.settledReservations; index += 1) {
+        observe(() => telemetry?.recordReservationSettlement("actual"));
+      }
       if (!batch.hadCandidates) {
         return Object.freeze(cancelledIds);
       }

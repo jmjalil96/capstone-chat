@@ -4,7 +4,7 @@ export const generationTuning = Object.freeze({
   checkpointMilliseconds: 250,
   durableStatePollMilliseconds: 250,
   fakeChunkDelayMilliseconds: 400,
-  gracefulDrainMilliseconds: 10_000,
+  gracefulDrainMilliseconds: 4 * 60 * 1_000,
   maximumAssistantBytes: 1_048_576,
   maximumContextBytes: 1_048_576,
   maximumNdjsonLineBytes: 65_536,

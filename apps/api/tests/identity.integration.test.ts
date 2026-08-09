@@ -18,7 +18,8 @@ import {
 } from "../src/database/identity-schema.js";
 import { migrateDatabase } from "../src/database/migrate.js";
 import type { ModelGateway } from "../src/generations/model-gateway.js";
-import { FakeEmailSender } from "../src/identity/email.js";
+import { type EmailSender, FakeEmailSender } from "../src/identity/email.js";
+import { ResendEmailSender } from "../src/identity/resend-email.js";
 import { createIdentityService, type IdentityService } from "../src/identity/service.js";
 
 const publicOrigin = "http://localhost:5173";
@@ -58,6 +59,14 @@ function linkFromDelivery(
   return new URL(link);
 }
 
+function credentialFromLink(url: URL): string {
+  const token = new URLSearchParams(url.hash.slice(1)).get("token");
+  if (token === null) {
+    throw new Error("The identity delivery did not contain a fragment credential");
+  }
+  return token;
+}
+
 describe.sequential("identity integration", () => {
   let container: StartedPostgreSqlContainer;
   let databaseUrl: string;
@@ -95,7 +104,7 @@ describe.sequential("identity integration", () => {
     await container.stop();
   });
 
-  function startApplication(sender = new FakeEmailSender()): ApiApplication {
+  function startApplication(sender: EmailSender = new FakeEmailSender()): ApiApplication {
     const started = createApplication(
       loadConfig({
         BETTER_AUTH_SECRET: "capstone-chat-test-secret-with-more-than-thirty-two-characters",
@@ -153,13 +162,46 @@ describe.sequential("identity integration", () => {
     expect(signUp.statusCode).toBe(200);
 
     const verificationUrl = linkFromDelivery(sender, "verification");
-    const verification = await app.server.inject({
-      method: "GET",
-      url: `${verificationUrl.pathname}${verificationUrl.search}`,
-      remoteAddress: "127.0.0.1",
+    const verification = await authPost(
+      app,
+      "/verify-email",
+      { token: credentialFromLink(verificationUrl) },
+      undefined,
+      {},
+      "127.0.0.1",
+    );
+    expect(verification.statusCode).toBe(204);
+  }
+
+  async function seedAdditionalActiveAdministrator(app: ApiApplication): Promise<void> {
+    const workspace = await app.database.query.workspaces.findFirst();
+    if (workspace === undefined) {
+      throw new Error("The administrator fixture workspace is unavailable");
+    }
+    const userId = "identity-recovery-administrator";
+    const email = "recovery.identity@example.test";
+    const now = new Date();
+    await app.database.insert(userTable).values({
+      email,
+      emailVerified: true,
+      id: userId,
+      name: "Administradora de Recuperación",
     });
-    expect(verification.statusCode).toBe(302);
-    expect(verification.headers.location).toBe("/verify-email");
+    await app.database.insert(employeeApprovals).values({
+      activatedAt: now,
+      normalizedEmail: email,
+      role: "admin",
+      status: "activated",
+      userId,
+      workspaceId: workspace.id,
+    });
+    await app.database.insert(workspaceMemberships).values({
+      activatedAt: now,
+      role: "admin",
+      status: "active",
+      userId,
+      workspaceId: workspace.id,
+    });
   }
 
   async function signIn(
@@ -407,9 +449,101 @@ describe.sequential("identity integration", () => {
     expect(allowedBoundary.statusCode).toBe(404);
   });
 
+  it("accepts verification credentials only through the bounded same-origin JSON wrapper", async () => {
+    const sender = new FakeEmailSender();
+    const app = startApplication(sender);
+    await app.identity.bootstrap({
+      adminEmail,
+      displayName: "Capstone Ecuador",
+      workspaceIdentity: "capstone-ecuador",
+    });
+    const signUp = await authPost(app, "/sign-up/email", {
+      email: adminEmail,
+      name: "Administradora Capstone",
+      password: originalPassword,
+    });
+    expect(signUp.statusCode).toBe(200);
+    const validToken = credentialFromLink(linkFromDelivery(sender, "verification"));
+    const wrongOrigin = await app.server.inject({
+      headers: { "content-type": "application/json", origin: "https://attacker.example" },
+      method: "POST",
+      payload: { token: "synthetic-token" },
+      url: "/api/auth/verify-email",
+    });
+    const wrongContentType = await app.server.inject({
+      headers: { "content-type": "text/plain", origin: publicOrigin },
+      method: "POST",
+      payload: JSON.stringify({ token: "synthetic-token" }),
+      url: "/api/auth/verify-email",
+    });
+    const unexpectedField = await authPost(app, "/verify-email", {
+      token: "synthetic-token",
+      url: "https://attacker.example/credential",
+    });
+    const oversized = await authPost(app, "/verify-email", { token: "x".repeat(4_097) });
+    const invalid = await authPost(app, "/verify-email", { token: "synthetic-invalid-token" });
+    const legacyGet = await app.server.inject({
+      method: "GET",
+      url: `/api/auth/verify-email?token=${encodeURIComponent(validToken)}`,
+    });
+    const queryPost = await authPost(app, `/verify-email?token=${encodeURIComponent(validToken)}`, {
+      token: validToken,
+    });
+
+    expect(wrongOrigin.statusCode).toBe(403);
+    expect(wrongOrigin.json()).toMatchObject({ code: "ORIGIN_NOT_ALLOWED" });
+    expect(wrongContentType.statusCode).toBe(415);
+    expect(wrongContentType.json()).toMatchObject({ code: "JSON_REQUIRED" });
+    expect(unexpectedField.statusCode).toBe(400);
+    expect(oversized.statusCode).toBe(400);
+    expect(invalid.statusCode).toBe(401);
+    expect(invalid.payload).toBe("");
+    expect(legacyGet.statusCode).toBe(404);
+    expect(queryPost.statusCode).toBe(400);
+    expect((await app.database.query.user.findFirst())?.emailVerified).toBe(false);
+    expect((await authPost(app, "/verify-email", { token: validToken })).statusCode).toBe(204);
+  });
+
+  it("returns public sign-up before a tracked provider request settles", async () => {
+    const providerRequest = Promise.withResolvers<Response>();
+    const providerEntered = Promise.withResolvers<void>();
+    const sender = new ResendEmailSender({
+      apiKey: "re_test_only",
+      fetch: async () => {
+        providerEntered.resolve();
+        return providerRequest.promise;
+      },
+      from: "Capstone Chat <no-reply@mail.capstone.com.ec>",
+    });
+    const app = startApplication(sender);
+    await app.identity.bootstrap({
+      adminEmail,
+      displayName: "Capstone Ecuador",
+      workspaceIdentity: "capstone-ecuador",
+    });
+
+    const signUpPromise = authPost(app, "/sign-up/email", {
+      email: adminEmail,
+      name: "Administradora Capstone",
+      password: originalPassword,
+    });
+    await providerEntered.promise;
+    const signUp = await signUpPromise;
+
+    expect(signUp.statusCode).toBe(200);
+    providerRequest.resolve(
+      new Response(JSON.stringify({ id: "49a3999c-0ce1-4ea6-ab68-afcd6dc2e794" }), {
+        headers: { "content-type": "application/json" },
+        status: 200,
+      }),
+    );
+    await sender.close();
+  });
+
   it("registers the fake mailbox only for loopback development requests", async () => {
     const sender = new FakeEmailSender();
     await sender.send({
+      html: "<p>Crea tu cuenta</p>",
       purpose: "invitation",
       subject: "Invitación sintética",
       text: "Crea tu cuenta en http://localhost:5173/sign-up",
@@ -442,7 +576,13 @@ describe.sequential("identity integration", () => {
     expect(allowed.statusCode).toBe(200);
     expect(allowed.headers["cache-control"]).toBe("no-store");
     expect(allowed.json()).toMatchObject({
-      messages: [{ purpose: "invitation", subject: "Invitación sintética" }],
+      messages: [
+        {
+          html: "<p>Crea tu cuenta</p>",
+          purpose: "invitation",
+          subject: "Invitación sintética",
+        },
+      ],
     });
     expect(denied.statusCode).toBe(403);
     expect(denied.json()).toMatchObject({ code: "DEVELOPMENT_MAILBOX_DENIED" });
@@ -501,17 +641,16 @@ describe.sequential("identity integration", () => {
       password: originalPassword,
     });
     expect(signUp.statusCode).toBe(200);
-    await app.identity.deactivate({
+    await app.employeeAdministration.deactivateByIdentity({
       email: adminEmail,
       workspaceIdentity: "capstone-ecuador",
     });
 
     const verificationUrl = linkFromDelivery(sender, "verification");
-    const delayed = await app.server.inject({
-      method: "GET",
-      url: `${verificationUrl.pathname}${verificationUrl.search}`,
+    const delayed = await authPost(app, "/verify-email", {
+      token: credentialFromLink(verificationUrl),
     });
-    expect(delayed.statusCode).toBe(302);
+    expect(delayed.statusCode).toBe(204);
     expect((await app.database.query.user.findFirst())?.emailVerified).toBe(true);
     expect((await app.database.query.employeeApprovals.findFirst())?.status).toBe("revoked");
     expect(await app.database.query.workspaceMemberships.findMany()).toEqual([]);
@@ -542,12 +681,10 @@ describe.sequential("identity integration", () => {
     });
     expect(signUp.statusCode).toBe(200);
     const verificationUrl = linkFromDelivery(sender, "verification");
-    const verification = await app.server.inject({
-      method: "GET",
-      url: `${verificationUrl.pathname}${verificationUrl.search}`,
+    const verification = await authPost(app, "/verify-email", {
+      token: credentialFromLink(verificationUrl),
     });
-    expect(verification.statusCode).toBe(302);
-    expect(verification.headers.location).toBe("/verify-email");
+    expect(verification.statusCode).toBe(204);
     const signedIn = await authPost(app, "/sign-in/email", {
       email: memberEmail,
       password: originalPassword,
@@ -618,15 +755,11 @@ describe.sequential("identity integration", () => {
     expect(signUp.statusCode).toBe(200);
 
     const verificationUrl = linkFromDelivery(sender, "verification");
-    const interruptedVerification = await app.server.inject({
-      method: "GET",
-      url: `${verificationUrl.pathname}${verificationUrl.search}`,
+    const interruptedVerification = await authPost(app, "/verify-email", {
+      token: credentialFromLink(verificationUrl),
     });
     expect(interruptedVerification.statusCode).toBe(500);
-    expect(interruptedVerification.json()).toMatchObject({
-      code: "MEMBERSHIP_ACTIVATION_FAILED",
-      message: "Membership activation failed",
-    });
+    expect(interruptedVerification.payload).toBe("");
     expect((await app.database.query.user.findFirst())?.emailVerified).toBe(true);
     expect(await app.database.query.workspaceMemberships.findMany()).toEqual([]);
     expect((await app.database.query.employeeApprovals.findFirst())?.status).toBe("pending");
@@ -741,25 +874,46 @@ describe.sequential("identity integration", () => {
 
     await app.shutdown();
     application = undefined;
-    const productionOrigin = "https://chat.capstone.example";
+    const productionOrigin = "https://chat.capstone.com.ec";
+    const productionEmailSender = new ResendEmailSender({
+      apiKey: "re_test_only",
+      fetch: async () =>
+        new Response(JSON.stringify({ id: "49a3999c-0ce1-4ea6-ab68-afcd6dc2e794" }), {
+          headers: { "content-type": "application/json" },
+          status: 200,
+        }),
+      from: "Capstone Chat <no-reply@mail.capstone.com.ec>",
+    });
     app = createApplication(
-      loadConfig({
-        BETTER_AUTH_SECRET: "capstone-chat-test-secret-with-more-than-thirty-two-characters",
-        DATABASE_URL: databaseUrl,
-        EMAIL_DELIVERY: "disabled",
-        LOG_LEVEL: "silent",
-        MODEL_GATEWAY: "openrouter",
-        NODE_ENV: "production",
-        OPENROUTER_API_KEY: "test-openrouter-key-never-sent",
-        PUBLIC_ORIGIN: productionOrigin,
-      }),
-      { emailSender: sender, modelGateway: inertProductionGateway },
+      {
+        ...loadConfig({
+          BETTER_AUTH_SECRET: "capstone-chat-test-secret-with-more-than-thirty-two-characters",
+          DATABASE_URL: databaseUrl,
+          EMAIL_DELIVERY: "resend",
+          EMAIL_FROM: "Capstone Chat <no-reply@mail.capstone.com.ec>",
+          LOG_LEVEL: "silent",
+          MODEL_GATEWAY: "openrouter",
+          NODE_ENV: "production",
+          OPENROUTER_API_KEY: "test-openrouter-key-never-sent",
+          OTEL_EXPORTER_OTLP_ENDPOINT: "https://otlp.nr-data.net",
+          OTEL_EXPORTER_OTLP_HEADERS: "api-key=test-license-key",
+          PUBLIC_ORIGIN: productionOrigin,
+          RENDER_GIT_COMMIT: "0123456789abcdef0123456789abcdef01234567",
+          RESEND_API_KEY: "re_test_only",
+        }),
+        webAssetsDirectory: null,
+      },
+      { emailSender: productionEmailSender, modelGateway: inertProductionGateway },
     );
     application = app;
     const productionSignIn = await app.server.inject({
       method: "POST",
       url: "/api/auth/sign-in/email",
-      headers: { "content-type": "application/json", origin: productionOrigin },
+      headers: {
+        "cf-connecting-ip": "198.51.100.10",
+        "content-type": "application/json",
+        origin: productionOrigin,
+      },
       payload: { email: adminEmail, password: originalPassword },
     });
     expect(productionSignIn.statusCode).toBe(200);
@@ -838,10 +992,7 @@ describe.sequential("identity integration", () => {
       throw new Error("The signed-in session did not persist a usable token");
     }
     const verificationUrl = linkFromDelivery(sender, "verification");
-    const verificationToken = verificationUrl.searchParams.get("token");
-    if (verificationToken === null) {
-      throw new Error("The verification delivery did not contain a token");
-    }
+    const verificationToken = credentialFromLink(verificationUrl);
 
     await app.server.inject({
       method: "GET",
@@ -861,21 +1012,10 @@ describe.sequential("identity integration", () => {
     });
     expect(resetRequest.statusCode).toBe(200);
     const resetUrl = linkFromDelivery(sender, "password-reset");
-    const resetLinkSecrets = [
-      ...resetUrl.searchParams.values(),
-      ...resetUrl.pathname.split("/").filter((part) => part.length >= 20),
-    ];
-    expect(resetLinkSecrets).not.toEqual([]);
-    const resetCallback = await app.server.inject({
-      method: "GET",
-      url: `${resetUrl.pathname}${resetUrl.search}`,
-    });
-    expect(resetCallback.statusCode).toBe(302);
-    const resetRedirect = new URL(resetCallback.headers.location ?? "", publicOrigin);
-    const deliveredResetToken = resetRedirect.searchParams.get("token");
-    if (deliveredResetToken === null) {
-      throw new Error("The reset callback did not return a token");
-    }
+    const deliveredResetToken = credentialFromLink(resetUrl);
+    const resetLinkSecrets = [deliveredResetToken];
+    expect(resetUrl.pathname).toBe("/reset-password");
+    expect(resetUrl.search).toBe("");
     await authPost(app, "/reset-password", {
       newPassword: "reset-password-not-for-logs",
       token: deliveredResetToken,
@@ -1072,14 +1212,21 @@ describe.sequential("identity integration", () => {
     expect(resetRequest.statusCode).toBe(200);
 
     const resetUrl = linkFromDelivery(sender, "password-reset");
-    const resetCallback = await app.server.inject({
+    const token = credentialFromLink(resetUrl);
+    expect(resetUrl.pathname).toBe("/reset-password");
+    expect(resetUrl.search).toBe("");
+
+    const legacyReset = await app.server.inject({
       method: "GET",
-      url: `${resetUrl.pathname}${resetUrl.search}`,
+      url: `/api/auth/reset-password/${encodeURIComponent(token)}?callbackURL=${encodeURIComponent(
+        "/reset-password",
+      )}`,
     });
-    expect(resetCallback.statusCode).toBe(302);
-    const redirect = new URL(resetCallback.headers.location ?? "", publicOrigin);
-    const token = redirect.searchParams.get("token");
-    expect(token).toBeTruthy();
+    const queryReset = await authPost(app, `/reset-password?token=${encodeURIComponent(token)}`, {
+      newPassword: "password-from-query-must-not-apply",
+    });
+    expect(legacyReset.statusCode).toBe(404);
+    expect(queryReset.statusCode).toBe(400);
 
     const reset = await authPost(app, "/reset-password", {
       newPassword: "password-after-complete-reset",
@@ -1090,6 +1237,7 @@ describe.sequential("identity integration", () => {
 
     const afterReset = await signIn(app, "password-after-complete-reset");
     const staleCookie = cookieHeader(afterReset);
+    await seedAdditionalActiveAdministrator(app);
     const replica = createApplication(
       loadConfig({
         BETTER_AUTH_SECRET: "capstone-chat-test-secret-with-more-than-thirty-two-characters",
@@ -1102,7 +1250,7 @@ describe.sequential("identity integration", () => {
       { emailSender: sender },
     );
     try {
-      const deactivation = await app.identity.deactivate({
+      const deactivation = await app.employeeAdministration.deactivateByIdentity({
         email: adminEmail,
         workspaceIdentity: "capstone-ecuador",
       });
@@ -1233,11 +1381,14 @@ describe.sequential("identity integration", () => {
     for (let attempt = 0; attempt < 11; attempt += 1) {
       verificationStatuses.push(
         (
-          await app.server.inject({
-            method: "GET",
-            url: "/api/auth/verify-email?token=invalid-verification-token",
-            remoteAddress: "127.0.0.4",
-          })
+          await authPost(
+            app,
+            "/verify-email",
+            { token: "invalid-verification-token" },
+            undefined,
+            {},
+            "127.0.0.4",
+          )
         ).statusCode,
       );
     }

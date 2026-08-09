@@ -1,5 +1,6 @@
 import { fromNodeHeaders } from "better-auth/node";
 import type { FastifyReply, FastifyRequest } from "fastify";
+import { resolveTrustedClientAddress } from "../security/client-address.js";
 
 export function createTrustedAuthHeaders(request: FastifyRequest): Headers {
   const headers = fromNodeHeaders(request.headers);
@@ -12,7 +13,7 @@ export function createTrustedAuthHeaders(request: FastifyRequest): Headers {
   ]) {
     headers.delete(header);
   }
-  headers.set("x-capstone-client-ip", request.ip);
+  headers.set("x-capstone-client-ip", resolveTrustedClientAddress(request, request.ip));
   return headers;
 }
 

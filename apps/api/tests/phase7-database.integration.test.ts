@@ -495,7 +495,7 @@ describe("Phase 7 PostgreSQL storage", () => {
           revision: 1,
         },
       ]);
-      expect(migrations.rows).toHaveLength(5);
+      expect(migrations.rows).toHaveLength(6);
     } finally {
       await verificationPool.end();
     }

@@ -1,10 +1,15 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import { eq } from "drizzle-orm";
 import { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { account, session, user } from "../src/database/auth-schema.generated.js";
+import { conversationCompactions } from "../src/database/compaction-schema.js";
+import { conversations, messages } from "../src/database/conversation-schema.js";
 import { createDatabase } from "../src/database/database.js";
+import { generations } from "../src/database/generation-schema.js";
 import {
   employeeApprovals,
   workspaceMemberships,
@@ -131,6 +136,117 @@ describe.sequential("identity operator commands", () => {
       "--email",
       "  ADMIN.OPERATOR@EXAMPLE.TEST  ",
     ]);
+  }
+
+  async function seedActiveWork(
+    database: ReturnType<typeof createDatabase>,
+    workspaceId: string,
+    userId: string,
+  ): Promise<{
+    readonly chatConversationId: string;
+    readonly chatGenerationId: string;
+    readonly compactionGenerationId: string;
+  }> {
+    async function seedConversation(title: string) {
+      const conversationRows = await database
+        .insert(conversations)
+        .values({ title, userId, workspaceId })
+        .returning({ id: conversations.id });
+      const conversationId = conversationRows[0]?.id;
+      if (conversationId === undefined) {
+        throw new Error("The operator work fixture conversation was not created");
+      }
+      const userMessageRows = await database
+        .insert(messages)
+        .values({
+          content: [{ text: "Private operator cancellation fixture", type: "text" }],
+          conversationId,
+          role: "user",
+        })
+        .returning({ id: messages.id });
+      const userMessageId = userMessageRows[0]?.id;
+      if (userMessageId === undefined) {
+        throw new Error("The operator work fixture message was not created");
+      }
+      return { conversationId, userMessageId };
+    }
+
+    const chat = await seedConversation("Operator chat cancellation fixture");
+    const assistantRows = await database
+      .insert(messages)
+      .values({
+        content: [{ text: "", type: "text" }],
+        conversationId: chat.conversationId,
+        parentMessageId: chat.userMessageId,
+        role: "assistant",
+      })
+      .returning({ id: messages.id });
+    const assistantMessageId = assistantRows[0]?.id;
+    if (assistantMessageId === undefined) {
+      throw new Error("The operator work fixture assistant message was not created");
+    }
+    await database
+      .update(conversations)
+      .set({ selectedLeafMessageId: assistantMessageId })
+      .where(eq(conversations.id, chat.conversationId));
+    const chatGenerationRows = await database
+      .insert(generations)
+      .values({
+        assistantMessageId,
+        conversationId: chat.conversationId,
+        effectiveParameters: {},
+        idempotencyKey: randomUUID(),
+        purpose: "chat",
+        requestedTier: "balanced",
+        status: "active",
+        systemPromptVersion: "capstone-chat-v1",
+        userId,
+        workspaceId,
+      })
+      .returning({ id: generations.id });
+    const chatGenerationId = chatGenerationRows[0]?.id;
+    if (chatGenerationId === undefined) {
+      throw new Error("The operator chat generation was not created");
+    }
+
+    const compaction = await seedConversation("Operator compaction cancellation fixture");
+    await database
+      .update(conversations)
+      .set({ selectedLeafMessageId: compaction.userMessageId })
+      .where(eq(conversations.id, compaction.conversationId));
+    const compactionGenerationRows = await database
+      .insert(generations)
+      .values({
+        conversationId: compaction.conversationId,
+        effectiveParameters: {},
+        idempotencyKey: randomUUID(),
+        purpose: "compaction",
+        requestedTier: "balanced",
+        status: "active",
+        systemPromptVersion: "capstone-compaction-v1",
+        userId,
+        workspaceId,
+      })
+      .returning({ id: generations.id });
+    const compactionGenerationId = compactionGenerationRows[0]?.id;
+    if (compactionGenerationId === undefined) {
+      throw new Error("The operator compaction generation was not created");
+    }
+    await database.insert(conversationCompactions).values({
+      conversationId: compaction.conversationId,
+      generationId: compactionGenerationId,
+      modelUsed: "fixture/compaction-model",
+      promptVersion: "capstone-compaction-v1",
+      status: "active",
+      throughMessageId: compaction.userMessageId,
+      userId,
+      workspaceId,
+    });
+    return {
+      chatConversationId: chat.conversationId,
+      chatGenerationId,
+      compactionGenerationId,
+    };
   }
 
   it("rejects an invalid approval email before mutating identity state", async () => {
@@ -391,6 +507,11 @@ describe.sequential("identity operator commands", () => {
         userId: registeredUser.id,
       },
     ]);
+    const workspace = (await database.select().from(workspaces))[0];
+    if (workspace === undefined) {
+      throw new Error("The operator workspace fixture is unavailable");
+    }
+    const activeWork = await seedActiveWork(database, workspace.id, registeredUser.id);
 
     const deactivationArguments = [
       "deactivate",
@@ -436,6 +557,26 @@ describe.sequential("identity operator commands", () => {
     ]);
     expect(membershipRows[0]?.deactivatedAt).toBeInstanceOf(Date);
     expect(await database.select().from(session)).toEqual([]);
+    expect(
+      await database.select({ id: generations.id, status: generations.status }).from(generations),
+    ).toEqual(
+      expect.arrayContaining([
+        { id: activeWork.chatGenerationId, status: "cancelled" },
+        { id: activeWork.compactionGenerationId, status: "cancelled" },
+      ]),
+    );
+    expect(await database.select().from(conversationCompactions)).toEqual([
+      expect.objectContaining({
+        generationId: activeWork.compactionGenerationId,
+        status: "cancelled",
+      }),
+    ]);
+    expect(
+      await database
+        .select({ revision: conversations.revision })
+        .from(conversations)
+        .where(eq(conversations.id, activeWork.chatConversationId)),
+    ).toEqual([{ revision: 1 }]);
     await expect(identity.canSignIn(registeredUser.email)).resolves.toBe(false);
     await expect(identity.activateMembership(registeredUser)).resolves.toBe("blocked");
 
@@ -461,6 +602,75 @@ describe.sequential("identity operator commands", () => {
     const output = results.map(({ stderr, stdout }) => `${stdout}${stderr}`).join("\n");
     expect(output).not.toContain(registeredUser.email);
     expect(output).not.toContain("operator-session-token");
+  });
+
+  it("serializes operator deactivation so concurrent commands retain one active administrator", async () => {
+    expect((await bootstrap()).code).toBe(0);
+    expect(
+      (
+        await runOperator([
+          "approve",
+          "--workspace",
+          "capstone-ecuador",
+          "--email",
+          "second.admin@example.test",
+          "--role",
+          "admin",
+        ])
+      ).code,
+    ).toBe(0);
+
+    const database = createDatabase(pool);
+    const identity = createIdentityService(database);
+    const administratorFixtures = [
+      {
+        email: "admin.operator@example.test",
+        emailVerified: true,
+        id: "operator-first-admin",
+      },
+      {
+        email: "second.admin@example.test",
+        emailVerified: true,
+        id: "operator-second-admin",
+      },
+    ] as const;
+    for (const administrator of administratorFixtures) {
+      await database.insert(user).values({
+        ...administrator,
+        name: `Administrator ${administrator.id}`,
+      });
+      await identity.linkRegisteredUser(administrator);
+      await expect(identity.activateMembership(administrator)).resolves.toBe("activated");
+    }
+
+    const results = await Promise.all(
+      administratorFixtures.map((administrator) =>
+        runOperator([
+          "deactivate",
+          "--workspace",
+          "capstone-ecuador",
+          "--email",
+          administrator.email,
+        ]),
+      ),
+    );
+    expect(results.map(({ code }) => code).sort()).toEqual([0, 1]);
+    expect(
+      results.filter(({ code }) => code === 1).map(({ stderr }) => parseOperatorOutput(stderr)),
+    ).toEqual([
+      expect.objectContaining({
+        errorName: "EmployeeAdministrationConflictError",
+        outcome: "conflict",
+      }),
+    ]);
+    expect(
+      (await database.select().from(workspaceMemberships)).map(({ status }) => status).sort(),
+    ).toEqual(["active", "deactivated"]);
+    expect(
+      (await database.select().from(employeeApprovals)).filter(
+        ({ role, status }) => role === "admin" && status === "activated",
+      ),
+    ).toHaveLength(1);
   });
 
   it("reports incomplete cleanup after access is durably blocked", async () => {
@@ -533,5 +743,19 @@ describe.sequential("identity operator commands", () => {
     await expect(identity.canSignIn(registeredUser.email)).resolves.toBe(false);
     expect(`${result.stdout}${result.stderr}`).not.toContain(registeredUser.email);
     expect(`${result.stdout}${result.stderr}`).not.toContain("cleanup-session-token");
+
+    const retry = await runOperator([
+      "deactivate",
+      "--workspace",
+      "capstone-ecuador",
+      "--email",
+      registeredUser.email,
+    ]);
+    expect(retry.code).toBe(0);
+    expect(parseOperatorOutput(retry.stdout)).toMatchObject({
+      alreadyRevoked: true,
+      outcome: "access-blocked",
+    });
+    expect(await database.select().from(session)).toEqual([]);
   });
 });

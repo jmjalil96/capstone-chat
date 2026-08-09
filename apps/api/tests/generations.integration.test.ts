@@ -29,6 +29,7 @@ import { continueMessage, systemPrompt } from "../src/generations/prompt.js";
 import { createGenerationService, type GenerationService } from "../src/generations/service.js";
 import type { RequestActor } from "../src/identity/authorization.js";
 import type { IdentityService } from "../src/identity/service.js";
+import { createBudgetService } from "../src/model-policy/budget-service.js";
 import {
   type CatalogModelSnapshot,
   initialTierModels,
@@ -338,6 +339,38 @@ describe.sequential("generation lifecycle integration", () => {
     ).resolves.toMatchObject([
       { effectiveParameters: { context: { mode: "pending" } }, status: "preparing" },
     ]);
+  });
+
+  it("timestamps response-start telemetry before selected-context reconstruction", async () => {
+    const { conversation, draft, parentMessageId } = await longConversationDraft();
+    const blocker = await pool.connect();
+    let released = false;
+    try {
+      await blocker.query("BEGIN");
+      await blocker.query("LOCK TABLE messages IN ACCESS EXCLUSIVE MODE");
+      const operation = generationService.startResponse(actor, conversation.id, randomUUID(), {
+        content: [{ text: draft.content, type: "text" }],
+        draftRevision: draft.revision,
+        modelTier: "balanced",
+        observedRevision: 0,
+        parentMessageId,
+        source: "draft",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 75));
+      await blocker.query("COMMIT");
+      released = true;
+
+      const response = await operation;
+      expect(response.startedAt).toBeDefined();
+      expect(response.startedAt?.getTime() ?? 0).toBeGreaterThanOrEqual(
+        response.admittedAt.getTime() + 50,
+      );
+    } finally {
+      if (!released) {
+        await blocker.query("ROLLBACK");
+      }
+      blocker.release();
+    }
   });
 
   it("marks admission fallback for an employee-visible warning when internal Fast is unavailable", async () => {
@@ -1162,12 +1195,41 @@ describe.sequential("generation lifecycle integration", () => {
       parentMessageId: null,
       source: "draft" as const,
     };
-    const started = await generationService.startResponse(
-      actor,
-      conversation.id,
-      idempotencyKey,
-      input,
+    const budget = createBudgetService(database);
+    let arrivals = 0;
+    let releaseBarrier: () => void = () => undefined;
+    const barrier = new Promise<void>((resolve) => {
+      releaseBarrier = resolve;
+    });
+    const concurrentService = createGenerationService(database, {
+      budget: {
+        ...budget,
+        async lockAdmission(...argumentsList) {
+          arrivals += 1;
+          if (arrivals === 2) {
+            releaseBarrier();
+          }
+          await barrier;
+          return budget.lockAdmission(...argumentsList);
+        },
+      },
+    });
+    const concurrent = await Promise.allSettled(
+      [0, 1].map(() =>
+        concurrentService.startResponse(actor, conversation.id, idempotencyKey, input),
+      ),
     );
+    expect(arrivals).toBe(2);
+    expect(concurrent.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(concurrent.find((result) => result.status === "rejected")).toMatchObject({
+      reason: { code: "GENERATION_ALREADY_EXISTS" },
+      status: "rejected",
+    });
+    const winner = concurrent.find((result) => result.status === "fulfilled");
+    if (winner?.status !== "fulfilled") {
+      throw new Error("Concurrent idempotent response did not produce a winner");
+    }
+    const started = winner.value;
     await expectCode(
       generationService.startResponse(actor, conversation.id, idempotencyKey, input),
       "GENERATION_ALREADY_EXISTS",
@@ -1774,7 +1836,7 @@ describe.sequential("generation lifecycle integration", () => {
     );
     expect(streamed.status).toBe(200);
     expect(streamed.headers.get("content-type")).toBe("application/x-ndjson");
-    expect(streamed.headers.get("cache-control")).toBe("no-store");
+    expect(streamed.headers.get("cache-control")).toBe("no-store, no-transform");
     expect(streamed.headers.get("x-content-type-options")).toBe("nosniff");
     expect(streamed.headers.get("x-request-id")).toBe("stream-request-id");
     const events = (await streamed.text())

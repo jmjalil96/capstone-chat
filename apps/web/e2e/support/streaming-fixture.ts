@@ -94,6 +94,23 @@ export interface StreamingFixture {
   };
 }
 
+export interface StreamingPresentationSample {
+  readonly marker: string;
+  readonly receivedAt: number;
+  readonly visibleAt: number | null;
+}
+
+export interface StreamingCancellationSample {
+  readonly backendObservedAt: number | null;
+  readonly clickedAt: number;
+  readonly localUiAt: number | null;
+}
+
+export interface StreamingBrowserPerformance {
+  readonly cancellations: readonly StreamingCancellationSample[];
+  readonly presentations: readonly StreamingPresentationSample[];
+}
+
 export function browserUuid(index: number): string {
   return `00000000-0000-4000-8000-${index.toString(16).padStart(12, "0")}`;
 }
@@ -496,7 +513,97 @@ export async function installStreamingFixture(
       ): Promise<StartedStream>;
     }
 
-    const bridge = window as unknown as BrowserBridge;
+    interface MutablePresentationSample {
+      marker: string;
+      receivedAt: number;
+      visibleAt: number | null;
+    }
+
+    interface MutableCancellationSample {
+      backendObservedAt: number | null;
+      clickedAt: number;
+      localUiAt: number | null;
+    }
+
+    interface BrowserPerformanceState {
+      cancellations: MutableCancellationSample[];
+      presentations: MutablePresentationSample[];
+    }
+
+    interface InstrumentedWindow extends BrowserBridge {
+      __capstoneE2ePerformance: BrowserPerformanceState;
+    }
+
+    const bridge = window as unknown as InstrumentedWindow;
+    const performanceState: BrowserPerformanceState = {
+      cancellations: [],
+      presentations: [],
+    };
+    Object.defineProperty(window, "__capstoneE2ePerformance", {
+      configurable: true,
+      value: performanceState,
+    });
+
+    const visible = (element: Element): boolean => element.getClientRects().length > 0;
+    const observePresentation = (): void => {
+      const visibleContent = [...document.querySelectorAll("[data-message-content]")].filter(
+        visible,
+      );
+      const now = performance.now();
+      for (const sample of performanceState.presentations) {
+        if (
+          sample.visibleAt === null &&
+          visibleContent.some((element) => element.textContent?.includes(sample.marker))
+        ) {
+          sample.visibleAt = now;
+        }
+      }
+
+      const pendingCancellation = performanceState.cancellations.find(
+        (sample) => sample.localUiAt === null,
+      );
+      if (!pendingCancellation) {
+        return;
+      }
+      const activeStopPresented = [
+        ...document.querySelectorAll<HTMLButtonElement>(
+          ".draft-editor .composer-action.secondary-button",
+        ),
+      ].some((button) => visible(button) && !button.disabled);
+      if (!activeStopPresented) {
+        pendingCancellation.localUiAt = now;
+      }
+    };
+
+    const beginObservation = (): void => {
+      const root = document.documentElement;
+      if (!root) {
+        document.addEventListener("DOMContentLoaded", beginObservation, { once: true });
+        return;
+      }
+      new MutationObserver(observePresentation).observe(root, {
+        attributes: true,
+        childList: true,
+        characterData: true,
+        subtree: true,
+      });
+      document.addEventListener(
+        "click",
+        (event) => {
+          const button = event.target instanceof Element ? event.target.closest("button") : null;
+          if (button?.matches(".draft-editor .composer-action.secondary-button")) {
+            performanceState.cancellations.push({
+              backendObservedAt: null,
+              clickedAt: performance.now(),
+              localUiAt: null,
+            });
+          }
+        },
+        true,
+      );
+    };
+    beginObservation();
+
     const nativeFetch = window.fetch.bind(window);
     const responsePath = /^\/api\/conversations\/([0-9a-f-]+)\/responses$/u;
     const cancelPath = /^\/api\/conversations\/([0-9a-f-]+)\/responses\/([0-9a-f-]+)\/cancel$/u;
@@ -530,6 +637,13 @@ export async function installStreamingFixture(
           async start(controller) {
             const write = (event: StreamEvent) => {
               if (active) {
+                if (event.type === "content.delta") {
+                  performanceState.presentations.push({
+                    marker: event.text,
+                    receivedAt: performance.now(),
+                    visibleAt: null,
+                  });
+                }
                 controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
               }
             };
@@ -614,6 +728,12 @@ export async function installStreamingFixture(
           throw new Error("The test cancellation request was incomplete");
         }
         await bridge.__capstoneE2eCancel(conversationId, generationId);
+        const pendingCancellation = performanceState.cancellations.find(
+          (sample) => sample.backendObservedAt === null,
+        );
+        if (pendingCancellation) {
+          pendingCancellation.backendObservedAt = performance.now();
+        }
         return new Response(null, { status: 204 });
       }
 
@@ -623,4 +743,23 @@ export async function installStreamingFixture(
 
   await page.route(/^http:\/\/127\.0\.0\.1:4173\/api\//u, (route) => backend.route(route));
   return backend;
+}
+
+export async function readStreamingBrowserPerformance(
+  page: Page,
+): Promise<StreamingBrowserPerformance> {
+  return page.evaluate(() => {
+    const state = (
+      window as unknown as {
+        __capstoneE2ePerformance?: StreamingBrowserPerformance;
+      }
+    ).__capstoneE2ePerformance;
+    if (!state) {
+      throw new Error("The streaming browser performance probe was not installed");
+    }
+    return {
+      cancellations: state.cancellations.map((sample) => ({ ...sample })),
+      presentations: state.presentations.map((sample) => ({ ...sample })),
+    };
+  });
 }

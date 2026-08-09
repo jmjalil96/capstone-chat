@@ -21,6 +21,7 @@ import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 
+import { copy } from "../copy";
 import styles from "./message-content.module.css";
 
 const APPROVED_PROTOCOLS = new Set(["http:", "https:", "mailto:"]);
@@ -236,7 +237,18 @@ const markdownComponents: Components = {
   h6: ({ children }) => <h6 className={styles.headingSix}>{children}</h6>,
   img: ({ alt }) => (alt ? <span className={styles.suppressedMedia}>{alt}</span> : null),
   input: ({ checked }) => (
-    <input checked={Boolean(checked)} disabled readOnly tabIndex={-1} type="checkbox" />
+    <input
+      aria-label={
+        checked
+          ? copy.conversations.messages.taskCompleted
+          : copy.conversations.messages.taskPending
+      }
+      checked={Boolean(checked)}
+      disabled
+      readOnly
+      tabIndex={-1}
+      type="checkbox"
+    />
   ),
   pre: ({ children, node }) => {
     const { overflowLabel, renderCodeAction } = useContext(RendererContext);

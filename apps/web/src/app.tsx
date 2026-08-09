@@ -1,18 +1,15 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { lazy, Suspense } from "react";
 import { createBrowserRouter, Navigate, type RouteObject } from "react-router";
 import { RouterProvider } from "react-router/dom";
 
-import { AdminGuard } from "./administration/admin-guard";
-import { AdminShell } from "./administration/admin-shell";
-import { EmployeesPage } from "./administration/employees-page";
-import { ModelsPage } from "./administration/models-page";
-import { UsagePage } from "./administration/usage-page";
 import { ArchivedPage } from "./conversations/archived-page";
 import { ConversationPage } from "./conversations/conversation-page";
 import { ConversationShell } from "./conversations/conversation-shell";
 import { NewChatPage } from "./conversations/new-chat-page";
 import { ProtectedDraftLayout } from "./conversations/protected-draft-layout";
 import { SearchPage } from "./conversations/search-page";
+import { copy } from "./copy";
 import { AccountSecurityPage } from "./identity/account-security-page";
 import { ForgotPasswordPage } from "./identity/forgot-password-page";
 import { IdentityFrame, IdentityLayout } from "./identity/identity-layout";
@@ -21,6 +18,32 @@ import { ResetPasswordPage } from "./identity/reset-password-page";
 import { SignInPage } from "./identity/sign-in-page";
 import { SignUpPage } from "./identity/sign-up-page";
 import { VerifyEmailPage } from "./identity/verify-email-page";
+
+const AdminGuard = lazy(() =>
+  import("./administration/admin-guard").then(({ AdminGuard: Component }) => ({
+    default: Component,
+  })),
+);
+const AdminShell = lazy(() =>
+  import("./administration/admin-shell").then(({ AdminShell: Component }) => ({
+    default: Component,
+  })),
+);
+const EmployeesPage = lazy(() =>
+  import("./administration/employees-page").then(({ EmployeesPage: Component }) => ({
+    default: Component,
+  })),
+);
+const ModelsPage = lazy(() =>
+  import("./administration/models-page").then(({ ModelsPage: Component }) => ({
+    default: Component,
+  })),
+);
+const UsagePage = lazy(() =>
+  import("./administration/usage-page").then(({ UsagePage: Component }) => ({
+    default: Component,
+  })),
+);
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -92,7 +115,15 @@ const router = createBrowserRouter(appRoutes);
 export function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
+      <Suspense
+        fallback={
+          <div className="route-loading" role="status">
+            {copy.routeLoading}
+          </div>
+        }
+      >
+        <RouterProvider router={router} />
+      </Suspense>
     </QueryClientProvider>
   );
 }

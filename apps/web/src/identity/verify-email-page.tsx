@@ -1,56 +1,65 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useLayoutEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 
 import { sessionQueryKey } from "../api/session";
 import { copy } from "../copy";
-import { sendVerificationEmail } from "./auth-actions";
+import { sendVerificationEmail, verifyEmail } from "./auth-actions";
+import { clearIdentityCredential, readIdentityCredential } from "./credential-fragment";
 import { FieldError, FormMessage, useFeedbackAttempt } from "./form-feedback";
 import { IdentityPanel } from "./identity-panel";
 import { emailError } from "./validation";
-
-type Arrival = "pending" | "verified" | "invalid";
 
 export function VerifyEmailPage() {
   const queryClient = useQueryClient();
   const [feedbackAttempt, beginFeedbackAttempt] = useFeedbackAttempt();
   const [emailValidation, setEmailValidation] = useState<string>();
-  const [arrival] = useState<Arrival>(() => {
-    const parameters = new URLSearchParams(window.location.search);
-
-    if (parameters.has("error")) {
-      return "invalid";
-    }
-
-    return parameters.get("verified") === "1" ? "verified" : "pending";
+  const [credential] = useState(() => readIdentityCredential("/verify-email"));
+  const verificationStarted = useRef(false);
+  const verificationMutation = useMutation({
+    mutationFn: verifyEmail,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: sessionQueryKey });
+    },
+    onSettled: () => clearIdentityCredential("/verify-email"),
   });
-  const mutation = useMutation({ mutationFn: sendVerificationEmail });
+  const resendMutation = useMutation({ mutationFn: sendVerificationEmail });
+  const verifyCredential = verificationMutation.mutate;
 
-  useLayoutEffect(() => {
-    if (window.location.search) {
-      window.history.replaceState(window.history.state, "", window.location.pathname);
-    }
+  useEffect(() => {
+    let active = true;
 
-    if (arrival === "verified") {
-      void queryClient.invalidateQueries({ queryKey: sessionQueryKey });
-    }
-  }, [arrival, queryClient]);
+    // React verifies effect cleanup during development. Defer the one-shot mutation so the
+    // discarded effect cannot consume it before the live effect owns the request.
+    queueMicrotask(() => {
+      if (active && credential.token !== null && !verificationStarted.current) {
+        verificationStarted.current = true;
+        verifyCredential(credential.token);
+      }
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [credential.token, verifyCredential]);
+
+  useEffect(() => () => clearIdentityCredential("/verify-email"), []);
 
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     beginFeedbackAttempt();
-    mutation.reset();
+    resendMutation.reset();
 
     const email = event.currentTarget.elements.namedItem("email") as HTMLInputElement;
     const validation = emailError(email);
     setEmailValidation(validation);
 
     if (!validation) {
-      mutation.mutate(email.value.trim());
+      resendMutation.mutate(email.value.trim());
     }
   }
 
-  if (arrival === "verified") {
+  if (verificationMutation.isSuccess) {
     return (
       <IdentityPanel
         eyebrow={copy.identity.verifyEmail.eyebrow}
@@ -65,26 +74,34 @@ export function VerifyEmailPage() {
     );
   }
 
+  if (credential.token !== null && !verificationMutation.isError) {
+    return (
+      <IdentityPanel
+        eyebrow={copy.identity.verifyEmail.eyebrow}
+        title={copy.identity.verifyEmail.title}
+        description={copy.identity.verifyEmail.description}
+      >
+        <p role="status">{copy.identity.verifyEmail.verifying}</p>
+      </IdentityPanel>
+    );
+  }
+
+  const invalid = credential.invalid || verificationMutation.isError;
+
   const feedback = emailValidation
     ? copy.identity.common.validationSummary
-    : mutation.isError
+    : resendMutation.isError
       ? copy.identity.common.genericError
-      : mutation.isSuccess
+      : resendMutation.isSuccess
         ? copy.identity.verifyEmail.resendSuccess
         : undefined;
 
   return (
     <IdentityPanel
       eyebrow={copy.identity.verifyEmail.eyebrow}
-      title={
-        arrival === "invalid"
-          ? copy.identity.verifyEmail.invalidTitle
-          : copy.identity.verifyEmail.title
-      }
+      title={invalid ? copy.identity.verifyEmail.invalidTitle : copy.identity.verifyEmail.title}
       description={
-        arrival === "invalid"
-          ? copy.identity.verifyEmail.invalid
-          : copy.identity.verifyEmail.description
+        invalid ? copy.identity.verifyEmail.invalid : copy.identity.verifyEmail.description
       }
     >
       <h2 className="form-heading">{copy.identity.verifyEmail.resendTitle}</h2>
@@ -92,11 +109,11 @@ export function VerifyEmailPage() {
         className="identity-form"
         onSubmit={handleSubmit}
         noValidate
-        aria-busy={mutation.isPending}
+        aria-busy={resendMutation.isPending}
       >
         <FormMessage
           focusKey={feedbackAttempt}
-          kind={mutation.isSuccess ? "success" : "error"}
+          kind={resendMutation.isSuccess ? "success" : "error"}
           message={feedback}
         />
         <div className="form-field">
@@ -114,8 +131,8 @@ export function VerifyEmailPage() {
           />
           <FieldError id="verification-email-error" message={emailValidation} />
         </div>
-        <button className="primary-button" type="submit" disabled={mutation.isPending}>
-          {mutation.isPending
+        <button className="primary-button" type="submit" disabled={resendMutation.isPending}>
+          {resendMutation.isPending
             ? copy.identity.verifyEmail.resending
             : copy.identity.verifyEmail.resend}
         </button>

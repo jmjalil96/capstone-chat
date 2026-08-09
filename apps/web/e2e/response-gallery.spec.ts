@@ -4,9 +4,10 @@ import { copy } from "../src/copy";
 import { exerciseConversationControls } from "./support/phase5-controls-flow";
 import {
   clipboardWrites,
+  followConversationSidebarLink,
   installClipboardCapture,
   openAuthenticatedBrowserEmployee,
-  openDesktopConversation,
+  openConversation,
   phaseFiveBrowserFixtures,
   rejectClipboardWrites,
   responseGalleryAssistantMarkdown,
@@ -14,6 +15,7 @@ import {
 } from "./support/phase5-fixture";
 
 test("@critical-stream renders the fixed response gallery safely and copies original source", async ({
+  isMobile,
   page,
 }, testInfo) => {
   test.setTimeout(90_000);
@@ -22,10 +24,12 @@ test("@critical-stream renders the fixed response gallery safely and copies orig
   page.on("console", (message) => diagnostics.push(message.text()));
   page.on("pageerror", (error) => diagnostics.push(error.message));
   page.on("request", (request) => requests.push(request.url()));
-  await page.setViewportSize({ width: 1_280, height: 800 });
+  if (!isMobile) {
+    await page.setViewportSize({ width: 1_280, height: 800 });
+  }
   await installClipboardCapture(page);
-  await openAuthenticatedBrowserEmployee(page);
-  await openDesktopConversation(page, phaseFiveBrowserFixtures.galleryTitle);
+  await openAuthenticatedBrowserEmployee(page, isMobile);
+  await openConversation(page, phaseFiveBrowserFixtures.galleryTitle, isMobile);
 
   const galleryMessage = page
     .locator(".message-assistant")
@@ -164,7 +168,9 @@ test("@critical-stream renders the fixed response gallery safely and copies orig
     });
   }
 
-  await page.setViewportSize({ width: 390, height: 844 });
+  if (!isMobile) {
+    await page.setViewportSize({ width: 390, height: 844 });
+  }
   await galleryMessage.locator('[data-message-overflow="table"]').last().scrollIntoViewIfNeeded();
   expect(
     await page.evaluate(
@@ -190,11 +196,9 @@ test("@critical-stream renders the fixed response gallery safely and copies orig
   }
 
   await test.step("preserves branch controls through reload and archive", () =>
-    exerciseConversationControls(page, testInfo.project.name));
-  if (testInfo.project.name === "chromium") {
-    await test.step("opens a deep search result at its exact message once", () =>
-      exerciseDeepSearchPositioning(page));
-  }
+    exerciseConversationControls(page, testInfo.project.name, isMobile));
+  await test.step("opens a deep search result at its exact message once", () =>
+    exerciseDeepSearchPositioning(page, isMobile));
 
   const diagnosticText = diagnostics.join("\n");
   for (const privateFixtureValue of [
@@ -209,12 +213,14 @@ test("@critical-stream renders the fixed response gallery safely and copies orig
   }
 });
 
-async function exerciseDeepSearchPositioning(page: import("@playwright/test").Page): Promise<void> {
-  await page.setViewportSize({ width: 1_280, height: 800 });
-  await page
-    .locator(".desktop-sidebar")
-    .getByRole("link", { name: copy.conversations.navigation.search })
-    .click();
+async function exerciseDeepSearchPositioning(
+  page: import("@playwright/test").Page,
+  isMobile: boolean,
+): Promise<void> {
+  if (!isMobile) {
+    await page.setViewportSize({ width: 1_280, height: 800 });
+  }
+  await followConversationSidebarLink(page, copy.conversations.navigation.search, isMobile);
   await page.getByLabel(copy.conversations.search.label).fill("ultravioleta");
   const result = page.getByRole("button", {
     name: new RegExp(phaseFiveBrowserFixtures.searchTitle),

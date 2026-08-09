@@ -13,20 +13,28 @@
     "build": "pnpm --filter @capstone/protocol build && pnpm --filter @capstone/api build && pnpm --filter @capstone/web build",
     "test": "pnpm --filter @capstone/protocol build && pnpm --filter @capstone/protocol test && pnpm --filter @capstone/api test && pnpm --filter @capstone/web test",
     "test:e2e": "pnpm --filter @capstone/protocol build && pnpm --filter @capstone/web test:e2e",
+    "test:load": "pnpm --filter @capstone/protocol build && pnpm --filter @capstone/api load:test",
+    "test:load:container": "node scripts/container-load.mjs",
     "typecheck": "pnpm --filter @capstone/protocol typecheck && pnpm --filter @capstone/api typecheck && pnpm --filter @capstone/web typecheck",
+    "verify:operations": "node scripts/operations-audit.mjs --self-test",
+    "verify:recovery": "node scripts/operations-audit.mjs --recovery-evidence",
+    "verify:repository": "node scripts/repository-audit.mjs",
     "check": "biome check .",
-    "ci": "pnpm check && pnpm typecheck && pnpm test && pnpm build",
+    "ci": "pnpm check && pnpm verify:repository && pnpm verify:operations && pnpm typecheck && pnpm test && pnpm build && pnpm report:bundle",
     "db:migrate": "pnpm --filter @capstone/api db:migrate",
     "identity:approve": "pnpm --filter @capstone/api identity:approve",
     "identity:bootstrap": "pnpm --filter @capstone/api identity:bootstrap",
     "identity:deactivate": "pnpm --filter @capstone/api identity:deactivate",
     "model-catalog:refresh": "pnpm --filter @capstone/api model-catalog:refresh",
     "model-policy:attest": "pnpm --filter @capstone/api model-policy:attest",
-    "model-policy:bootstrap": "pnpm --filter @capstone/api model-policy:bootstrap"
+    "model-policy:bootstrap": "pnpm --filter @capstone/api model-policy:bootstrap",
+    "report:bundle": "node scripts/bundle-report.mjs",
+    "smoke:container": "node scripts/container-smoke.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.7",
     "@types/node": "24.13.3",
-    "typescript": "7.0.2"
+    "typescript": "7.0.2",
+    "yaml": "2.9.0"
   }
 }

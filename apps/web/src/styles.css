@@ -67,6 +67,35 @@ select:focus-visible,
   min-height: 100vh;
 }
 
+.root-failure {
+  min-height: 100svh;
+  display: grid;
+  place-items: center;
+  padding: var(--capstone-gutter-small);
+}
+
+.root-failure-panel {
+  width: min(100%, 36rem);
+  padding: clamp(var(--capstone-space-6), 6vw, var(--capstone-space-8));
+  background: var(--app-panel);
+  border: 1px solid var(--app-border);
+  border-block-start: 3px solid var(--app-danger);
+  border-radius: var(--capstone-radius-md);
+}
+
+.root-failure-panel h1 {
+  margin: 0;
+  font-family: var(--capstone-font-display);
+  font-size: var(--capstone-type-h1);
+  line-height: 1.08;
+}
+
+.root-failure-panel > p:not(.identity-eyebrow) {
+  margin: var(--capstone-space-4) 0 var(--capstone-space-6);
+  color: var(--app-text-muted);
+  line-height: 1.55;
+}
+
 .app-shell {
   min-height: 100svh;
   display: grid;
@@ -1358,19 +1387,6 @@ select:focus-visible,
   color: var(--app-text-muted);
   font-size: var(--capstone-type-small);
   font-weight: var(--capstone-weight-medium);
-}
-
-@media (hover: hover) and (pointer: fine) {
-  .message-actions {
-    opacity: 0.68;
-    transition: opacity var(--capstone-duration-fast) var(--capstone-ease-standard);
-  }
-
-  .message:hover .message-actions,
-  .message-actions:focus-within,
-  .message:has(.response-outcome) .message-actions {
-    opacity: 1;
-  }
 }
 
 .message-alternatives {

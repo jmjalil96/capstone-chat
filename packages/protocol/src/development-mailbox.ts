@@ -11,6 +11,7 @@ export const DevelopmentMailboxMessageSchema = Type.Object(
     to: Type.String({ format: "email" }),
     subject: Type.String({ minLength: 1 }),
     text: Type.String({ minLength: 1 }),
+    html: Type.String({ minLength: 1 }),
     createdAt: Type.String({ format: "date-time" }),
   },
   { additionalProperties: false },

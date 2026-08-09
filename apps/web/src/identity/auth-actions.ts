@@ -32,7 +32,6 @@ export async function signUp(input: {
 }): Promise<void> {
   const result = await authClient.signUp.email({
     ...input,
-    callbackURL: appUrl("/verify-email?verified=1"),
   });
   assertAuthSuccess(result);
 }
@@ -45,7 +44,6 @@ export async function signOut(): Promise<void> {
 export async function sendVerificationEmail(email: string): Promise<void> {
   const result = await authClient.sendVerificationEmail({
     email,
-    callbackURL: appUrl("/verify-email?verified=1"),
   });
   assertAuthSuccess(result);
 }
@@ -61,6 +59,20 @@ export async function requestPasswordReset(email: string): Promise<void> {
 export async function resetPassword(input: { newPassword: string; token: string }): Promise<void> {
   const result = await authClient.resetPassword(input);
   assertAuthSuccess(result);
+}
+
+export async function verifyEmail(token: string): Promise<void> {
+  const response = await fetch("/api/auth/verify-email", {
+    body: JSON.stringify({ token }),
+    cache: "no-store",
+    credentials: "same-origin",
+    headers: { "content-type": "application/json" },
+    method: "POST",
+  });
+
+  if (!response.ok) {
+    throw new AuthActionError(response.status);
+  }
 }
 
 export async function changePassword(input: {

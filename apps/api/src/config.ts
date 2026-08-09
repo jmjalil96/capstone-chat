@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { loadEnvironmentFile } from "./environment.js";
 
 loadEnvironmentFile();
@@ -7,20 +8,26 @@ const logLevels = ["fatal", "error", "warn", "info", "debug", "trace", "silent"]
 
 export type RuntimeMode = (typeof runtimeModes)[number];
 export type LogLevel = (typeof logLevels)[number];
-export type EmailDelivery = "disabled" | "fake";
+export type EmailDelivery = "disabled" | "fake" | "resend";
 export type ModelGatewayMode = "fake" | "openrouter";
 
 export type ConfigurationKey =
   | "BETTER_AUTH_SECRET"
   | "DATABASE_URL"
+  | "DEPLOYMENT_REVISION"
   | "EMAIL_DELIVERY"
+  | "EMAIL_FROM"
   | "HOST"
   | "LOG_LEVEL"
   | "MODEL_GATEWAY"
   | "NODE_ENV"
   | "OPENROUTER_API_KEY"
+  | "OTEL_EXPORTER_OTLP_ENDPOINT"
+  | "OTEL_EXPORTER_OTLP_HEADERS"
   | "PORT"
-  | "PUBLIC_ORIGIN";
+  | "PUBLIC_ORIGIN"
+  | "RENDER_GIT_COMMIT"
+  | "RESEND_API_KEY";
 
 export class ConfigurationError extends Error {
   readonly configurationKey: ConfigurationKey;
@@ -43,16 +50,26 @@ export interface OpenRouterOperatorConfig {
 export interface ApiConfig {
   readonly authSecret: string;
   readonly databaseUrl: string;
+  readonly deploymentRevision: string;
   readonly emailDelivery: EmailDelivery;
+  readonly emailFrom: string | null;
   readonly host: string;
   readonly logLevel: LogLevel;
   readonly modelGateway: ModelGatewayMode;
   readonly nodeEnv: RuntimeMode;
   readonly openRouterApiKey: string | null;
+  readonly otlpEndpoint: string | null;
+  readonly otlpHeaders: Readonly<Record<string, string>>;
   readonly port: number;
   readonly publicOrigin: string;
+  readonly resendApiKey: string | null;
   readonly trustProxy: false;
+  readonly webAssetsDirectory: string | null;
 }
+
+const productionOrigin = "https://chat.capstone.com.ec";
+const productionSender = "Capstone Chat <no-reply@mail.capstone.com.ec>";
+const productionWebAssetsDirectory = fileURLToPath(new URL("../../web/dist/", import.meta.url));
 
 const developmentDefaults = {
   databaseUrl: "postgresql://capstone:capstone@127.0.0.1:5432/capstone_chat",
@@ -114,18 +131,45 @@ function readEmailDelivery(value: string | undefined, mode: RuntimeMode): EmailD
     throw new ConfigurationError("EMAIL_DELIVERY", "EMAIL_DELIVERY is required in production");
   }
 
-  if (delivery !== "fake" && delivery !== "disabled") {
-    throw new ConfigurationError("EMAIL_DELIVERY", "EMAIL_DELIVERY must be fake or disabled");
-  }
-
-  if (mode === "production" && delivery === "fake") {
+  if (delivery !== "fake" && delivery !== "disabled" && delivery !== "resend") {
     throw new ConfigurationError(
       "EMAIL_DELIVERY",
-      "EMAIL_DELIVERY=fake is prohibited in production",
+      "EMAIL_DELIVERY must be disabled, fake, or resend",
     );
   }
 
+  if (mode === "production" && delivery !== "resend") {
+    throw new ConfigurationError("EMAIL_DELIVERY", "EMAIL_DELIVERY must be resend in production");
+  }
+
   return delivery;
+}
+
+function readResendConfig(
+  source: NodeJS.ProcessEnv,
+  delivery: EmailDelivery,
+): Readonly<{ emailFrom: string | null; resendApiKey: string | null }> {
+  if (delivery !== "resend") {
+    return Object.freeze({ emailFrom: null, resendApiKey: null });
+  }
+
+  const resendApiKey = source.RESEND_API_KEY?.trim();
+  if (resendApiKey === undefined || resendApiKey.length === 0) {
+    throw new ConfigurationError(
+      "RESEND_API_KEY",
+      "RESEND_API_KEY is required when EMAIL_DELIVERY=resend",
+    );
+  }
+
+  const emailFrom = source.EMAIL_FROM?.trim();
+  if (emailFrom === undefined || emailFrom.length === 0) {
+    throw new ConfigurationError("EMAIL_FROM", "EMAIL_FROM is required when EMAIL_DELIVERY=resend");
+  }
+  if (emailFrom !== productionSender) {
+    throw new ConfigurationError("EMAIL_FROM", "EMAIL_FROM must use the approved Capstone sender");
+  }
+
+  return Object.freeze({ emailFrom, resendApiKey });
 }
 
 function readHost(value: string | undefined, mode: RuntimeMode): string {
@@ -133,6 +177,9 @@ function readHost(value: string | undefined, mode: RuntimeMode): string {
 
   if (host.length === 0 || /\s/u.test(host)) {
     throw new ConfigurationError("HOST", "HOST must be a non-empty hostname or IP address");
+  }
+  if (mode === "production" && host !== "0.0.0.0") {
+    throw new ConfigurationError("HOST", "HOST must be 0.0.0.0 in production");
   }
 
   return host;
@@ -205,7 +252,129 @@ function readPublicOrigin(value: string, mode: RuntimeMode): string {
     throw new ConfigurationError("PUBLIC_ORIGIN", "PUBLIC_ORIGIN must contain only an origin");
   }
 
+  if (mode === "production" && url.origin !== productionOrigin) {
+    throw new ConfigurationError(
+      "PUBLIC_ORIGIN",
+      "PUBLIC_ORIGIN must use the approved production origin",
+    );
+  }
+
   return url.origin;
+}
+
+function readDeploymentRevision(source: NodeJS.ProcessEnv, mode: RuntimeMode): string {
+  if (mode === "production") {
+    const revision = source.RENDER_GIT_COMMIT?.trim();
+    if (revision === undefined || revision.length === 0) {
+      throw new ConfigurationError(
+        "RENDER_GIT_COMMIT",
+        "RENDER_GIT_COMMIT is required in production",
+      );
+    }
+    if (!/^[0-9a-f]{40}$/iu.test(revision)) {
+      throw new ConfigurationError(
+        "RENDER_GIT_COMMIT",
+        "RENDER_GIT_COMMIT must be a full Git commit identifier",
+      );
+    }
+    return revision.toLowerCase();
+  }
+
+  const revision = source.DEPLOYMENT_REVISION?.trim() || mode;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(revision)) {
+    throw new ConfigurationError(
+      "DEPLOYMENT_REVISION",
+      "DEPLOYMENT_REVISION must be a safe bounded release identifier",
+    );
+  }
+  return revision;
+}
+
+function containsControlCharacter(value: string): boolean {
+  for (const character of value) {
+    const codePoint = character.codePointAt(0);
+    if (codePoint !== undefined && (codePoint <= 31 || codePoint === 127)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function readOtlpConfig(
+  source: NodeJS.ProcessEnv,
+  mode: RuntimeMode,
+): Readonly<{
+  endpoint: string | null;
+  headers: Readonly<Record<string, string>>;
+}> {
+  const endpointValue = source.OTEL_EXPORTER_OTLP_ENDPOINT?.trim();
+  const headersValue = source.OTEL_EXPORTER_OTLP_HEADERS?.trim();
+  const required =
+    mode === "production" || endpointValue !== undefined || headersValue !== undefined;
+
+  if (!required) {
+    return Object.freeze({ endpoint: null, headers: Object.freeze({}) });
+  }
+  if (endpointValue === undefined || endpointValue.length === 0) {
+    throw new ConfigurationError(
+      "OTEL_EXPORTER_OTLP_ENDPOINT",
+      "OTEL_EXPORTER_OTLP_ENDPOINT is required with telemetry",
+    );
+  }
+  if (headersValue === undefined || headersValue.length === 0) {
+    throw new ConfigurationError(
+      "OTEL_EXPORTER_OTLP_HEADERS",
+      "OTEL_EXPORTER_OTLP_HEADERS is required with telemetry",
+    );
+  }
+
+  let endpoint: URL;
+  try {
+    endpoint = new URL(endpointValue);
+  } catch {
+    throw new ConfigurationError(
+      "OTEL_EXPORTER_OTLP_ENDPOINT",
+      "OTEL_EXPORTER_OTLP_ENDPOINT must be a valid HTTPS base URL",
+    );
+  }
+  if (
+    endpoint.protocol !== "https:" ||
+    endpoint.username !== "" ||
+    endpoint.password !== "" ||
+    endpoint.pathname !== "/" ||
+    endpoint.search !== "" ||
+    endpoint.hash !== ""
+  ) {
+    throw new ConfigurationError(
+      "OTEL_EXPORTER_OTLP_ENDPOINT",
+      "OTEL_EXPORTER_OTLP_ENDPOINT must be an HTTPS origin",
+    );
+  }
+  if (!/^otlp(?:\.[a-z0-9-]+)?\.nr-data\.net$/u.test(endpoint.hostname)) {
+    throw new ConfigurationError(
+      "OTEL_EXPORTER_OTLP_ENDPOINT",
+      "OTEL_EXPORTER_OTLP_ENDPOINT must use an official New Relic OTLP host",
+    );
+  }
+
+  const separator = headersValue.indexOf("=");
+  const apiKey = separator === -1 ? "" : headersValue.slice(separator + 1).trim();
+  if (
+    headersValue.slice(0, separator).trim() !== "api-key" ||
+    apiKey.length === 0 ||
+    headersValue.includes(",") ||
+    containsControlCharacter(apiKey)
+  ) {
+    throw new ConfigurationError(
+      "OTEL_EXPORTER_OTLP_HEADERS",
+      "OTEL_EXPORTER_OTLP_HEADERS must contain exactly one api-key header",
+    );
+  }
+
+  return Object.freeze({
+    endpoint: endpoint.origin,
+    headers: Object.freeze({ "api-key": apiKey }),
+  });
 }
 
 function readLogLevel(value: string | undefined, mode: RuntimeMode): LogLevel {
@@ -296,25 +465,35 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): Readonly<Ap
     nodeEnv,
   );
   const modelGateway = readModelGateway(source.MODEL_GATEWAY, nodeEnv);
+  const emailDelivery = readEmailDelivery(source.EMAIL_DELIVERY, nodeEnv);
+  const resend = readResendConfig(source, emailDelivery);
+  const otlp = readOtlpConfig(source, nodeEnv);
 
   return Object.freeze({
     authSecret: readAuthSecret(source, nodeEnv),
     databaseUrl,
-    emailDelivery: readEmailDelivery(source.EMAIL_DELIVERY, nodeEnv),
+    deploymentRevision: readDeploymentRevision(source, nodeEnv),
+    emailDelivery,
+    emailFrom: resend.emailFrom,
     host: readHost(source.HOST, nodeEnv),
     logLevel: readLogLevel(source.LOG_LEVEL, nodeEnv),
     modelGateway,
     nodeEnv,
     openRouterApiKey: readOpenRouterApiKey(source.OPENROUTER_API_KEY, modelGateway),
+    otlpEndpoint: otlp.endpoint,
+    otlpHeaders: otlp.headers,
     port: readPort(source.PORT),
     publicOrigin,
+    resendApiKey: resend.resendApiKey,
     trustProxy: false,
+    webAssetsDirectory: nodeEnv === "production" ? productionWebAssetsDirectory : null,
   });
 }
 
 export function publicConfigMetadata(config: ApiConfig): Readonly<Record<string, unknown>> {
   return Object.freeze({
     emailDelivery: config.emailDelivery,
+    deploymentRevision: config.deploymentRevision,
     host: config.host,
     logLevel: config.logLevel,
     modelGateway: config.modelGateway,
@@ -322,5 +501,7 @@ export function publicConfigMetadata(config: ApiConfig): Readonly<Record<string,
     port: config.port,
     publicOrigin: config.publicOrigin,
     trustProxy: config.trustProxy,
+    telemetry: config.otlpEndpoint !== null,
+    webAssets: config.webAssetsDirectory !== null,
   });
 }

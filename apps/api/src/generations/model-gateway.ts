@@ -117,22 +117,31 @@ export function generationRequestEstimatorInputs(request: GenerationRequest): re
   return generationRequestMessages(request).map((message) => message.content);
 }
 
+interface GatewayTransportTiming {
+  /** Adapter-active time, excluding suspension while the async-iterator consumer handles an event. */
+  readonly transportElapsedMilliseconds?: number;
+}
+
 export type GatewayEvent =
+  | (GatewayTransportTiming & {
+      /** Private lifecycle boundary; coordinators consume it and never forward it to browsers. */
+      readonly type: "response.headers";
+    })
   | {
       readonly metadata: GatewayProviderMetadata;
       readonly type: "generation.metadata";
     }
-  | {
+  | (GatewayTransportTiming & {
       readonly text: string;
       readonly type: "content.delta";
-    }
-  | {
+    })
+  | (GatewayTransportTiming & {
       readonly reason: GatewayCompletionReason;
       readonly type: "response.completed";
       readonly usage: GatewayUsage;
       readonly accounting?: GatewayAccounting;
-    }
-  | {
+    })
+  | (GatewayTransportTiming & {
       readonly accounting?: {
         readonly actual?: GatewayAccounting;
         readonly metadata?: GatewayProviderMetadata;
@@ -145,7 +154,36 @@ export type GatewayEvent =
       readonly usageLookupAttempted?: boolean;
       readonly type: "response.failed";
       readonly usage?: GatewayUsage;
-    };
+    });
+
+export function gatewayTransportElapsedMilliseconds(event: GatewayEvent): number | undefined {
+  const value =
+    event.type === "generation.metadata" ? undefined : event.transportElapsedMilliseconds;
+  return value !== undefined && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+export function createGatewayTransportClock(): {
+  readonly elapsedMilliseconds: () => number;
+  readonly publish: <Event extends GatewayEvent>(event: Event) => AsyncIterable<Event>;
+} {
+  const startedAt = performance.now();
+  let consumerSuspensionMilliseconds = 0;
+
+  function elapsedMilliseconds(): number {
+    return Math.max(0, performance.now() - startedAt - consumerSuspensionMilliseconds);
+  }
+
+  async function* publish<Event extends GatewayEvent>(event: Event): AsyncIterable<Event> {
+    const suspendedAt = performance.now();
+    try {
+      yield event;
+    } finally {
+      consumerSuspensionMilliseconds += Math.max(0, performance.now() - suspendedAt);
+    }
+  }
+
+  return Object.freeze({ elapsedMilliseconds, publish });
+}
 
 export interface ModelGateway {
   stream(request: GenerationRequest, signal: AbortSignal): AsyncIterable<GatewayEvent>;

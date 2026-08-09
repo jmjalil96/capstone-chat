@@ -1,12 +1,17 @@
-import { type ApiApplication, createApplication } from "./app.js";
+import { type ApiApplication, type ApplicationDependencies, createApplication } from "./app.js";
 import type { ApiConfig } from "./config.js";
 import { publicConfigMetadata } from "./config.js";
 import { operationalErrorMetadata } from "./operator-error.js";
 
-export async function startServer(config: ApiConfig): Promise<ApiApplication> {
-  const application = createApplication(config);
+export async function startServer(
+  config: ApiConfig,
+  dependencies: ApplicationDependencies = {},
+  configure?: ((application: ApiApplication) => void | Promise<void>) | undefined,
+): Promise<ApiApplication> {
+  const application = createApplication(config, dependencies);
 
   try {
+    await configure?.(application);
     await application.server.listen({ host: config.host, port: config.port });
     const readiness = await application.lifecycle.initialize();
     if (config.nodeEnv === "production" && readiness.status === "ready") {

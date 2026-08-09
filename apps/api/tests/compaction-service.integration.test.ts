@@ -45,6 +45,8 @@ interface Fixture {
   readonly workspaceId: string;
 }
 
+type CompactionTelemetry = NonNullable<Parameters<typeof createCompactionService>[0]["telemetry"]>;
+
 function policy(monthlyBudgetUsd = "100"): ResolvedTierPolicy {
   return Object.freeze({
     completionPriceCeilingPerToken: "0.000002",
@@ -540,8 +542,44 @@ describe.sequential("compaction lifecycle", () => {
         },
       },
     ]);
+    const timedGateway: ModelGateway = {
+      async *stream(request, signal) {
+        for await (const event of gateway.stream(request, signal)) {
+          if (event.type === "response.headers") {
+            yield { ...event, transportElapsedMilliseconds: 12 };
+          } else if (event.type === "content.delta") {
+            yield { ...event, transportElapsedMilliseconds: 34 };
+          } else if (event.type === "response.completed" || event.type === "response.failed") {
+            yield { ...event, transportElapsedMilliseconds: 56 };
+          } else {
+            yield event;
+          }
+        }
+      },
+    };
 
-    const result = await execute(fixture, gateway, "openrouter");
+    const modelCall = {
+      cancelRequested: vi.fn(),
+      firstToken: vi.fn(),
+      requestSent: vi.fn(),
+      responseStarted: vi.fn(),
+      settle: vi.fn(),
+    };
+    const telemetry = {
+      changeActiveProviderCalls: vi.fn(),
+      recordCompaction: vi.fn(),
+      recordGeneration: vi.fn(),
+      recordReservationSettlement: vi.fn(),
+      recordSettlement: vi.fn(),
+      startModelCall: vi.fn(() => modelCall),
+    } satisfies CompactionTelemetry;
+    const result = await createCompactionService({
+      budget: createBudgetService(database),
+      database,
+      gateway: timedGateway,
+      mode: "openrouter",
+      telemetry,
+    }).execute(fixture.context, new AbortController().signal);
 
     expect(result.kind).toBe("compacted");
     expect(stream).toHaveBeenCalledOnce();
@@ -564,6 +602,42 @@ describe.sequential("compaction lifecycle", () => {
     expect(rows.compaction).toMatchObject({ status: "completed", summary });
     expect(rows.chat).toMatchObject({ status: "active" });
     expect(rows.conversation?.revision).toBe(baselineRevision);
+    expect(telemetry.recordCompaction).toHaveBeenCalledWith("fast", "completed");
+    expect(telemetry.recordGeneration).toHaveBeenCalledOnce();
+    expect(telemetry.recordGeneration).toHaveBeenCalledWith(
+      "fast",
+      "compaction",
+      "completed",
+      expect.any(Number),
+    );
+    expect(telemetry.recordReservationSettlement).toHaveBeenCalledOnce();
+    expect(telemetry.recordReservationSettlement).toHaveBeenCalledWith("actual");
+    expect(telemetry.recordSettlement).toHaveBeenCalledOnce();
+    expect(telemetry.recordSettlement).toHaveBeenCalledWith(
+      "fast",
+      "compaction",
+      "completed",
+      expect.any(Number),
+    );
+    expect(telemetry.changeActiveProviderCalls.mock.calls).toEqual([
+      ["compaction", 1],
+      ["compaction", -1],
+    ]);
+    expect(modelCall.responseStarted).toHaveBeenCalledWith(12);
+    expect(modelCall.firstToken).toHaveBeenCalledWith(34);
+    expect(modelCall.responseStarted.mock.invocationCallOrder[0]).toBeLessThan(
+      modelCall.firstToken.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
+    expect(modelCall.settle).toHaveBeenCalledOnce();
+    expect(modelCall.settle).toHaveBeenCalledWith({
+      cachedTokens: 3,
+      completionTokens: 9,
+      costUsd: "0.000123",
+      outcome: "completed",
+      promptTokens: 41,
+      providerDurationMs: 56,
+      reasoningTokens: 0,
+    });
   });
 
   it("does not reuse a real completion when authoritative accounting is unavailable", async () => {
