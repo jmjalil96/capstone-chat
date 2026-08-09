@@ -129,14 +129,33 @@ Employees receive stable Capstone error codes and recoverable UI states. Raw ups
 
 Raw diagnostic data must not include employee prompts, model responses, or compaction summaries. OpenRouter routing is required to use `data_collection: "deny"` and `zdr: true` for every generation.
 
+## Production launch operating values
+
+**Locked**
+
+| Control | Production launch value |
+|---|---:|
+| Monthly workspace budget | USD 100 |
+| Fast maximum output | 4,096 tokens |
+| Balanced maximum output | 8,192 tokens |
+| Pro maximum output | 16,384 tokens |
+| Active employee chat workflows | 2 per employee |
+| Cost-estimation margin | 20% (`2,000` basis points) |
+| Upstream connection/headers timeout | 10 seconds |
+| Time to first visible model event | 60 seconds |
+| Stream inactivity timeout | 45 seconds |
+| Total generation duration | 5 minutes |
+| Post-stream authoritative usage lookup timeout | 10 seconds |
+| Reservation expiry | 15 minutes |
+| Model-catalog refresh | Hourly |
+
+The output values are ceilings, not response targets. The hard workspace budget remains
+authoritative even when a generation, compaction, timeout, cancellation, or reconciliation path is
+active. The 15-minute reservation expiry is deliberately longer than the five-minute generation
+ceiling and its bounded terminal accounting work, preventing the reconciler from racing a healthy
+request while still releasing crash-orphaned reservations promptly.
+
 ## Deferred
 
-- Numeric monthly budget defaults
-- Numeric tier output limits
-- Numeric timeout values
-- Numeric per-employee concurrency limit
 - Hard per-employee budget enforcement
 - A dedicated analytics platform or materialized reporting layer
-- Backup retention duration and recovery objectives
-- The observability backend and successful-request sampling rate
-- Model-catalog refresh frequency and cost-estimation margin

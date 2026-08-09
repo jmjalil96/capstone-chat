@@ -41,6 +41,15 @@ The initial system does not introduce microservices, Redis, or a separate queue.
 - Database credentials, Better Auth secrets, and the OpenRouter key are injected through the hosting platform's secret manager.
 - The deployment contract remains vendor-neutral.
 
+The approved production launch deployment is one paid Render Web Service and one paid Render
+managed PostgreSQL database in the Virginia region. The Web Service runs the OCI image and serves
+both Fastify and the built Vite application from one origin. PostgreSQL is reached over Render's
+private network. Launch uses one application instance, no PostgreSQL high availability or read
+replica, and the Render Pro workspace tier required for the approved backup posture. Exact paid
+instance sizes are selected from measured Phase 8 load results before the production-readiness
+claim. These are deployment choices rather than Render-specific application architecture; the OCI
+image, configuration boundary, and PostgreSQL contract remain portable.
+
 ## Reconciliation
 
 **Locked**
@@ -61,12 +70,15 @@ The initial system does not introduce microservices, Redis, or a separate queue.
 **Locked**
 
 - Managed PostgreSQL provides encrypted automated backups and point-in-time recovery.
-- Backups have a finite retention period; its numeric duration is selected with the deployment environment.
+- Production uses the Render Pro database's seven-day point-in-time-recovery retention.
 - V1 does not build a custom backup service.
 - Database restoration is an operational disaster-recovery procedure, not an employee or administrator conversation-restore feature.
 - A documented restore procedure must be successfully exercised before production.
 - Conversation deletion is immediate and irreversible in the active application, while deleted content ages out of inaccessible encrypted backups according to their retention period.
-- Numeric recovery-point and recovery-time objectives remain deployment decisions.
+- The production recovery-point objective is at most 15 minutes and the recovery-time objective is
+  at most four hours.
+- The restore procedure is rehearsed against an isolated restored database before launch. The
+  original production database remains untouched during the rehearsal.
 
 ## Repository shape
 
@@ -102,7 +114,8 @@ Shared executable TypeScript is limited to transport contracts. The brand packag
 - Playwright runs in a separate CI job so browser failures and artifacts remain easy to inspect.
 - CI does not receive an OpenRouter key and never calls real models.
 - Dependency caching may improve CI speed, but generated build output is not committed.
-- CI validates the application only until a production venue and deployment workflow are explicitly approved.
+- GitHub Actions remains the authoritative validation gate for production deployment. Render deploys
+  only after the approved checks pass.
 - A task orchestrator is added only if measured build time or dependency ordering requires it.
 
 ## Local development
@@ -423,13 +436,19 @@ Message content is stored as typed JSON blocks. V1 supports a text block whose c
 **Locked**
 
 - Fastify/Pino emits structured JSON logs.
-- OpenTelemetry emits backend traces and metrics through OTLP.
+- New Relic Free is the single v1 observability destination.
+- Render sends platform logs and infrastructure metrics directly to New Relic.
+- Fastify emits backend traces and application metrics through vendor-neutral OpenTelemetry OTLP.
 - V1 does not use OpenTelemetry browser instrumentation.
 - A sanitized frontend-error endpoint captures UI failures without conversation content.
 - Requests and generations carry correlation identifiers.
 - A generation uses one span with lifecycle events rather than a span per streamed chunk.
-- All errors are traced; successful requests may be sampled.
-- The observability backend vendor remains undecided.
+- Launch traces every meaningful successful application request and every failure. Successful
+  liveness/readiness probes retain aggregate metrics but do not create traces; failed probes do.
+- V1 does not install a proprietary New Relic backend agent, browser agent, collector service,
+  separate log stack, or application-performance sidecar.
+- Browser failures are reduced to a small content-free metadata event and reported through Fastify;
+  arbitrary browser error messages, stack traces, URLs, prompts, and responses are not exported.
 - Metrics cover active streams, request duration and errors, time to first token, total generation duration, throughput, tokens and cost by tier, compaction, PostgreSQL pool health, budget reservation failures, and reconciler lag.
 - Conversation IDs, user IDs, and raw OpenRouter model IDs are not used as metric labels.
 - Access-controlled logs and traces may contain identifiers and operational metadata, but never prompts, responses, or compaction summaries.

@@ -86,7 +86,20 @@ Catalog operations follow these rules:
 - Administrators can trigger a manual refresh.
 - If a mapped model disappears or cannot satisfy the ZDR policy, its tier becomes temporarily unavailable rather than silently crossing tiers.
 - Budget estimates use last-known pricing with a configurable conservative margin; final OpenRouter cost remains authoritative.
-- Refresh frequency and estimation margin remain operational tuning values.
+- Refresh frequency and estimation margin are explicit operational policy values. Their production
+  launch values are locked in the cost-control PRD.
+
+The production launch mappings are:
+
+| Tier | Exact OpenRouter model ID |
+|---|---|
+| Fast | `deepseek/deepseek-v4-flash-0731` |
+| Balanced | `deepseek/deepseek-v4-pro` |
+| Pro | `moonshotai/kimi-k3` |
+
+These identifiers remain backend and administrator metadata. Employees continue to see only Fast,
+Balanced, and Pro. A later mapping change uses the existing administrator policy flow and does not
+require a web deployment.
 
 ## System prompts
 
@@ -219,6 +232,9 @@ Capstone normalizes provider terminal outcomes as `stop`, `length`, `refusal`, `
 - PostgreSQL enforces the per-conversation rule across API replicas and browser tabs.
 - A conflicting request receives a stable conflict response instead of creating a duplicate branch.
 - Abandoned active records are reconciled together with expired budget reservations.
+- The production launch limit is two active employee chat workflows per employee across separate
+  conversations. A hidden compaction call is sequential work inside an already admitted chat
+  workflow and does not consume an additional employee slot.
 
 ## Context construction and compaction
 
@@ -237,15 +253,18 @@ Latest user message
 
 Compaction behavior:
 
-- Keep approximately the latest 6–10 turns verbatim.
+- Keep the latest eight complete turns verbatim during normal compaction.
 - Compact only the older contiguous prefix.
-- Trigger at a conservative threshold that reserves output capacity.
+- Trigger at 80% of the conservative safe input budget after reserving output capacity.
 - Use the Fast-tier model with a strict compaction prompt.
 - Preserve decisions, names, requirements, code details, and unresolved questions.
 - Persist and reuse completed compactions.
 - Compact incrementally as additional messages age out of the recent window.
 - Record compaction model usage and cost separately.
 - Never delete or rewrite the original messages.
+- Bound compaction output to 2,048 tokens or the lower effective Fast policy/catalog limit.
+- If fallback must reduce the verbatim window, keep at least the latest six complete turns or reject
+  the oversized message before persistence.
 
 A compaction is identified by the message through which it summarizes the branch:
 
@@ -266,7 +285,4 @@ When compaction is necessary during a request, the UI displays “Condensing ear
 
 ## Deferred
 
-- Exact model mappings for Fast, Balanced, and Pro
-- Exact context thresholds and recent-turn count within the approved 6–10 range
 - Additional content block types beyond Markdown text
-- The numeric per-employee concurrency limit

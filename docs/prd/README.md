@@ -1,7 +1,7 @@
 # Capstone Chat v1 PRD
 
 Status: locked decision baseline  
-Last updated: 2026-08-06
+Last updated: 2026-08-08
 
 This directory records only the Capstone Chat decisions explicitly approved during product discovery. It is the baseline for continued design and implementation.
 

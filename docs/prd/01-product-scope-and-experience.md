@@ -202,7 +202,7 @@ Employee onboarding follows this flow:
 6. Verification activates the workspace membership.
 7. The employee cannot sign in or access chat before verification.
 
-Verification and password-reset responses do not reveal whether an account exists. Deactivating an employee blocks workspace access and revokes their sessions. The first workspace and administrator are created through an explicit idempotent bootstrap command without default credentials. Transactional email is isolated behind an internal interface; its provider remains undecided.
+Verification and password-reset responses do not reveal whether an account exists. Deactivating an employee blocks workspace access and revokes their sessions. The first workspace and administrator are created through an explicit idempotent bootstrap command without default credentials. Transactional email remains isolated behind an internal interface. Production sends verification, password-reset, and invitation mail through Resend's HTTPS API from Fastify; local development and automated tests retain the fake provider. V1 does not add an email queue, worker, webhook receiver, inbound-mail flow, or marketing-email system.
 
 Authentication hardening requires 12–128 character passwords without arbitrary composition rules, mandatory email verification, and a seven-day sliding session lifetime with daily refresh. Password reset revokes every session, while password change revokes all other sessions. Sensitive administrator operations require a fresh session. MFA remains outside v1.
 
@@ -242,8 +242,6 @@ The underlying message format may accommodate additional content types later, bu
 
 ## Deferred
 
-- The exact OpenRouter model assigned to each tier
 - Future external commercialization and its additional SaaS requirements
 - Connections to other Capstone applications
-- The transactional email provider
 - Exact authentication rate limits and fresh-session duration
