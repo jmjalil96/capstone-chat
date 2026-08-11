@@ -1,4 +1,6 @@
+import { spawn } from "node:child_process";
 import { createConnection } from "node:net";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { createApplication } from "../src/app.js";
 import { loadConfig } from "../src/config.js";
@@ -16,6 +18,7 @@ import type { EmailSender } from "../src/identity/email.js";
 import type { CostControlMaintenance } from "../src/model-policy/maintenance.js";
 import type { ApplicationTelemetry } from "../src/observability/telemetry-contract.js";
 import { httpServerTuning } from "../src/security/http.js";
+import { applicationShutdownBudget } from "../src/shutdown-budget.js";
 
 const completingResponse: StartedResponse = {
   admittedAt: new Date(),
@@ -79,6 +82,110 @@ function shutdownResourceSpies() {
 }
 
 describe("graceful shutdown", () => {
+  it("keeps the process alive through a bounded failed SIGTERM shutdown", async () => {
+    const childPath = fileURLToPath(new URL("./support/shutdown-signal-child.ts", import.meta.url));
+    const child = spawn(process.execPath, ["--import", "tsx", childPath], {
+      env: { ...process.env, NODE_ENV: "test" },
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const startedAt = Date.now();
+    let output = "";
+    child.stdout.setEncoding("utf8");
+    let signalled = false;
+    child.stdout.on("data", (chunk: string) => {
+      output += chunk;
+      if (!signalled && output.includes("ready\n")) {
+        signalled = true;
+        child.kill("SIGTERM");
+      }
+    });
+
+    const result = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+      (resolve, reject) => {
+        child.once("error", reject);
+        child.once("exit", (code, signal) => resolve({ code, signal }));
+      },
+    );
+
+    expect(result).toEqual({ code: 1, signal: null });
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(
+      applicationShutdownBudget.databasePoolShutdownMaximumMilliseconds,
+    );
+  }, 15_000);
+
+  it("fits every bounded shutdown phase inside the production platform delay", () => {
+    expect(applicationShutdownBudget).toEqual({
+      applicationMaximumMilliseconds: 287_000,
+      databasePoolShutdownMaximumMilliseconds: 2_000,
+      emailShutdownMaximumMilliseconds: 2_000,
+      finalResourceMaximumMilliseconds: 2_000,
+      forcedStreamCleanupMilliseconds: 30_000,
+      httpAndMaintenanceMaximumMilliseconds: 275_000,
+      ordinaryDrainMilliseconds: 5_000,
+      platformDelayMilliseconds: 300_000,
+      platformHeadroomMilliseconds: 13_000,
+      streamDrainMilliseconds: 240_000,
+      telemetryShutdownMaximumMilliseconds: 10_000,
+      workFenceMaximumMilliseconds: 275_000,
+    });
+    expect(applicationShutdownBudget.applicationMaximumMilliseconds).toBeLessThan(
+      applicationShutdownBudget.platformDelayMilliseconds,
+    );
+  });
+
+  it("bounds stalled process-owned resources inside the production shutdown maximum", async () => {
+    const never = () => new Promise<never>(() => undefined);
+    const closeEmail = vi.fn(never);
+    const endPool = vi.fn(never);
+    const stopMaintenance = vi.fn(never);
+    const shutdownTelemetry = vi.fn(never);
+    const application = createApplication(loadConfig({ NODE_ENV: "test" }), {
+      emailSender: {
+        close: closeEmail,
+        kind: "disabled",
+        send: vi.fn(async () => undefined),
+      },
+      maintenance: {
+        runOnce: vi.fn(async () => ({ catalogRefresh: null, reconciliation: null })),
+        start: vi.fn(),
+        stop: stopMaintenance,
+      },
+      pool: {
+        end: endPool,
+        query: vi.fn(async () => ({ rows: [{ result: 1 }] })),
+      },
+      telemetry: { shutdown: shutdownTelemetry } as unknown as ApplicationTelemetry,
+    });
+
+    vi.useFakeTimers();
+    try {
+      const startedAt = Date.now();
+      const shutdown = application.shutdown();
+      const rejected = expect(shutdown).rejects.toThrow("application shutdown failed");
+
+      await vi.advanceTimersByTimeAsync(
+        applicationShutdownBudget.httpAndMaintenanceMaximumMilliseconds,
+      );
+      expect(closeEmail).toHaveBeenCalledOnce();
+      expect(endPool).toHaveBeenCalledOnce();
+      expect(shutdownTelemetry).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(applicationShutdownBudget.finalResourceMaximumMilliseconds);
+      expect(shutdownTelemetry).toHaveBeenCalledOnce();
+
+      await vi.advanceTimersByTimeAsync(
+        applicationShutdownBudget.telemetryShutdownMaximumMilliseconds,
+      );
+      await rejected;
+
+      expect(Date.now() - startedAt).toBe(applicationShutdownBudget.applicationMaximumMilliseconds);
+      expect(application.lifecycle.phase).toBe("stopped");
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("lets a valid ordinary request finish during its short drain", async () => {
     const pool: DatabasePool = {
       end: vi.fn(async () => undefined),

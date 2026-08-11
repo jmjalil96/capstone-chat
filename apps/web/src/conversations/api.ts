@@ -48,6 +48,8 @@ import {
 import type { TSchema } from "typebox";
 import Value from "typebox/value";
 
+import { reportAuthenticationRequired } from "../api/session-boundary";
+
 export class ConversationApiError extends Error {
   readonly code: ApiErrorCode;
   readonly status: number;
@@ -70,6 +72,9 @@ export class ConversationStreamProtocolError extends Error {
 }
 
 async function responsePayload(response: Response): Promise<unknown> {
+  if (response.status === 401) {
+    reportAuthenticationRequired();
+  }
   try {
     return await response.json();
   } catch {

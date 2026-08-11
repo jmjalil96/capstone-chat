@@ -68,24 +68,44 @@ Complete observability, cross-browser and accessibility verification, performanc
 
 **Locked for Milestone 8**
 
-- Render hosts one paid Docker Web Service and one paid managed PostgreSQL database in Virginia on
-  a Pro workspace. The service and database use the private network. Launch has one application
-  instance, no database high availability or read replica, and exact paid sizes selected after the
-  approved load test.
-- The public origin is `https://chat.capstone.com.ec`. Render's public subdomain is disabled after
-  custom-domain DNS, TLS, and health have been verified.
-- GitHub Actions remains the authoritative gate. Render deploys only after checks pass, runs the
-  committed migration command as a pre-deploy step, and never runs migrations during API startup.
-- PostgreSQL retains seven days of point-in-time recovery. Production targets an RPO of at most
-  15 minutes and an RTO of at most four hours. An isolated restore rehearsal is required before
-  launch.
+- The production candidate is one DigitalOcean Basic shared-CPU Droplet with one vCPU and 1 GiB RAM
+  in RIC1, one encrypted 1 GiB DigitalOcean Volume, and one PlanetScale Postgres PS-5 ARM Single
+  Node cluster in AWS `us-east-1`. Launch has one active application instance and one single-node
+  database with no application autoscaling, database high availability, read replica, or automatic
+  failover. The exact managed topology remains provisional until the separately authorized
+  production-shaped rehearsal passes every unchanged gate twice.
+- The public origin is `https://chat.capstone.com.ec`. Its DNS-only IPv4 record targets the
+  Droplet's reserved address directly; Caddy owns TLS and proxies only to the active loopback-bound
+  application slot. Only 80/443 are public, and SSH is limited to the approved operator `/32`.
+- PlanetScale accepts new connections only from the verified Droplet `/32`. Production uses direct
+  port 5432, `verify-full` TLS, a least-privilege application role, a separate migration role, and a
+  recovery-only provider credential. The database starts at 10 GB with a hard 15 GB storage
+  ceiling.
+- GitHub Actions remains the authoritative gate. It publishes an immutable, exact-revision GHCR
+  image only after checks pass. A named operator explicitly runs the audited migration and
+  blue/green deployment path; migrations never run during API startup. The immediately previous
+  compatible digest remains available for rollback.
+- PlanetScale backups run every 12 hours and are retained for 84 hours, preserving at least three
+  continuously accessible days of point-in-time recovery. Production retains an RPO of at most 15
+  minutes and an RTO of at most four hours. An isolated database restore and a source-controlled
+  cold Droplet rebuild are required before launch; no paid Droplet backup is used.
 - Resend Free sends transactional mail through direct HTTPS calls from Fastify. The verified sending
   domain is `mail.capstone.com.ec`, and the sender is
   `Capstone Chat <no-reply@mail.capstone.com.ec>`. Templates provide Spanish HTML and plain text.
   V1 adds no Resend SDK, email queue, worker, webhook, inbound mail, or marketing mail.
-- New Relic Free is the single observability destination. Render streams platform logs and metrics
-  directly; Fastify exports vendor-neutral OTLP traces and application metrics. V1 adds no
-  proprietary backend or browser agent and exports no employee content.
+- New Relic Free is the single external application/log telemetry destination. Fastify exports
+  vendor-neutral OTLP traces and application metrics; one bounded Fluent Bit host process forwards
+  content-free application JSON logs. DigitalOcean Monitoring owns host infrastructure signals and
+  PlanetScale's protected dashboard owns database signals. V1 adds no proprietary backend or
+  browser agent, infrastructure collector, second telemetry backend, or employee content export.
+- Production secret source copies live in the Capstone Bitwarden Teams organization. Runtime copies
+  are narrowly permissioned read-only files on the encrypted Volume. The initial one-owner setup
+  has MFA and a sealed offline recovery kit; adding a second recovery owner is deferred and remains
+  a visible launch risk.
+- The approved starting operational baseline is USD 15.10/month: USD 11.10 infrastructure plus one
+  USD 4 Bitwarden Teams owner, before taxes, variable backup/network charges, temporary resources,
+  and model use. At the 15 GB database ceiling it is approximately USD 15.73/month. No resource
+  tier or storage ceiling changes without an explicit decision.
 - Production maps Fast to `deepseek/deepseek-v4-flash-0731`, Balanced to
   `deepseek/deepseek-v4-pro`, and Pro to `moonshotai/kimi-k3`.
 - The monthly workspace ceiling is USD 100. Fast, Balanced, and Pro output ceilings are 4,096,
@@ -93,7 +113,9 @@ Complete observability, cross-browser and accessibility verification, performanc
   Cost reservations use a 20% margin, expire after 15 minutes, and model metadata refreshes hourly.
 - Generation limits are 10 seconds to upstream headers, 60 seconds to the first visible model event,
   45 seconds without a stream event, five minutes total, and 10 seconds for a bounded authoritative
-  usage lookup.
+  usage lookup. Connected downstream responses emit a content-free heartbeat every 15 seconds, and
+  the browser treats 35 seconds without response bytes as an interrupted stream before adopting
+  canonical durable state.
 - Launch capacity is 20 registered employees, 20 simultaneously signed-in employees, and 40 active
   employee streams under ordinary internal-chat traffic. Hidden compaction is sequential within an
   admitted workflow rather than a forty-first class of employee concurrency.

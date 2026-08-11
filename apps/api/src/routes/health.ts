@@ -10,6 +10,7 @@ import type { ApplicationLifecycle } from "../lifecycle.js";
 export function registerHealthRoutes(
   fastify: FastifyInstance,
   lifecycle: ApplicationLifecycle,
+  deploymentRevision: string,
 ): void {
   const server = fastify.withTypeProvider<TypeBoxTypeProvider>();
 
@@ -23,7 +24,10 @@ export function registerHealthRoutes(
         },
       },
     },
-    () => ({ status: "live" }) as const,
+    (_request, reply) => {
+      void reply.header("x-capstone-revision", deploymentRevision);
+      return { status: "live" } as const;
+    },
   );
 
   server.get(
@@ -38,6 +42,7 @@ export function registerHealthRoutes(
       },
     },
     async (_request, reply) => {
+      void reply.header("x-capstone-revision", deploymentRevision);
       const readiness = await lifecycle.checkReadiness();
 
       if (readiness.status === "unavailable") {

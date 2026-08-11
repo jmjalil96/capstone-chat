@@ -12,6 +12,7 @@ import {
   conversationQueryKeys,
 } from "./api";
 import { ChatRuntime, ChatRuntimeError } from "./chat-runtime";
+import { STREAM_INACTIVITY_TIMEOUT_MS } from "./stream-parser";
 
 const queryScope = ["workspace-1", "employee-1", "2026-08-07T12:00:00.000Z"] as const;
 const conversationId = "11111111-1111-4111-8111-111111111111";
@@ -162,6 +163,7 @@ function createRuntime(
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -554,6 +556,72 @@ describe("ChatRuntime", () => {
     });
     expect(fetchConversation).toHaveBeenCalledOnce();
     expect(onStarted).toHaveBeenCalledOnce();
+    runtime.dispose();
+  });
+
+  it("watchdogs a silent stream and adopts its terminal canonical partial", async () => {
+    vi.useFakeTimers();
+    let cancelled = false;
+    let source!: ReadableStreamDefaultController<Uint8Array>;
+    const stream = new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelled = true;
+      },
+      start(controller) {
+        source = controller;
+      },
+    });
+    const recovered = canonical();
+    const assistant = recovered.messages.find((message) => message.id === messageId);
+    if (!assistant) {
+      throw new Error("The canonical fixture is missing its assistant response");
+    }
+    assistant.content = [{ type: "text", text: "Parcial visible" }];
+    const fetchConversation = vi.fn(async () => recovered);
+    const fetchResponseStates = vi.fn(
+      async (): Promise<ResponseStateResponse> => ({
+        conversationId,
+        revision: 2,
+        responses: [
+          {
+            errorCode: "STREAM_INTERRUPTED",
+            generationId,
+            messageId,
+            reason: "error",
+            status: "incomplete",
+          },
+        ],
+      }),
+    );
+    const { queryClient, runtime } = createRuntime({
+      fetchConversation,
+      fetchResponseStates,
+      openResponse: vi.fn(async () => stream),
+    });
+    const startPromise = runtime.startResponse(conversationId, request);
+    source.enqueue(line(started()));
+    await vi.advanceTimersByTimeAsync(0);
+    await startPromise;
+    source.enqueue(line({ text: "Parcial visible", type: "content.delta" }));
+    await vi.advanceTimersByTimeAsync(16);
+    expect(runtime.getSnapshot(conversationId)?.text).toBe("Parcial visible");
+
+    await vi.advanceTimersByTimeAsync(STREAM_INACTIVITY_TIMEOUT_MS);
+    for (let attempt = 0; attempt < 20 && runtime.getSnapshot(conversationId); attempt += 1) {
+      await Promise.resolve();
+    }
+
+    expect(cancelled).toBe(true);
+    expect(fetchConversation).toHaveBeenCalledOnce();
+    expect(fetchResponseStates).toHaveBeenCalledOnce();
+    expect(runtime.getSnapshot(conversationId)).toBeUndefined();
+    expect(
+      queryClient
+        .getQueryData<{ pages: ConversationDetailResponse[] }>(
+          conversationQueryKeys.detail(queryScope, conversationId),
+        )
+        ?.pages[0]?.messages.find((message) => message.id === messageId)?.content[0]?.text,
+    ).toBe("Parcial visible");
     runtime.dispose();
   });
 

@@ -161,7 +161,135 @@ describe("Phase 8 PostgreSQL operational state", () => {
           recovery_markers: "operational_recovery_markers",
         },
       ]);
-      expect(migrations.rows).toHaveLength(6);
+      expect(migrations.rows).toHaveLength(7);
+    } finally {
+      await verificationPool.end();
+    }
+  });
+
+  it("upgrades the exact accepted Phase 8 schema with the bounded conversation lookup index", async () => {
+    const databaseName = "capstone_exact_phase_eight";
+    const upgradeUrl = databaseUrlFor(container?.getConnectionUri() ?? "", databaseName);
+    const administrativePool = new Pool({ connectionString: container?.getConnectionUri() });
+    await administrativePool.query(`CREATE DATABASE "${databaseName}"`);
+    await administrativePool.end();
+
+    const migrationNames = [
+      "0000_bumpy_living_lightning.sql",
+      "0001_conscious_giant_man.sql",
+      "0002_great_serpent_society.sql",
+      "0003_openrouter_cost_control.sql",
+      "0004_compaction_administration.sql",
+      "0005_observability_recovery.sql",
+    ] as const;
+    const migrationTimes = [
+      1786061111713, 1786071863036, 1786119062299, 1786205271465, 1786219479071, 1786230000000,
+    ] as const;
+    const migrationSql = await Promise.all(
+      migrationNames.map((name) => readFile(resolve(migrationsFolder, name), "utf8")),
+    );
+    const phaseEightPool = new Pool({ connectionString: upgradeUrl });
+    try {
+      for (const sql of migrationSql) {
+        await applyMigrationSql(phaseEightPool, sql);
+      }
+      await phaseEightPool.query("CREATE SCHEMA drizzle");
+      await phaseEightPool.query(`
+        CREATE TABLE drizzle.__drizzle_migrations (
+          id SERIAL PRIMARY KEY,
+          hash text NOT NULL,
+          created_at bigint
+        )
+      `);
+      for (const [index, sql] of migrationSql.entries()) {
+        await phaseEightPool.query(
+          "INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES ($1, $2)",
+          [createHash("sha256").update(sql).digest("hex"), migrationTimes[index]],
+        );
+      }
+      await phaseEightPool.query(`
+        INSERT INTO workspaces (id, identity, display_name)
+        VALUES ('80000000-0000-4000-8000-000000000001', 'phase-eight-exact', 'Phase Eight')
+      `);
+      await phaseEightPool.query(`
+        INSERT INTO "user" (id, name, email, email_verified)
+        VALUES ('phase-eight-exact-user', 'Phase Eight', 'phase-eight@example.test', true)
+      `);
+      await phaseEightPool.query(`
+        INSERT INTO conversations (id, workspace_id, user_id, title)
+        VALUES (
+          '80000000-0000-4000-8000-000000000002',
+          '80000000-0000-4000-8000-000000000001',
+          'phase-eight-exact-user',
+          'Historia preservada'
+        )
+      `);
+      await phaseEightPool.query(`
+        INSERT INTO messages (id, conversation_id, parent_message_id, role, content)
+        VALUES
+          (
+            '80000000-0000-4000-8000-000000000003',
+            '80000000-0000-4000-8000-000000000002',
+            NULL,
+            'user',
+            '[{"type":"text","text":"Pregunta preservada"}]'::jsonb
+          ),
+          (
+            '80000000-0000-4000-8000-000000000004',
+            '80000000-0000-4000-8000-000000000002',
+            '80000000-0000-4000-8000-000000000003',
+            'assistant',
+            '[{"type":"text","text":"Respuesta preservada"}]'::jsonb
+          )
+      `);
+      await phaseEightPool.query(`
+        INSERT INTO generations (
+          id, workspace_id, user_id, conversation_id, assistant_message_id,
+          idempotency_key, requested_tier, purpose, system_prompt_version,
+          effective_parameters, status
+        ) VALUES (
+          '80000000-0000-4000-8000-000000000005',
+          '80000000-0000-4000-8000-000000000001',
+          'phase-eight-exact-user',
+          '80000000-0000-4000-8000-000000000002',
+          '80000000-0000-4000-8000-000000000004',
+          '80000000-0000-4000-8000-000000000006',
+          'balanced',
+          'chat',
+          'capstone-chat-v1',
+          '{}'::jsonb,
+          'active'
+        )
+      `);
+    } finally {
+      await phaseEightPool.end();
+    }
+
+    await migrateDatabase(upgradeUrl);
+    await migrateDatabase(upgradeUrl);
+
+    const verificationPool = new Pool({ connectionString: upgradeUrl });
+    try {
+      const preserved = await verificationPool.query(`
+        SELECT conversation.title, generation.status::text AS status
+        FROM generations AS generation
+        INNER JOIN conversations AS conversation ON conversation.id = generation.conversation_id
+        WHERE generation.id = '80000000-0000-4000-8000-000000000005'
+      `);
+      const index = await verificationPool.query<{ definition: string }>(`
+        SELECT indexdef AS definition
+        FROM pg_indexes
+        WHERE schemaname = 'public' AND indexname = 'generations_conversation_idx'
+      `);
+      const migrations = await verificationPool.query(
+        "SELECT hash FROM drizzle.__drizzle_migrations ORDER BY created_at",
+      );
+
+      expect(preserved.rows).toEqual([{ status: "active", title: "Historia preservada" }]);
+      expect(index.rows).toHaveLength(1);
+      expect(index.rows[0]?.definition).toContain("(conversation_id)");
+      expect(index.rows[0]?.definition).toContain("conversation_id IS NOT NULL");
+      expect(migrations.rows).toHaveLength(7);
     } finally {
       await verificationPool.end();
     }

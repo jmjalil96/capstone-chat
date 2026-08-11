@@ -14,9 +14,6 @@ export async function startServer(
     await configure?.(application);
     await application.server.listen({ host: config.host, port: config.port });
     const readiness = await application.lifecycle.initialize();
-    if (config.nodeEnv === "production" && readiness.status === "ready") {
-      await application.modelPolicy.assertRuntimeMode("openrouter");
-    }
     application.maintenance.start();
 
     application.server.log.info(
@@ -27,7 +24,7 @@ export async function startServer(
     if (readiness.status === "unavailable") {
       application.server.log.warn(
         { database: readiness.database },
-        "api started without database readiness",
+        "api started without application readiness",
       );
     }
 

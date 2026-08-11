@@ -1,7 +1,7 @@
-import { and, asc, eq, gt, lte, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, lte, or, type SQL, sql } from "drizzle-orm";
 import { conversationCompactions } from "../database/compaction-schema.js";
 import { conversations } from "../database/conversation-schema.js";
-import type { AppDatabase, AppTransaction } from "../database/database.js";
+import { type AppDatabase, type AppTransaction, executePrepared } from "../database/database.js";
 import { generations } from "../database/generation-schema.js";
 import type { ApplicationTelemetry } from "../observability/telemetry-contract.js";
 import type { WorkspaceBudgetPeriod } from "./budget-period.js";
@@ -86,11 +86,83 @@ interface AdmissionAuthorityRow extends Record<string, unknown> {
   readonly workspaceFound: boolean;
 }
 
-interface AdmissionStateRow extends Record<string, unknown> {
+export interface BudgetAdmissionStateRow extends Record<string, unknown> {
   readonly activeGenerationCount: number | string;
   readonly consumedUsd: string;
   readonly periodEnd: Date | string | null;
   readonly periodStart: Date | string | null;
+}
+
+export function budgetAdmissionStateQuery(
+  workspaceId: string,
+  userId: string,
+  at: Date,
+): SQL<BudgetAdmissionStateRow> {
+  return sql<BudgetAdmissionStateRow>`
+    WITH budget_period AS MATERIALIZED (
+      SELECT
+        date_trunc('month', ${at}::timestamptz AT TIME ZONE workspace.timezone)
+          AT TIME ZONE workspace.timezone AS period_start,
+        (date_trunc('month', ${at}::timestamptz AT TIME ZONE workspace.timezone)
+          + interval '1 month') AT TIME ZONE workspace.timezone AS period_end
+      FROM workspaces AS workspace
+      WHERE workspace.id = ${workspaceId}::uuid
+    )
+    SELECT
+      period.period_start AS "periodStart",
+      period.period_end AS "periodEnd",
+      (
+        SELECT COUNT(*)::integer
+        FROM generations AS active_generation
+        WHERE active_generation.workspace_id = ${workspaceId}::uuid
+          AND active_generation.user_id = ${userId}
+          AND active_generation.status IN ('preparing', 'active')
+          AND active_generation.conversation_id IS NOT NULL
+          AND active_generation.assistant_message_id IS NOT NULL
+          AND (active_generation.purpose IS NULL OR active_generation.purpose = 'chat')
+      ) AS "activeGenerationCount",
+      (
+        SELECT COALESCE(SUM(
+          CASE
+            WHEN period_generation.accounting_status = 'reserved'
+              THEN period_generation.reserved_cost_usd
+            ELSE period_generation.cost_usd
+          END
+        ), 0::numeric)::text
+        FROM generations AS period_generation
+        WHERE period_generation.workspace_id = ${workspaceId}::uuid
+          AND period_generation.budget_period_start = period.period_start
+          AND period_generation.budget_period_end = period.period_end
+          AND period_generation.accounting_status IN ('reserved', 'actual', 'estimated')
+      ) AS "consumedUsd"
+    FROM budget_period AS period
+  `;
+}
+
+export function budgetAdmissionFromState(
+  row: BudgetAdmissionStateRow | undefined,
+  workspaceId: string,
+  userId: string,
+): BudgetAdmission {
+  if (row === undefined || row.periodStart === null || row.periodEnd === null) {
+    throw new BudgetAdmissionError("Workspace budget period is unavailable");
+  }
+  const activeGenerationCount = Number(row.activeGenerationCount);
+  if (!Number.isSafeInteger(activeGenerationCount) || activeGenerationCount < 0) {
+    throw new BudgetAdmissionError("Active generation count is unavailable");
+  }
+  const period = Object.freeze({
+    end: row.periodEnd instanceof Date ? row.periodEnd : new Date(row.periodEnd),
+    start: row.periodStart instanceof Date ? row.periodStart : new Date(row.periodStart),
+  });
+
+  return Object.freeze({
+    activeGenerationCount,
+    consumedUsd: canonicalUsd(row.consumedUsd, "workspace consumption"),
+    period,
+    userId,
+    workspaceId,
+  });
 }
 
 function safeDate(...values: readonly (Date | string | null)[]): Date {
@@ -135,16 +207,17 @@ export function createBudgetService(database: AppDatabase, options: BudgetServic
     }
   }
 
-  async function lockAdmission(
+  async function lockAdmissionAuthority(
     transaction: AppTransaction,
     workspaceId: string,
     userId: string,
-    at: Date,
-  ): Promise<BudgetAdmission> {
-    // Keep the established workspace -> membership lock order. The state query intentionally runs
-    // afterward: under READ COMMITTED a statement that waited for a lock retains its earlier
-    // snapshot, while this second statement sees reservations committed by the previous holder.
-    const authorityResult = await transaction.execute<AdmissionAuthorityRow>(sql`
+  ): Promise<void> {
+    // Keep the established workspace -> membership lock order. State must be read by a later
+    // statement because a READ COMMITTED statement retains the snapshot from before a lock wait.
+    const authorityResult = await executePrepared<AdmissionAuthorityRow>(
+      transaction,
+      "generation-admission-authority-v1",
+      sql`
       WITH locked_workspace AS MATERIALIZED (
         SELECT workspace.id, workspace.timezone
         FROM workspaces AS workspace
@@ -163,7 +236,8 @@ export function createBudgetService(database: AppDatabase, options: BudgetServic
       SELECT
         EXISTS (SELECT 1 FROM locked_workspace) AS "workspaceFound",
         EXISTS (SELECT 1 FROM locked_membership) AS "membershipFound"
-    `);
+      `,
+    );
     const authority = authorityResult.rows[0];
     if (authority === undefined || !authority.workspaceFound) {
       throw new BudgetAdmissionError("Workspace is unavailable");
@@ -171,63 +245,19 @@ export function createBudgetService(database: AppDatabase, options: BudgetServic
     if (!authority.membershipFound) {
       throw new BudgetAdmissionError("Active workspace membership is unavailable");
     }
+  }
 
-    const stateResult = await transaction.execute<AdmissionStateRow>(sql`
-      WITH budget_period AS MATERIALIZED (
-        SELECT
-          date_trunc('month', ${at}::timestamptz AT TIME ZONE workspace.timezone)
-            AT TIME ZONE workspace.timezone AS period_start,
-          (date_trunc('month', ${at}::timestamptz AT TIME ZONE workspace.timezone)
-            + interval '1 month') AT TIME ZONE workspace.timezone AS period_end
-        FROM workspaces AS workspace
-        WHERE workspace.id = ${workspaceId}::uuid
-      )
-      SELECT
-        period.period_start AS "periodStart",
-        period.period_end AS "periodEnd",
-        COUNT(generation.id) FILTER (
-          WHERE generation.user_id = ${userId}
-            AND generation.status IN ('preparing', 'active')
-            AND (generation.purpose IS NULL OR generation.purpose = 'chat')
-        )::integer AS "activeGenerationCount",
-        COALESCE(SUM(
-          CASE
-            WHEN generation.budget_period_start = period.period_start
-              AND generation.budget_period_end = period.period_end
-              AND generation.accounting_status IN ('reserved', 'actual', 'estimated')
-            THEN CASE
-              WHEN generation.accounting_status = 'reserved'
-                THEN generation.reserved_cost_usd
-              ELSE generation.cost_usd
-            END
-            ELSE 0::numeric
-          END
-        ), 0::numeric)::text AS "consumedUsd"
-      FROM budget_period AS period
-      LEFT JOIN generations AS generation
-        ON generation.workspace_id = ${workspaceId}::uuid
-      GROUP BY period.period_start, period.period_end
-    `);
-    const row = stateResult.rows[0];
-    if (row === undefined || row.periodStart === null || row.periodEnd === null) {
-      throw new BudgetAdmissionError("Workspace budget period is unavailable");
-    }
-    const activeGenerationCount = Number(row.activeGenerationCount);
-    if (!Number.isSafeInteger(activeGenerationCount) || activeGenerationCount < 0) {
-      throw new BudgetAdmissionError("Active generation count is unavailable");
-    }
-    const period = Object.freeze({
-      end: row.periodEnd instanceof Date ? row.periodEnd : new Date(row.periodEnd),
-      start: row.periodStart instanceof Date ? row.periodStart : new Date(row.periodStart),
-    });
-
-    return Object.freeze({
-      activeGenerationCount,
-      consumedUsd: canonicalUsd(row.consumedUsd, "workspace consumption"),
-      period,
-      userId,
-      workspaceId,
-    });
+  async function lockAdmission(
+    transaction: AppTransaction,
+    workspaceId: string,
+    userId: string,
+    at: Date,
+  ): Promise<BudgetAdmission> {
+    await lockAdmissionAuthority(transaction, workspaceId, userId);
+    const stateResult = await transaction.execute<BudgetAdmissionStateRow>(
+      budgetAdmissionStateQuery(workspaceId, userId, at),
+    );
+    return budgetAdmissionFromState(stateResult.rows[0], workspaceId, userId);
   }
 
   function reserveResolvedTier(
@@ -532,6 +562,7 @@ export function createBudgetService(database: AppDatabase, options: BudgetServic
 
   return Object.freeze({
     lockAdmission,
+    lockAdmissionAuthority,
     reconcileExpiredOnce,
     reserveResolvedTier,
     settleAuthoritativeUsage,

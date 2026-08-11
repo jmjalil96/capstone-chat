@@ -1,7 +1,6 @@
 import { fileURLToPath } from "node:url";
-import { loadEnvironmentFile } from "./environment.js";
-
-loadEnvironmentFile();
+import { parseProductionDatabaseUrl } from "./database/production-database-url.js";
+import { hasLoadedSecretEnvironment } from "./secret-environment.js";
 
 const runtimeModes = ["development", "test", "production"] as const;
 const logLevels = ["fatal", "error", "warn", "info", "debug", "trace", "silent"] as const;
@@ -10,9 +9,12 @@ export type RuntimeMode = (typeof runtimeModes)[number];
 export type LogLevel = (typeof logLevels)[number];
 export type EmailDelivery = "disabled" | "fake" | "resend";
 export type ModelGatewayMode = "fake" | "openrouter";
+export type ClientAddressSource = "caddy" | "socket";
 
 export type ConfigurationKey =
   | "BETTER_AUTH_SECRET"
+  | "CAPSTONE_SECRET_FILE"
+  | "CLIENT_ADDRESS_SOURCE"
   | "DATABASE_URL"
   | "DEPLOYMENT_REVISION"
   | "EMAIL_DELIVERY"
@@ -26,7 +28,6 @@ export type ConfigurationKey =
   | "OTEL_EXPORTER_OTLP_HEADERS"
   | "PORT"
   | "PUBLIC_ORIGIN"
-  | "RENDER_GIT_COMMIT"
   | "RESEND_API_KEY";
 
 export class ConfigurationError extends Error {
@@ -47,8 +48,22 @@ export interface OpenRouterOperatorConfig {
   readonly apiKey: string;
 }
 
+export interface IdentityOperatorConfig extends DatabaseConfig {
+  readonly authSecret: string;
+  readonly emailDelivery: EmailDelivery;
+  readonly emailFrom: string | null;
+  readonly nodeEnv: RuntimeMode;
+  readonly publicOrigin: string;
+  readonly resendApiKey: string | null;
+}
+
+export interface RecoveryPreparationOperatorConfig extends DatabaseConfig {
+  readonly migrationSecretFilePath: string;
+}
+
 export interface ApiConfig {
   readonly authSecret: string;
+  readonly clientAddressSource: ClientAddressSource;
   readonly databaseUrl: string;
   readonly deploymentRevision: string;
   readonly emailDelivery: EmailDelivery;
@@ -91,6 +106,17 @@ function readRuntimeMode(value: string | undefined): RuntimeMode {
   }
 
   return mode;
+}
+
+function requireProductionSecretFile(source: NodeJS.ProcessEnv, mode: RuntimeMode): void {
+  // Explicit source objects are the configuration seam used by tests. Executable production
+  // entry points read process.env only after environment.ts authenticates and loads the file.
+  if (mode === "production" && source === process.env && !hasLoadedSecretEnvironment(source)) {
+    throw new ConfigurationError(
+      "CAPSTONE_SECRET_FILE",
+      "CAPSTONE_SECRET_FILE must be the exclusive source of production credentials",
+    );
+  }
 }
 
 function readRequired(
@@ -173,16 +199,36 @@ function readResendConfig(
 }
 
 function readHost(value: string | undefined, mode: RuntimeMode): string {
-  const host = value?.trim() || (mode === "production" ? "0.0.0.0" : developmentDefaults.host);
+  const host = value?.trim() || (mode === "production" ? undefined : developmentDefaults.host);
 
-  if (host.length === 0 || /\s/u.test(host)) {
+  if (host === undefined || host.length === 0 || /\s/u.test(host)) {
     throw new ConfigurationError("HOST", "HOST must be a non-empty hostname or IP address");
   }
-  if (mode === "production" && host !== "0.0.0.0") {
-    throw new ConfigurationError("HOST", "HOST must be 0.0.0.0 in production");
+  if (mode === "production" && host !== "127.0.0.1") {
+    throw new ConfigurationError("HOST", "HOST must be 127.0.0.1 in production");
   }
 
   return host;
+}
+
+function readClientAddressSource(
+  value: string | undefined,
+  mode: RuntimeMode,
+): ClientAddressSource {
+  const source = value?.trim() || (mode === "production" ? undefined : "socket");
+  if (source !== "caddy" && source !== "socket") {
+    throw new ConfigurationError(
+      "CLIENT_ADDRESS_SOURCE",
+      "CLIENT_ADDRESS_SOURCE must be caddy or socket",
+    );
+  }
+  if (mode === "production" && source !== "caddy") {
+    throw new ConfigurationError(
+      "CLIENT_ADDRESS_SOURCE",
+      "CLIENT_ADDRESS_SOURCE must be caddy in production",
+    );
+  }
+  return source;
 }
 
 function readPort(value: string | undefined): number {
@@ -203,7 +249,7 @@ function readPort(value: string | undefined): number {
   return port;
 }
 
-function readDatabaseUrl(value: string): string {
+function readDatabaseUrl(value: string, mode: RuntimeMode): string {
   let url: URL;
 
   try {
@@ -217,6 +263,15 @@ function readDatabaseUrl(value: string): string {
       "DATABASE_URL",
       "DATABASE_URL must use the postgres or postgresql protocol",
     );
+  }
+
+  if (mode === "production") {
+    if (parseProductionDatabaseUrl(value) === null) {
+      throw new ConfigurationError(
+        "DATABASE_URL",
+        "DATABASE_URL must use credentials, a DNS host, direct port 5432, and exactly one verify-full platform-trusted TLS setting in production",
+      );
+    }
   }
 
   return value;
@@ -264,17 +319,17 @@ function readPublicOrigin(value: string, mode: RuntimeMode): string {
 
 function readDeploymentRevision(source: NodeJS.ProcessEnv, mode: RuntimeMode): string {
   if (mode === "production") {
-    const revision = source.RENDER_GIT_COMMIT?.trim();
+    const revision = source.DEPLOYMENT_REVISION?.trim();
     if (revision === undefined || revision.length === 0) {
       throw new ConfigurationError(
-        "RENDER_GIT_COMMIT",
-        "RENDER_GIT_COMMIT is required in production",
+        "DEPLOYMENT_REVISION",
+        "DEPLOYMENT_REVISION is required in production",
       );
     }
     if (!/^[0-9a-f]{40}$/iu.test(revision)) {
       throw new ConfigurationError(
-        "RENDER_GIT_COMMIT",
-        "RENDER_GIT_COMMIT must be a full Git commit identifier",
+        "DEPLOYMENT_REVISION",
+        "DEPLOYMENT_REVISION must be a full Git commit identifier",
       );
     }
     return revision.toLowerCase();
@@ -427,6 +482,7 @@ function readDatabaseConfig(
       "DATABASE_URL",
       allowDevelopmentDefaults ? developmentDefaults.databaseUrl : undefined,
     ),
+    nodeEnv,
   );
 
   return Object.freeze({ databaseUrl });
@@ -436,12 +492,15 @@ export function loadDatabaseConfig(
   source: NodeJS.ProcessEnv = process.env,
 ): Readonly<DatabaseConfig> {
   const nodeEnv = readRuntimeMode(source.NODE_ENV);
+  requireProductionSecretFile(source, nodeEnv);
   return readDatabaseConfig(source, nodeEnv);
 }
 
 export function loadOpenRouterOperatorConfig(
   source: NodeJS.ProcessEnv = process.env,
 ): Readonly<OpenRouterOperatorConfig> {
+  const nodeEnv = readRuntimeMode(source.NODE_ENV);
+  requireProductionSecretFile(source, nodeEnv);
   const apiKey = readOpenRouterApiKey(source.OPENROUTER_API_KEY, "openrouter");
   if (apiKey === null) {
     throw new ConfigurationError(
@@ -452,8 +511,55 @@ export function loadOpenRouterOperatorConfig(
   return Object.freeze({ apiKey });
 }
 
+export function loadIdentityOperatorConfig(
+  source: NodeJS.ProcessEnv = process.env,
+): Readonly<IdentityOperatorConfig> {
+  const nodeEnv = readRuntimeMode(source.NODE_ENV);
+  requireProductionSecretFile(source, nodeEnv);
+  const { databaseUrl } = readDatabaseConfig(source, nodeEnv);
+  const publicOrigin = readPublicOrigin(
+    readRequired(
+      source,
+      "PUBLIC_ORIGIN",
+      nodeEnv === "production" ? undefined : developmentDefaults.publicOrigin,
+    ),
+    nodeEnv,
+  );
+  const emailDelivery = readEmailDelivery(source.EMAIL_DELIVERY, nodeEnv);
+  const resend = readResendConfig(source, emailDelivery);
+
+  return Object.freeze({
+    authSecret: readAuthSecret(source, nodeEnv),
+    databaseUrl,
+    emailDelivery,
+    emailFrom: resend.emailFrom,
+    nodeEnv,
+    publicOrigin,
+    resendApiKey: resend.resendApiKey,
+  });
+}
+
+export function loadRecoveryPreparationOperatorConfig(
+  source: NodeJS.ProcessEnv = process.env,
+): Readonly<RecoveryPreparationOperatorConfig> {
+  const nodeEnv = readRuntimeMode(source.NODE_ENV);
+  requireProductionSecretFile(source, nodeEnv);
+  const migrationSecretFilePath = source.CAPSTONE_SECRET_FILE?.trim();
+  if (migrationSecretFilePath === undefined || migrationSecretFilePath.length === 0) {
+    throw new ConfigurationError(
+      "CAPSTONE_SECRET_FILE",
+      "CAPSTONE_SECRET_FILE is required for recovery preparation",
+    );
+  }
+  return Object.freeze({
+    ...readDatabaseConfig(source, nodeEnv),
+    migrationSecretFilePath,
+  });
+}
+
 export function loadConfig(source: NodeJS.ProcessEnv = process.env): Readonly<ApiConfig> {
   const nodeEnv = readRuntimeMode(source.NODE_ENV);
+  requireProductionSecretFile(source, nodeEnv);
   const { databaseUrl } = readDatabaseConfig(source, nodeEnv);
   const allowDevelopmentDefaults = nodeEnv !== "production";
   const publicOrigin = readPublicOrigin(
@@ -471,6 +577,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): Readonly<Ap
 
   return Object.freeze({
     authSecret: readAuthSecret(source, nodeEnv),
+    clientAddressSource: readClientAddressSource(source.CLIENT_ADDRESS_SOURCE, nodeEnv),
     databaseUrl,
     deploymentRevision: readDeploymentRevision(source, nodeEnv),
     emailDelivery,
@@ -492,6 +599,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): Readonly<Ap
 
 export function publicConfigMetadata(config: ApiConfig): Readonly<Record<string, unknown>> {
   return Object.freeze({
+    clientAddressSource: config.clientAddressSource,
     emailDelivery: config.emailDelivery,
     deploymentRevision: config.deploymentRevision,
     host: config.host,

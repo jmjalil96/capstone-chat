@@ -2,8 +2,21 @@
 
 Status: repository implementation complete on 2026-08-08; production acceptance pending
 
-Code authorization: granted for repository changes. Render, Resend, New Relic, DNS, paid inference,
-and paid recovery-resource mutations remain separately gated as described below.
+Current production baseline: the user-approved
+[DigitalOcean and PlanetScale amendment](./08-digitalocean-planetscale-amendment-plan.md) supersedes
+this plan's active Render topology and the later
+[minimal Render amendment](./08-production-baseline-amendment-plan.md). All original Render sizes,
+private-network assumptions, Blueprint instructions, and local 4 CPU / 8 GB evidence below remain
+historical evidence only. They are not DigitalOcean, PlanetScale, or managed-candidate acceptance
+evidence and are not an active operator path.
+
+Operator notice: do not execute any Render provisioning, Blueprint, deploy, DNS, log-stream, or
+recovery instruction in this historical record. Use the current operations index and the active
+DigitalOcean/PlanetScale amendment.
+
+Historical code authorization: granted for the 2026-08-08 repository changes. No Render external
+action was granted. The active external authorization boundary is now defined by the
+DigitalOcean/PlanetScale amendment.
 
 ## Planning record
 
@@ -35,9 +48,10 @@ for Capstone's initial 15–20 employees without changing what the product does.
 
 One Render Web Service serves the built React application and Fastify API from
 `https://chat.capstone.com.ec`. One Render managed PostgreSQL database remains the source of truth.
-Resend delivers transactional identity mail. New Relic receives content-free platform and
-application telemetry. The exact approved OpenRouter policy is bootstrapped explicitly. Deployment,
-rollback, incident response, secret rotation, and database recovery are documented and rehearsed.
+Resend delivers transactional identity mail. New Relic receives content-free Fastify OTLP and the
+supported Render default log stream; Render's dashboard remains the infrastructure-metric source.
+The exact approved OpenRouter policy is bootstrapped explicitly. Deployment, rollback, incident
+response, secret rotation, and database recovery are documented and rehearsed.
 
 Production readiness is earned through the full automated suite, browser and accessibility review,
 the locked 20-user/40-stream capacity exercise, a real Ecuador latency check, a small authorized
@@ -50,15 +64,17 @@ layer.
 Approval of this plan locks the following Phase 8 interpretations. They are deliberately the
 smallest complete implementation of the production baseline.
 
-1. Render hosts one paid Docker Web Service and one paid managed PostgreSQL database in Virginia.
-   Both belong to one Render Pro workspace and communicate through Render's private network.
+1. Render hosts one paid Standard Docker Web Service and one paid `basic-256mb` PostgreSQL database
+   created at 5 GB in Virginia. Both belong to one Hobby workspace and communicate through Render's
+   private network. Hobby has one intended Render operator and no workspace audit log; this does
+   not change Capstone Chat employee/admin roles.
 2. Launch runs exactly one application instance. PostgreSQL high availability, read replicas,
    horizontal application scaling, Redis, a separate static-site service, workers, cron services,
    and queues are not added.
-3. Exact Render compute and database sizes are not guessed. Phase 8 begins with the smallest paid
-   candidates capable of running the production image, tests them under the locked workload, and
-   records the smallest passing sizes before declaring production ready. Scaling is vertical only
-   for launch.
+3. Standard (1 CPU / 2 GB) and `basic-256mb`/5 GB are the source-controlled production candidates.
+   They must pass the unchanged locked workload on the exact managed topology before production is
+   ready. A failure stops for a measured, user-approved vertical decision; it never silently lowers
+   workload or thresholds.
 4. The existing OCI image becomes the single deployable artifact. Its build includes
    `packages/brand`, `packages/protocol`, the Vite production assets, and Fastify. Runtime still
    executes only the non-root API process.
@@ -112,10 +128,12 @@ smallest complete implementation of the production baseline.
     commands continue awaiting their send. Phase 8 adds no retry queue, worker, webhook, or
     delivery-status database. A failed send is observable and can be retried only through an
     existing deliberate user/operator flow.
-18. New Relic Free is the sole v1 observability destination. Render streams its platform logs and
-    infrastructure metrics directly. Fastify sends application traces and metrics using standard
-    OTLP over HTTPS/protobuf. No New Relic application agent, browser agent, OpenTelemetry collector,
-    log-forwarding sidecar, or second telemetry backend is added.
+18. New Relic Free is the sole external v1 application/log telemetry destination. Render's
+    supported workspace-default log stream sends application/container/datastore logs, and Fastify
+    sends application traces and metrics using standard OTLP over HTTPS/protobuf. Render CPU,
+    memory, network, disk, and PostgreSQL infrastructure metrics remain in Render's dashboard with
+    Hobby's seven-day history. No New Relic application agent, browser agent, OpenTelemetry
+    collector, metrics scraper, log-forwarding sidecar, or second telemetry backend is added.
 19. Fastify uses narrow manual instrumentation rather than broad automatic Node or SQL
     instrumentation. This prevents URLs, query text, SQL, email addresses, prompts, responses,
     compaction summaries, and raw provider payloads from being captured implicitly.
@@ -154,10 +172,11 @@ smallest complete implementation of the production baseline.
 28. The load harness is a bounded opt-in Node/TypeScript script using native `fetch` and the shared
     NDJSON schemas. No k6, Artillery, autocannon, permanent test route, hosted load service, or
     long-running benchmark dependency is added.
-29. The production container is first tested locally with CPU and memory limits matching each
-    candidate Render size and a representative PostgreSQL pool. Exact managed Web Service/database
-    sizing and deploy-drain evidence then use a disposable isolated Render rehearsal environment:
-    the same image, candidate sizes, a non-production origin, a separate database, and test runtime
+29. The production container is first tested locally at exactly 1 CPU / 2 GB and a representative
+    PostgreSQL pool. Exact Standard/`basic-256mb` sizing and deploy-drain evidence then use a
+    disposable separate same-region Hobby workspace, not another environment in the production
+    workspace: the same image, candidate sizes, a non-production origin, a separate database, and
+    test runtime
     configuration that permits the fake gateway while production continues to reject it. The fake
     seam supports deterministic per-workflow canaries, delays, cancellation, and terminal failures
     without a test-only HTTP route. Creating this paid environment requires immediate user approval;
@@ -181,8 +200,9 @@ smallest complete implementation of the production baseline.
     branded current Edge, with iPhone WebKit and Android Chrome emulation. Manual checks cover full
     keyboard operation, focus, VoiceOver on Safari, reduced motion, 200%/400% zoom, horizontal
     overflow, and actual current iOS Safari and Android Chrome before launch.
-35. Render Pro's seven-day PITR is the only launch backup mechanism. There is no custom backup job,
-    S3 export pipeline, conversation restore, or restore UI.
+35. Render Hobby's three-day accessible PITR window is the only launch backup mechanism. That
+    operating window is not an unsupported claim about physical backup-media deletion. There is no
+    custom backup job, S3 export pipeline, conversation restore, or restore UI.
 36. The disaster-recovery rehearsal restores a selected point to a new isolated paid database,
     validates it with an isolated application, measures the data boundary and elapsed recovery, and
     never mutates the source database. It must prove RPO at most 15 minutes and RTO at most four
@@ -251,8 +271,10 @@ occurs materially later:
 
 At the planning checkpoint, Render supports `checksPass`, a pre-deploy command, a health-check path,
 a one-to-300-second graceful shutdown limit, private same-region database URLs, custom domains, and
-disabling the generated subdomain. Render Pro retains seven days of PostgreSQL PITR and restores to
-a new instance. Resend's direct API requires HTTPS, Bearer authorization, and a `User-Agent`; its
+disabling the generated subdomain. The approved Hobby baseline has a three-day accessible PITR
+window and restores to a new instance; Pro-only Metrics Stream is unavailable, while the supported
+workspace-default log stream remains the external-log path. Resend's direct API requires HTTPS,
+Bearer authorization, and a `User-Agent`; its
 email endpoint accepts text and HTML, and idempotency keys are retained for 24 hours. New Relic's
 OTLP endpoint requires TLS and an `api-key` header. Playwright explicitly supports Chromium,
 Firefox, WebKit, branded Chrome/Edge, mobile emulation, and axe integration while noting that manual
@@ -289,7 +311,7 @@ Fastify
 
 Render platform
   |-- application/container logs --------> New Relic log stream
-  `-- infrastructure metrics ------------> New Relic metrics stream
+  `-- infrastructure metrics ------------> Render dashboard only
 ```
 
 - `apps/web` remains presentation and browser interaction only.
@@ -365,21 +387,22 @@ Add one root `render.yaml` with the smallest declarative topology:
 - `healthCheckPath: /api/health/ready`;
 - `autoDeployTrigger: checksPass`;
 - the existing migration command as `preDeployCommand`;
-- `maxShutdownDelaySeconds` selected below the Render maximum and long enough for the application's
-  own drain contract;
+- `maxShutdownDelaySeconds: 300`, enclosing the bounded 287-second application shutdown budget
+  while retaining the 240-second stream grace;
 - `chat.capstone.com.ec` as the custom domain;
 - generated Render subdomain initially enabled for provisioning, then explicitly disabled in the
   accepted final configuration;
-- one managed PostgreSQL database in the same region with an empty public `ipAllowList` after the
-  initial operator bootstrap;
+- one `basic-256mb` PostgreSQL database created at 5 GB in the same region with an empty public
+  `ipAllowList` after the initial operator bootstrap;
 - the database private connection string injected into `DATABASE_URL` through a Blueprint
   `fromDatabase` reference;
 - non-secret fixed environment values committed, generated secrets marked for Render generation,
   and externally supplied credentials marked `sync: false`.
 
-The manifest records the exact passing Web Service and PostgreSQL sizes after the load checkpoint.
-It does not declare HA, replicas, disks, background workers, cron jobs, key-value stores, preview
-environments, or a permanent staging environment.
+The manifest records the Standard Web Service and `basic-256mb`/5 GB production candidates. Exact
+managed rehearsal evidence is still required. It does not declare HA, replicas, storage
+autoscaling, background workers, cron jobs, key-value stores, preview environments, or a permanent
+staging environment.
 
 ### Production configuration and secrets
 
@@ -443,7 +466,9 @@ limiting.
 
 Document the one-time order precisely:
 
-1. Create the Render Pro workspace/environment and paid Virginia PostgreSQL database.
+1. Create the one-member Render Hobby workspace and the paid Virginia `basic-256mb` PostgreSQL
+   database at 5 GB only after verifying no production database already exists; allocated storage
+   cannot be reduced.
 2. Configure the final public origin, verify the Resend sending domain, disable Resend open/click
    tracking, and install the send-only key and exact sender.
 3. Restrict the database external allowlist to the operator's current single IP long enough to
@@ -469,8 +494,10 @@ streams. Phase 8 aligns it to the hosting contract:
 
 - readiness becomes false before the process accepts shutdown work;
 - ordinary in-flight requests finish within a short bound;
-- active streams may drain for up to four minutes, leaving headroom below the five-minute total
-  generation ceiling and Render's 300-second maximum shutdown delay;
+- active streams may drain for up to four minutes; together with a 275-second work fence (5 seconds
+  ordinary drain, 240 seconds stream grace, and 30 seconds forced cleanup), 2 seconds of concurrent
+  email and database-pool cleanup, and 10 seconds of telemetry flush, the bounded application total
+  is 287 seconds under Render's 300-second maximum;
 - after the application drain deadline, remaining streams are aborted, partial chat output is
   retained, hidden compaction stays hidden, and reservations settle or remain reconcilable;
 - the database pool closes after terminal writes and reconciler stop;
@@ -634,23 +661,26 @@ user beyond the existing error UI. No browser storage or device fingerprint is i
 
 Configure the New Relic account as one production destination:
 
-- a Render log-stream endpoint for application/container/platform logs;
-- a Render metrics-stream integration for platform CPU, memory, restart, and database metrics;
+- a Hobby workspace-default Render log-stream endpoint for supported
+  application/container/datastore logs;
 - a license key used by Fastify OTLP exporters;
 - one release tag and service/environment naming convention;
 - saved NRQL queries or concise dashboard for the acceptance measures;
 - alert notification to the one approved operator channel available at launch.
 
-Use a short alert set: service/readiness down or telemetry absent, unexpected 5xx rate, ordinary API
-latency, response-start latency, generation timeout/failure rate, sustained memory pressure,
-PostgreSQL pool waiting/exhaustion, reconciliation lag, and failed telemetry export. Budget
-exhaustion remains an explicit product policy visible in administration rather than being confused
-with infrastructure failure.
+Use a short application/log alert set: service/readiness down or telemetry absent, unexpected 5xx
+rate, ordinary API latency, response-start latency, generation timeout/failure rate,
+application-observed PostgreSQL pool waiting/exhaustion, reconciliation lag, and failed telemetry
+export. Web CPU/memory/restarts, database host CPU/memory/disk/locks, and bandwidth remain manual
+Render dashboard checks with seven-day history; Hobby provides no external threshold alert for
+them. Budget exhaustion remains an explicit product policy visible in administration rather than
+being confused with infrastructure failure.
 
 Record monthly ingest after the load exercise and set a warning well below the New Relic Free
 allowance. Do not solve hypothetical ingest growth with a second backend; reduce safe success
-sampling or noisy platform streams from measured volume while retaining errors and required
-operational metrics.
+sampling or noisy supported logs from measured volume while retaining errors and required
+application metrics. Do not add an agent, collector, sidecar, scraper, or second backend to replace
+Pro-only Metrics Stream.
 
 ## Capacity and performance
 
@@ -798,10 +828,10 @@ versions and any limitations rather than claiming unsupported hardware coverage.
 
 ### Production backup posture
 
-Confirm in the Render account—not only in the manifest—that the paid database is on a Pro workspace,
-PITR is active, and the recovery window has aged to the full seven days before claiming the complete
-retention period. The deletion confirmation copy and privacy/operations documentation state that
-deleted active content may remain inaccessible in encrypted backups for up to seven days.
+Confirm in the Render account—not only in the manifest—that the database belongs to the Hobby
+workspace, PITR is active, and the accessible recovery window has aged to the full three days before
+claiming it. Do not turn that selectable recovery window into an unsupported claim about physical
+backup-media deletion.
 
 V1 does not download conversation data into an operator-made backup, run `pg_dump` on a schedule,
 copy backups to another cloud, or add a retention table. Render PITR is the approved mechanism.
@@ -812,9 +842,9 @@ Use non-sensitive recovery markers and a written clock:
 
 1. Record the source database/service, UTC start time, release, migration version, and current
    readiness without copying employee content into the record.
-2. Create a pre-recovery marker, wait for it to fall within a selectable PITR point, create a
-   post-recovery marker, and choose a restore time whose expected boundary is unambiguous and no
-   more than 15 minutes behind the simulated incident point.
+2. Create pre/post markers and a simulated incident whose expected recovered boundary is no more
+   than 15 minutes old. Separately wait until the chosen restore timestamp is older than Render's
+   current 10-minute exclusion and selectable; do not collapse the RPO and provider clocks.
 3. Trigger Render PITR to a new paid isolated database. Never restore over the source.
 4. Keep the recovered database inaccessible from the public internet. Connect only a temporary
    isolated validation application or operator command using separate configuration.
@@ -891,8 +921,9 @@ commands over duplicated explanation:
 8. `domain-and-tls.md` — `chat.capstone.com.ec`, `mail.capstone.com.ec`, DNS verification,
    certificate health, generated subdomain, and rollback.
 
-The index identifies the single initial operator and where provider account recovery information is
-kept outside the repository. Runbooks use placeholders for account IDs, emails, keys, endpoints, and
+The index identifies the single Render Hobby operator, verified external account-recovery
+ownership, and where recovery codes/change records are kept outside the repository. Hobby has no
+workspace audit log. Runbooks use placeholders for account IDs, emails, keys, endpoints, and
 service IDs. No screenshot with content/secrets is committed.
 
 The final implementation record in this plan captures:
@@ -904,7 +935,8 @@ The final implementation record in this plan captures:
 - automated suite, browser matrix, device/VoiceOver/axe results;
 - load report and all locked percentiles/error/resource criteria;
 - production OpenRouter smoke and measured provider timings;
-- New Relic log/metric/trace sample privacy audit and alert tests;
+- New Relic default-log-stream/application OTLP privacy audit and alert tests, plus manual Render
+  dashboard infrastructure evidence;
 - PITR restore point, expected/observed boundary, RPO, RTO, and cleanup;
 - dependency audit, image identity/non-root result, and secret scan;
 - any remaining production blocker or explicitly accepted non-blocking advisory.
@@ -1026,8 +1058,9 @@ The phase should be implemented in small, independently verifiable batches in th
 
 ### 11. Provision external production services
 
-- With the user's account access, create/configure Render Pro, PostgreSQL, Resend domain/key with
-  open/click tracking disabled, New Relic destination/integrations/alerts, and DNS.
+- With the user's account access, create/configure one-member Render Hobby, Standard,
+  `basic-256mb`/5 GB PostgreSQL, Resend domain/key with open/click tracking disabled, the supported
+  New Relic default log stream/application OTLP destination/alerts, and DNS.
 - Rotate the exposed OpenRouter key and install every production secret.
 - Execute migrations and model bootstrap, then run identity bootstrap only after Resend and the final
   origin are ready; remove public database access afterward.
@@ -1050,7 +1083,8 @@ The phase should be implemented in small, independently verifiable batches in th
 
 ### 14. Rehearse disaster recovery and close operations
 
-- Run the isolated Render PITR rehearsal and measure RPO/RTO.
+- After the three-day accessible window ages fully, run the isolated Render PITR rehearsal and
+  measure RPO/RTO.
 - Exercise alert notifications and each runbook's critical command path.
 - Remove disposable recovery resources only after evidence and approval.
 - Update the implementation record and perform the final full review against all PRDs and
@@ -1182,9 +1216,10 @@ below. Test names should describe behavior rather than mirror this document.
 ### Deployment and recovery artifacts
 
 - `render.yaml` parses against the current Blueprint schema and defines exactly one web service and
-  one database with approved region/topology, checks-pass, pre-deploy migration, readiness, custom
-  domain, shutdown delay, secret references, and final public database lockout.
-- It defines no worker, cron, cache, replica, HA, disk, or secret literal.
+  one database with approved Standard/`basic-256mb`/5 GB, region/topology, checks-pass, pre-deploy
+  migration, readiness, custom domain, 300-second shutdown delay, secret references, and final
+  public database lockout.
+- It defines no worker, cron, cache, replica, HA, storage autoscaling, or secret literal.
 - Runbook commands reference real repository scripts/paths and use placeholders for external IDs.
 - A runbook link/check script catches stale nonexistent commands without executing destructive
   operations.
@@ -1216,8 +1251,10 @@ privacy, migration, or recovery failure.
 1. Confirm GitHub Actions passed on the exact candidate commit and the working tree/tag is known.
 2. Confirm the compromised OpenRouter key is revoked and every installed secret is newly issued or
    deliberately retained according to the rotation runbook.
-3. Confirm Render Pro, Virginia region, one web instance, one managed PostgreSQL database, no HA or
-   replica, passing measured sizes, empty database public allowlist, and private connection.
+3. Confirm Render Hobby, one intended operator, Virginia, one Standard instance, one
+   `basic-256mb`/5 GB PostgreSQL database, no HA/replica, empty public allowlist, private connection,
+   and exact managed rehearsal evidence. Confirm account recovery and the absence of an audit log
+   are recorded.
 4. Confirm pre-deploy migrations and initial identity/model-policy bootstrap values exactly match
    the PRDs.
 5. Confirm `chat.capstone.com.ec` DNS/TLS, HTTPS redirect, security/cache headers, API 404 boundary,
@@ -1234,8 +1271,10 @@ privacy, migration, or recovery failure.
 10. Run the locked fake 20-user/40-stream workload and record percentiles, errors, pool, CPU,
     memory, stream correctness, cancellation, and isolation.
 11. Run Ecuador custom-domain cold/warm measurements and record usable-composer and API percentiles.
-12. Inspect New Relic platform logs/metrics and Fastify traces/metrics, test alert delivery, verify
-    required signals, and manually audit samples for prohibited content.
+12. Inspect New Relic's supported default Render logs and Fastify traces/application metrics, test
+    application/log alert delivery, and manually audit samples for prohibited content. Inspect Web
+    and database infrastructure metrics in Render's seven-day dashboard and record the accepted
+    absence of external infrastructure threshold alerts.
 13. Ask the user for live-spend authorization, then run the exact three-tier OpenRouter smoke and
     one cancellation. Record cost and separated provider/application timings.
 14. In the disposable isolated Render rehearsal environment, start a long fake-gateway stream,
@@ -1243,8 +1282,9 @@ privacy, migration, or recovery failure.
     interruption, reservation correctness, and no traffic error.
 15. Exercise immediate previous-release rollback and return to the candidate, with migration
     compatibility and smoke on both transitions.
-16. Run the isolated seven-day-PITR rehearsal, prove RPO at most 15 minutes and RTO at most four
-    hours, keep the source untouched, and remove temporary paid resources after acceptance.
+16. After the accessible window ages for three days, run the isolated PITR rehearsal, prove RPO at
+    most 15 minutes and RTO at most four hours, keep the source untouched, and remove temporary paid
+    resources after acceptance.
 17. Disable the Render generated subdomain, repeat domain/auth/stream smoke, and ensure no callback or
     asset references it.
 18. Review every runbook with the launch operator, confirm account recovery and notification access,
@@ -1297,8 +1337,10 @@ Phase 8 is complete only when all of the following are true:
   policy.
 - Resend sends all required Spanish identity email from the approved verified domain with text/HTML,
   bounded safe failures, and no queue/worker.
-- New Relic receives required Render logs/metrics and safe Fastify OTLP traces/metrics; alerts work,
-  ingest is understood, and a privacy sample audit finds no employee content or secrets.
+- New Relic receives the supported workspace-default Render logs and safe Fastify OTLP
+  traces/application metrics; their alerts work, ingest is understood, and a privacy sample audit
+  finds no employee content or secrets. Render's dashboard supplies infrastructure metrics with the
+  accepted Hobby alert/retention limitations.
 - The approved model mappings, USD 100 budget, output limits, concurrency, margin, and privacy
   attestation are explicitly bootstrapped. Source-controlled refresh, timeout, reservation-expiry,
   and drain tuning is independently verified.
@@ -1312,8 +1354,8 @@ Phase 8 is complete only when all of the following are true:
 - The user authorized and the implementer completed the minimal paid OpenRouter smoke without using
   the compromised key or exposing content/secrets.
 - Deployment/drain and immediately previous compatible rollback are exercised successfully.
-- Render seven-day PITR is active and the isolated rehearsal proves RPO at most 15 minutes and RTO
-  at most four hours without altering the source database.
+- Render's three-day accessible PITR window is active and aged, and the isolated rehearsal proves
+  RPO at most 15 minutes and RTO at most four hours without altering the source database.
 - Runbooks are complete, executable by the initial operator, and every production secret/account has
   ownership, recovery access, and rotation instructions.
 - The implementation record states exact evidence and no unresolved P1/P2 defect, hidden external
@@ -1325,6 +1367,12 @@ creation still require separate access and, where called out above, immediate co
 external spend or mutation.
 
 ## Repository implementation record
+
+This section is the immutable evidence record for the 2026-08-08 candidate. References below to
+`pro_plus`, 4 CPU / 8 GB, Pro workspace behavior, seven-day PITR, or Render Metrics Stream are
+historical and superseded for the active production baseline by the 2026-08-09 amendment. They are
+not Standard/Hobby acceptance evidence and must not be rewritten as though those runs occurred on
+the smaller topology.
 
 Repository work completed the approved source-controlled boundary without creating or changing a
 Render, Resend, New Relic, DNS, OpenRouter, or recovery resource. The result remains deliberately

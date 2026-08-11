@@ -18,6 +18,7 @@ import type {
 import { applySecurityHeaders } from "../security/http.js";
 import type { ActiveStreamRegistry } from "./active-streams.js";
 import type { CompactionService } from "./compaction-service.js";
+import { DurableGenerationAuthority } from "./durable-authority.js";
 import type {
   GatewayAccounting,
   GatewayEvent,
@@ -59,6 +60,7 @@ export class NdjsonWriter {
   readonly #reply: FastifyReply;
   readonly #transportSignal: AbortSignal;
   #terminalEnqueued = false;
+  #writeTail = Promise.resolve();
 
   constructor(reply: FastifyReply, transportSignal: AbortSignal, interruptSignal: AbortSignal) {
     this.#reply = reply;
@@ -89,22 +91,25 @@ export class NdjsonWriter {
       event.type === "response.completed" ||
       event.type === "response.cancelled" ||
       event.type === "response.failed";
-    if (terminal && this.#terminalEnqueued) {
+    if (this.#terminalEnqueued) {
       return;
     }
-    this.#transportSignal.throwIfAborted();
-    if (this.#reply.raw.destroyed || this.#reply.raw.writableEnded) {
-      throw new StreamTransportError("The downstream response is no longer writable");
-    }
-    const line = `${JSON.stringify(event)}\n`;
-    const accepted = this.#reply.raw.write(line, "utf8");
     if (terminal) {
       this.#terminalEnqueued = true;
     }
-    if (accepted) {
-      return;
-    }
-    await this.#waitForDrain();
+    const operation = this.#writeTail.then(async () => {
+      this.#transportSignal.throwIfAborted();
+      if (this.#reply.raw.destroyed || this.#reply.raw.writableEnded) {
+        throw new StreamTransportError("The downstream response is no longer writable");
+      }
+      const line = `${JSON.stringify(event)}\n`;
+      const accepted = this.#reply.raw.write(line, "utf8");
+      if (!accepted) {
+        await this.#waitForDrain();
+      }
+    });
+    this.#writeTail = operation.catch(() => undefined);
+    await operation;
   }
 
   async #waitForDrain(): Promise<void> {
@@ -138,6 +143,60 @@ export class NdjsonWriter {
       raw.once("error", errored);
       this.#interruptSignal.addEventListener("abort", aborted, { once: true });
     });
+  }
+}
+
+class StreamHeartbeat {
+  readonly #intervalMilliseconds: number;
+  readonly #onFailure: () => void;
+  readonly #writer: NdjsonWriter;
+  #inFlight: Promise<void> | undefined;
+  #stopped = true;
+  #timer: ReturnType<typeof setTimeout> | undefined;
+
+  constructor(writer: NdjsonWriter, intervalMilliseconds: number, onFailure: () => void) {
+    this.#writer = writer;
+    this.#intervalMilliseconds = intervalMilliseconds;
+    this.#onFailure = onFailure;
+  }
+
+  start(): void {
+    if (!this.#stopped) {
+      return;
+    }
+    this.#stopped = false;
+    this.#schedule();
+  }
+
+  async stop(): Promise<void> {
+    this.#stopped = true;
+    if (this.#timer !== undefined) {
+      clearTimeout(this.#timer);
+      this.#timer = undefined;
+    }
+    await this.#inFlight;
+  }
+
+  #schedule(): void {
+    if (this.#stopped) {
+      return;
+    }
+    this.#timer = setTimeout(() => {
+      this.#timer = undefined;
+      const operation = this.#writer
+        .write({ type: "stream.heartbeat" })
+        .catch(() => {
+          this.#stopped = true;
+          this.#onFailure();
+        })
+        .finally(() => {
+          if (this.#inFlight === operation) {
+            this.#inFlight = undefined;
+          }
+          this.#schedule();
+        });
+      this.#inFlight = operation;
+    }, this.#intervalMilliseconds);
   }
 }
 
@@ -290,24 +349,6 @@ function accountingGateway(
     : null;
 }
 
-async function waitForDurableStatePoll(signal: AbortSignal): Promise<void> {
-  if (signal.aborted) {
-    return;
-  }
-  await new Promise<void>((resolve) => {
-    const timer = setTimeout(finish, generationTuning.durableStatePollMilliseconds);
-    const aborted = (): void => finish();
-
-    function finish(): void {
-      clearTimeout(timer);
-      signal.removeEventListener("abort", aborted);
-      resolve();
-    }
-
-    signal.addEventListener("abort", aborted, { once: true });
-  });
-}
-
 export function splitContentDelta(text: string): readonly string[] {
   const lineOverhead = Buffer.byteLength(
     `${JSON.stringify({ text: "", type: "content.delta" })}\n`,
@@ -338,6 +379,7 @@ export function createResponseStreamCoordinator(dependencies: {
   readonly compactions?: CompactionService;
   readonly gateway: ModelGateway;
   readonly generations: GenerationService;
+  readonly heartbeatIntervalMilliseconds?: number;
   readonly registry: ActiveStreamRegistry;
   readonly telemetry?:
     | Pick<
@@ -407,7 +449,6 @@ export function createResponseStreamCoordinator(dependencies: {
     }
     const lease = promotion.value;
     const disconnected = new AbortController();
-    const durableStateMonitorController = new AbortController();
     const gatewayController = new AbortController();
     const gatewaySignal = AbortSignal.any([
       lease.signal,
@@ -419,7 +460,16 @@ export function createResponseStreamCoordinator(dependencies: {
       disconnected.signal,
       AbortSignal.any([lease.signal, disconnected.signal]),
     );
+    const heartbeat = new StreamHeartbeat(
+      writer,
+      dependencies.heartbeatIntervalMilliseconds ?? generationTuning.heartbeatMilliseconds,
+      () => disconnected.abort("heartbeat-failed"),
+    );
     const checkpoints = new CheckpointScheduler(generations, started.generationId, Date.now());
+    const durableAuthority = new DurableGenerationAuthority({
+      intervalMilliseconds: generationTuning.durableStatePollMilliseconds,
+      readState: () => generations.readState(started.generationId),
+    });
 
     function startModelObservation(requestForGateway: GenerationRequest): void {
       modelCallStartedAt = performance.now();
@@ -654,23 +704,9 @@ export function createResponseStreamCoordinator(dependencies: {
       }
     }
 
-    async function monitorDurableState(): Promise<void> {
-      const signal = durableStateMonitorController.signal;
-      while (!signal.aborted) {
-        const state = await generations.readState(started.generationId).catch(() => undefined);
-        if (
-          state === null ||
-          (state !== undefined && state.status !== "active" && state.status !== "preparing")
-        ) {
-          gatewayController.abort("durable-terminal");
-          return;
-        }
-        await waitForDurableStatePoll(signal);
-      }
+    if (started.request.route !== undefined) {
+      durableAuthority.startMonitor(() => gatewayController.abort("durable-terminal"));
     }
-
-    const durableStateMonitor =
-      started.request.route === undefined ? undefined : monitorDurableState();
 
     async function fail(
       errorCode: GatewayFailureCode,
@@ -720,6 +756,7 @@ export function createResponseStreamCoordinator(dependencies: {
         userMessageId: started.userMessageId,
       };
       await writer.write(startedEvent);
+      heartbeat.start();
       observe(() =>
         dependencies.telemetry?.recordResponseStarted(
           started.request.modelTier,
@@ -743,10 +780,24 @@ export function createResponseStreamCoordinator(dependencies: {
           gatewaySignal,
         );
         if (result.kind === "cancelled") {
-          const state = await generations.readState(started.generationId);
+          const state = await durableAuthority.stateForEvent(true);
           if (state !== null) {
             terminal = await durableTerminalEvent(state);
           }
+          return;
+        }
+        // The silent monitor may have cached the chat's pre-compaction `preparing` state. Promotion
+        // is durable before execute returns, so refresh that lifecycle boundary before any chat
+        // event can rely on the sampler's normal freshness window.
+        const promotedState = await durableAuthority.stateForEvent(true);
+        if (promotedState === null) {
+          throw new GatewayOutputError("GENERATION_FAILED");
+        }
+        if (promotedState.status === "preparing") {
+          throw new GatewayOutputError("GENERATION_FAILED");
+        }
+        if (promotedState.status !== "active") {
+          terminal = await durableTerminalEvent(promotedState);
           return;
         }
         chatRequest = {
@@ -776,7 +827,7 @@ export function createResponseStreamCoordinator(dependencies: {
         if (event.type === "response.headers") {
           continue;
         }
-        const state = await generations.readState(started.generationId);
+        const state = await durableAuthority.stateForEvent();
         if (state === null) {
           throw new GatewayOutputError("GENERATION_FAILED");
         }
@@ -788,7 +839,7 @@ export function createResponseStreamCoordinator(dependencies: {
         }
         const pendingCancellation = lease.pendingCancellation();
         if (pendingCancellation !== undefined && (await pendingCancellation)) {
-          const cancelledState = await generations.readState(started.generationId);
+          const cancelledState = await durableAuthority.stateForEvent(true);
           if (cancelledState === null) {
             throw new GatewayOutputError("GENERATION_FAILED");
           }
@@ -939,7 +990,7 @@ export function createResponseStreamCoordinator(dependencies: {
       stopProviderObservation();
       modelOutcome = isAbortError(error) || gatewaySignal.aborted ? "cancelled" : "failed";
       modelOutcomeObserved = true;
-      const state = await generations.readState(started.generationId).catch(() => null);
+      const state = await durableAuthority.stateForEvent(true).catch(() => null);
       if (lease.signal.aborted || state?.status === "cancelled") {
         observeModelCancellation();
       }
@@ -976,18 +1027,18 @@ export function createResponseStreamCoordinator(dependencies: {
           conversationId: started.conversationId,
           ...started.compaction,
         });
-        const cancelled = await generations.readState(started.generationId).catch(() => null);
+        const cancelled = await durableAuthority.stateForEvent(true).catch(() => null);
         if (cancelled !== null) {
           terminal = await durableTerminalEvent(cancelled).catch(() => true);
         }
       }
     } finally {
       try {
-        durableStateMonitorController.abort("stream-settled");
+        await heartbeat.stop();
         if (!gatewayController.signal.aborted) {
           gatewayController.abort("disconnect");
         }
-        await durableStateMonitor;
+        await durableAuthority.stop();
         await checkpoints.settle();
         if (!accountingSettled && providerGenerationId !== null) {
           const recovered = await lookupAccounting().catch(() => undefined);
@@ -1000,7 +1051,7 @@ export function createResponseStreamCoordinator(dependencies: {
         if (!reply.raw.destroyed && !reply.raw.writableEnded) {
           reply.raw.end();
         }
-        const finalState = await generations.readState(started.generationId).catch(() => null);
+        const finalState = await durableAuthority.stateForEvent(true).catch(() => null);
         const workflowOutcome: TelemetryOutcome =
           finalState?.status === "completed"
             ? "completed"

@@ -407,6 +407,7 @@ describe("complete v1 stream event catalog", () => {
     { type: "context.compacting" },
     { type: "context.compacted" },
     { type: "context.warning", code: "CONTEXT_COMPACTION_FALLBACK" },
+    { type: "stream.heartbeat" },
     { type: "content.delta", text: "Respuesta" },
     {
       type: "response.completed",
@@ -426,8 +427,8 @@ describe("complete v1 stream event catalog", () => {
     },
   ];
 
-  it("validates all eight approved known event types", () => {
-    expect(events.map((event) => event.type)).toHaveLength(8);
+  it("validates all nine approved known event types", () => {
+    expect(events.map((event) => event.type)).toHaveLength(9);
     for (const event of events) {
       expect(Value.Check(StreamEventSchema, event)).toBe(true);
     }

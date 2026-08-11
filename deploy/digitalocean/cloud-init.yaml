@@ -1,0 +1,121 @@
+#cloud-config
+# This template contains no credential. Replace the two explicit placeholders
+# immediately before creating the Droplet and retain the rendered hash as evidence.
+timezone: Etc/UTC
+locale: C.UTF-8
+preserve_hostname: false
+manage_etc_hosts: true
+package_update: true
+package_upgrade: true
+ssh_pwauth: false
+disable_root: true
+
+users:
+  - name: capstone-operator
+    gecos: Capstone production operator
+    groups:
+      - adm
+    lock_passwd: true
+    shell: /bin/bash
+    sudo: false
+    ssh_authorized_keys:
+      - __OPERATOR_SSH_PUBLIC_KEY__
+
+packages:
+  - ca-certificates
+  - curl
+  - jq
+  - python3
+  - sudo
+  - unattended-upgrades
+  - ufw
+
+apt:
+  preserve_sources_list: true
+
+write_files:
+  - path: /etc/sudoers.d/60-capstone-operator
+    owner: root:root
+    permissions: "0440"
+    content: |
+      capstone-operator ALL=(root) NOPASSWD: /opt/capstone-chat/bin/request-deploy.sh *, /opt/capstone-chat/bin/request-operator.sh *, /opt/capstone-chat/bin/verify-host.sh
+  - path: /etc/ssh/sshd_config.d/60-capstone-production.conf
+    owner: root:root
+    permissions: "0644"
+    content: |
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      PermitRootLogin no
+      PubkeyAuthentication yes
+      AuthenticationMethods publickey
+      HostbasedAuthentication no
+      AllowUsers capstone-operator
+      DisableForwarding yes
+      X11Forwarding no
+      AllowAgentForwarding no
+      AllowTcpForwarding no
+      GatewayPorts no
+      PermitUserEnvironment no
+      PermitTunnel no
+      MaxAuthTries 3
+  - path: /etc/systemd/coredump.conf.d/60-capstone-production.conf
+    owner: root:root
+    permissions: "0644"
+    content: |
+      [Coredump]
+      Storage=none
+      ProcessSizeMax=0
+  - path: /etc/security/limits.d/60-capstone-production.conf
+    owner: root:root
+    permissions: "0644"
+    content: |
+      * hard core 0
+      root hard core 0
+  - path: /etc/sysctl.d/60-capstone-production.conf
+    owner: root:root
+    permissions: "0644"
+    content: |
+      fs.suid_dumpable=0
+      kernel.core_pattern=/dev/null
+      net.ipv6.conf.all.disable_ipv6=1
+      net.ipv6.conf.default.disable_ipv6=1
+      net.ipv6.conf.lo.disable_ipv6=1
+  - path: /etc/apt/apt.conf.d/52capstone-unattended-upgrades
+    owner: root:root
+    permissions: "0644"
+    content: |
+      APT::Periodic::Enable "1";
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+      Unattended-Upgrade::Allowed-Origins {
+        "${distro_id}:${distro_codename}-security";
+      };
+      Unattended-Upgrade::Automatic-Reboot "false";
+
+runcmd:
+  - [groupadd, --gid, "21001", capstone-runtime-secrets]
+  - [groupadd, --gid, "21002", capstone-migration-secrets]
+  - [groupadd, --gid, "21003", capstone-caddy-secrets]
+  - [groupadd, --gid, "21004", capstone-fluent-bit-secrets]
+  - [useradd, --system, --uid, "21010", --gid, capstone-caddy-secrets, --home-dir, /nonexistent, --shell, /usr/sbin/nologin, caddy]
+  - [useradd, --system, --uid, "21011", --gid, capstone-fluent-bit-secrets, --home-dir, /nonexistent, --shell, /usr/sbin/nologin, capstone-fluent-bit]
+  - [swapoff, --all]
+  - [sed, -ri, "/[[:space:]]swap[[:space:]]/s/^/# capstone-disabled /", /etc/fstab]
+  - [systemctl, mask, swap.target]
+  - [systemctl, mask, caddy.service, caddy-api.service, fluent-bit.service]
+  - [timedatectl, set-ntp, "true"]
+  - [sysctl, --system]
+  - [sed, -ri, "s/^IPV6=.*/IPV6=no/", /etc/default/ufw]
+  - [ufw, --force, reset]
+  - [ufw, default, deny, incoming]
+  - [ufw, default, allow, outgoing]
+  - [ufw, allow, from, __OPERATOR_IPV4_CIDR__, to, any, port, "22", proto, tcp, comment, Capstone-operator-SSH]
+  - [ufw, allow, "80/tcp", comment, Capstone-HTTP-ACME]
+  - [ufw, allow, "443/tcp", comment, Capstone-HTTPS]
+  - [ufw, --force, enable]
+  - [visudo, --check, --file, /etc/sudoers.d/60-capstone-operator]
+  - [sshd, -t]
+  - [systemctl, restart, ssh.service]
+  - [systemctl, enable, --now, unattended-upgrades.service]
+
+final_message: Capstone base host initialized; install only the reviewed pinned runtime artifacts.

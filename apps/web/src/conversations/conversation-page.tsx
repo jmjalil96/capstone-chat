@@ -308,9 +308,6 @@ export function ConversationPage() {
     conversation?.revision,
     detail.data?.pages ?? [],
   );
-  const remoteActive = [...responseStates.byMessageId.values()].find(
-    (state) => state.status === "active",
-  );
   const runtimeResponseState = runtimeSnapshot?.messageId
     ? responseStates.byMessageId.get(runtimeSnapshot.messageId)
     : undefined;
@@ -319,6 +316,11 @@ export function ConversationPage() {
     runtimeSnapshot?.phase === "generating" ||
     runtimeSnapshot?.phase === "compacting" ||
     runtimeSnapshot?.phase === "stopping";
+  const remoteActive = [...responseStates.byMessageId.values()].find(
+    (state) =>
+      state.status === "active" &&
+      (runtimeActive || state.messageId !== runtimeSnapshot?.messageId),
+  );
   const runtimeNeedsReconciliation = Boolean(
     runtimeSnapshot?.awaitingCanonical ||
       (runtimeSnapshot?.messageId && !runtimeActive) ||

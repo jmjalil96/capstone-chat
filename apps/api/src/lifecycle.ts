@@ -11,18 +11,29 @@ export interface ApplicationLifecycle {
   markStopped(): void;
 }
 
+export interface ApplicationLifecycleOptions {
+  readonly onReadyValidationFailure?: (error: unknown) => void;
+  readonly validateReady?: () => Promise<void>;
+}
+
 const unavailable = (database: "down" | "unknown"): ReadinessResponse => ({
   database,
   status: "unavailable",
 });
 
-export function createApplicationLifecycle(pool: DatabasePool): ApplicationLifecycle {
+export function createApplicationLifecycle(
+  pool: DatabasePool,
+  options: ApplicationLifecycleOptions = {},
+): ApplicationLifecycle {
   let phase: LifecyclePhase = "starting";
+  let readyValidationPassed = options.validateReady === undefined;
+  let readyValidationFailureReported = false;
 
   async function probeDatabase(): Promise<ReadinessResponse> {
     try {
       await pool.query("SELECT 1");
     } catch {
+      readyValidationPassed = options.validateReady === undefined;
       if (phase !== "draining" && phase !== "stopped") {
         phase = "unhealthy";
       }
@@ -32,6 +43,25 @@ export function createApplicationLifecycle(pool: DatabasePool): ApplicationLifec
 
     if (phase === "draining" || phase === "stopped") {
       return unavailable("unknown");
+    }
+
+    if (!readyValidationPassed && options.validateReady !== undefined) {
+      try {
+        await options.validateReady();
+        readyValidationPassed = true;
+        readyValidationFailureReported = false;
+      } catch (error: unknown) {
+        if (!readyValidationFailureReported) {
+          try {
+            options.onReadyValidationFailure?.(error);
+          } catch {
+            // Operational reporting cannot make the readiness boundary throw.
+          }
+          readyValidationFailureReported = true;
+        }
+        phase = "unhealthy";
+        return unavailable("unknown");
+      }
     }
 
     phase = "ready";

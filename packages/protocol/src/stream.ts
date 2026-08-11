@@ -57,6 +57,12 @@ export const ContextWarningEventSchema = Type.Object(
 );
 export type ContextWarningEvent = Type.Static<typeof ContextWarningEventSchema>;
 
+export const StreamHeartbeatEventSchema = Type.Object(
+  { type: Type.Literal("stream.heartbeat") },
+  { additionalProperties: false },
+);
+export type StreamHeartbeatEvent = Type.Static<typeof StreamHeartbeatEventSchema>;
+
 export const ContentDeltaEventSchema = Type.Object(
   {
     type: Type.Literal("content.delta"),
@@ -107,6 +113,7 @@ export const StreamEventSchema = Type.Union([
   ContextCompactingEventSchema,
   ContextCompactedEventSchema,
   ContextWarningEventSchema,
+  StreamHeartbeatEventSchema,
   ContentDeltaEventSchema,
   ResponseCompletedEventSchema,
   ResponseCancelledEventSchema,

@@ -51,6 +51,11 @@ const pendingStarted: StartedResponse = {
   compaction: {} as NonNullable<StartedResponse["compaction"]>,
 };
 
+const pendingRoutedStarted: StartedResponse = {
+  ...routedStarted,
+  compaction: {} as NonNullable<StartedResponse["compaction"]>,
+};
+
 type CompactionDependency = NonNullable<
   Parameters<typeof createResponseStreamCoordinator>[0]["compactions"]
 >;
@@ -139,6 +144,7 @@ async function streamUrl(
   response = started,
   compactions?: CompactionDependency,
   telemetry?: ResponseStreamTelemetry,
+  heartbeatIntervalMilliseconds?: number,
 ): Promise<string> {
   const server = Fastify();
   servers.push(server);
@@ -146,6 +152,7 @@ async function streamUrl(
     ...(compactions === undefined ? {} : { compactions }),
     gateway,
     generations: memory.service,
+    ...(heartbeatIntervalMilliseconds === undefined ? {} : { heartbeatIntervalMilliseconds }),
     registry,
     ...(telemetry === undefined ? {} : { telemetry }),
   });
@@ -186,23 +193,12 @@ async function shutdownDuringCancellation(outcome: "commit" | "rollback") {
   const memory = memoryGenerationService();
   const registry = new ActiveStreamRegistry();
   const allowSecondDelta = Promise.withResolvers<void>();
-  const secondStateRead = Promise.withResolvers<void>();
-  const originalReadState = memory.service.readState.bind(memory.service);
-  let stateReads = 0;
-  memory.service = {
-    ...memory.service,
-    readState: async (generationId: string) => {
-      stateReads += 1;
-      if (stateReads === 2) {
-        secondStateRead.resolve();
-      }
-      return originalReadState(generationId);
-    },
-  } as GenerationService;
+  const secondDeltaYielded = Promise.withResolvers<void>();
   const gateway: ModelGateway = {
     async *stream() {
       yield { text: "Visible partial", type: "content.delta" };
       await allowSecondDelta.promise;
+      secondDeltaYielded.resolve();
       yield { text: "Must not forward", type: "content.delta" };
     },
   };
@@ -226,7 +222,7 @@ async function shutdownDuringCancellation(outcome: "commit" | "rollback") {
     throw new Error("Local stream did not expose its cancellation snapshot");
   }
   allowSecondDelta.resolve();
-  await secondStateRead.promise;
+  await secondDeltaYielded.promise;
   registry.abortAll("shutdown");
   if (outcome === "commit") {
     memory.content = capture.snapshot.content;
@@ -263,6 +259,41 @@ afterEach(async () => {
 });
 
 describe("response stream normalization", () => {
+  it("keeps a silent provider stream alive with content-free heartbeats", async () => {
+    const memory = memoryGenerationService();
+    let deltaAt = 0;
+    const gateway: ModelGateway = {
+      async *stream() {
+        await new Promise((resolve) => setTimeout(resolve, 35));
+        deltaAt = Date.now();
+        yield { text: "Respuesta después del silencio", type: "content.delta" };
+        yield {
+          reason: "stop",
+          type: "response.completed",
+          usage: { inputTokens: 5, outputTokens: 4 },
+        };
+      },
+    };
+
+    const events = await eventsFrom(
+      await fetch(
+        await streamUrl(gateway, memory, undefined, undefined, started, undefined, undefined, 10),
+        { method: "POST" },
+      ),
+    );
+
+    const eventTypes = events.map((event) => event.type);
+    expect(eventTypes[0]).toBe("response.started");
+    expect(eventTypes).toContain("stream.heartbeat");
+    expect(eventTypes.slice(-2)).toEqual(["content.delta", "response.completed"]);
+    expect(events.filter((event) => event.type === "stream.heartbeat")).toEqual(
+      expect.arrayContaining([{ type: "stream.heartbeat" }]),
+    );
+    expect(memory.content).toBe("Respuesta después del silencio");
+    expect(memory.firstTokenAt?.getTime()).toBeGreaterThanOrEqual(deltaAt);
+    expect(memory.state.status).toBe("completed");
+  });
+
   it("warns before chat output when admission selected direct context fallback", async () => {
     const memory = memoryGenerationService();
     const events = await eventsFrom(
@@ -328,7 +359,7 @@ describe("response stream normalization", () => {
             memory,
             undefined,
             undefined,
-            pendingStarted,
+            pendingRoutedStarted,
             compactions,
           ),
           { method: "POST" },
@@ -352,6 +383,128 @@ describe("response stream normalization", () => {
       expect(gatewayStream).toHaveBeenCalledOnce();
     },
   );
+
+  it("refreshes after an in-flight preparing snapshot before publishing compacted chat", async () => {
+    const memory = memoryGenerationService("preparing");
+    const stalePreparingRead = Promise.withResolvers<DurableGenerationState | null>();
+    const compactionPromoted = Promise.withResolvers<void>();
+    const stateReadStarted = Promise.withResolvers<void>();
+    const originalReadState = memory.service.readState.bind(memory.service);
+    let stateReads = 0;
+    memory.service = {
+      ...memory.service,
+      readState: (generationId: string) => {
+        stateReads += 1;
+        if (stateReads === 1) {
+          stateReadStarted.resolve();
+          return stalePreparingRead.promise;
+        }
+        return originalReadState(generationId);
+      },
+    } as GenerationService;
+    const gatewayStream = vi.fn(async function* () {
+      yield { text: "Respuesta después de compactar", type: "content.delta" } as const;
+      yield {
+        reason: "stop",
+        type: "response.completed",
+        usage: { inputTokens: 18, outputTokens: 4 },
+      } as const;
+    });
+    const compactions = {
+      cancel: vi.fn(async () => undefined),
+      execute: vi.fn(async () => {
+        await stateReadStarted.promise;
+        memory.state = { ...memory.state, status: "active" };
+        compactionPromoted.resolve();
+        return { chat: { request: started.request }, kind: "compacted" as const };
+      }),
+    } as unknown as CompactionDependency;
+    const responsePromise = fetch(
+      await streamUrl(
+        { stream: gatewayStream },
+        memory,
+        undefined,
+        undefined,
+        pendingRoutedStarted,
+        compactions,
+      ),
+      { method: "POST" },
+    );
+
+    await compactionPromoted.promise;
+    stalePreparingRead.resolve({ ...memory.state, status: "preparing" });
+    const events = await eventsFrom(await responsePromise);
+
+    expect(events.map((event) => event.type)).toEqual([
+      "response.started",
+      "context.compacting",
+      "context.compacted",
+      "content.delta",
+      "response.completed",
+    ]);
+    expect(stateReads).toBeGreaterThanOrEqual(2);
+    expect(gatewayStream).toHaveBeenCalledOnce();
+  });
+
+  it("refreshes after an in-flight preparing snapshot when compaction returns cancelled", async () => {
+    const memory = memoryGenerationService("preparing");
+    const stalePreparingRead = Promise.withResolvers<DurableGenerationState | null>();
+    const compactionCancelled = Promise.withResolvers<void>();
+    const stateReadStarted = Promise.withResolvers<void>();
+    const originalReadState = memory.service.readState.bind(memory.service);
+    let stateReads = 0;
+    memory.service = {
+      ...memory.service,
+      readState: (generationId: string) => {
+        stateReads += 1;
+        if (stateReads === 1) {
+          stateReadStarted.resolve();
+          return stalePreparingRead.promise;
+        }
+        return originalReadState(generationId);
+      },
+    } as GenerationService;
+    const gatewayStream = vi.fn(() => {
+      throw new Error("Chat must not start after compaction cancellation");
+    });
+    const compactions = {
+      cancel: vi.fn(async () => undefined),
+      execute: vi.fn(async () => {
+        await stateReadStarted.promise;
+        memory.state = {
+          ...memory.state,
+          reason: "cancelled",
+          revision: 2,
+          status: "cancelled",
+        };
+        compactionCancelled.resolve();
+        return { kind: "cancelled" as const };
+      }),
+    } as unknown as CompactionDependency;
+    const responsePromise = fetch(
+      await streamUrl(
+        { stream: gatewayStream },
+        memory,
+        undefined,
+        undefined,
+        pendingRoutedStarted,
+        compactions,
+      ),
+      { method: "POST" },
+    );
+
+    await compactionCancelled.promise;
+    stalePreparingRead.resolve({ ...memory.state, reason: null, revision: 1, status: "preparing" });
+    const events = await eventsFrom(await responsePromise);
+
+    expect(events.map((event) => event.type)).toEqual([
+      "response.started",
+      "context.compacting",
+      "response.cancelled",
+    ]);
+    expect(stateReads).toBeGreaterThanOrEqual(2);
+    expect(gatewayStream).not.toHaveBeenCalled();
+  });
 
   it("recovers cancellation directly while compaction is pending without calling chat", async () => {
     const memory = memoryGenerationService("preparing");
@@ -946,7 +1099,7 @@ describe("response stream normalization", () => {
     expect(memory.content).toBe("Durable partial");
   });
 
-  it("aborts the gateway after observing cross-replica cancellation", async () => {
+  it("suppresses the next delta after the bounded fence observes cross-replica cancellation", async () => {
     const memory = memoryGenerationService();
     let gatewaySignal: AbortSignal | undefined;
     const gateway: ModelGateway = {
@@ -960,6 +1113,9 @@ describe("response stream normalization", () => {
           revision: 2,
           status: "cancelled",
         };
+        await new Promise((resolve) =>
+          setTimeout(resolve, generationTuning.durableStatePollMilliseconds + 20),
+        );
         yield { text: "Must not forward", type: "content.delta" };
       },
     };
@@ -973,6 +1129,40 @@ describe("response stream normalization", () => {
     ]);
     expect(events).not.toContainEqual(expect.objectContaining({ text: "Must not forward" }));
     expect(gatewaySignal?.aborted).toBe(true);
+  });
+
+  it("bounds durable reads by polling time instead of rapid provider event count", async () => {
+    const memory = memoryGenerationService();
+    const originalReadState = memory.service.readState.bind(memory.service);
+    const readState = vi.fn((generationId: string) => originalReadState(generationId));
+    memory.service = { ...memory.service, readState } as GenerationService;
+    const gateway: ModelGateway = {
+      async *stream() {
+        for (let index = 0; index < 500; index += 1) {
+          yield { text: "x", type: "content.delta" };
+        }
+        yield {
+          reason: "stop",
+          type: "response.completed",
+          usage: { inputTokens: 20, outputTokens: 500 },
+        };
+      },
+    };
+
+    const startedAt = performance.now();
+    const events = await eventsFrom(
+      await fetch(await streamUrl(gateway, memory, undefined, undefined, routedStarted), {
+        method: "POST",
+      }),
+    );
+    const elapsedMilliseconds = performance.now() - startedAt;
+    const maximumReads =
+      Math.ceil(elapsedMilliseconds / generationTuning.durableStatePollMilliseconds) + 2;
+
+    expect(events.filter((event) => event.type === "content.delta")).toHaveLength(500);
+    expect(events.at(-1)).toMatchObject({ reason: "stop", type: "response.completed" });
+    expect(readState.mock.calls.length).toBeLessThanOrEqual(maximumReads);
+    expect(readState.mock.calls.length).toBeLessThan(500);
   });
 
   it("persists metadata that arrives after cancellation when usage lookup is unavailable", async () => {
@@ -1008,6 +1198,44 @@ describe("response stream normalization", () => {
     expect(memory.providerMetadata).toEqual([metadata]);
     expect(lookedUpGenerationIds).toEqual([metadata.providerGenerationId]);
     expect(memory.state).toMatchObject({ reason: "cancelled", status: "cancelled" });
+  });
+
+  it("settles a completed provider event that arrives after durable cancellation exactly once", async () => {
+    const memory = memoryGenerationService("cancelled");
+    const accounting = {
+      costUsd: "0.000321",
+      metadata: {
+        provider: "synthetic-provider",
+        providerGenerationId: "provider-generation-after-cancel",
+        resolvedModel: "synthetic/resolved-model",
+      },
+    } as const;
+    const settleAccounting = vi.fn(async () => true);
+    memory.service = { ...memory.service, settleAccounting } as GenerationService;
+    const gateway: ModelGateway = {
+      async *stream() {
+        yield {
+          accounting,
+          reason: "stop",
+          type: "response.completed",
+          usage: { inputTokens: 8, outputTokens: 5 },
+        };
+      },
+    };
+
+    const events = await eventsFrom(
+      await fetch(await streamUrl(gateway, memory, undefined, undefined, routedStarted), {
+        method: "POST",
+      }),
+    );
+
+    expect(events.map((event) => event.type)).toEqual(["response.started", "response.cancelled"]);
+    expect(settleAccounting).toHaveBeenCalledOnce();
+    expect(settleAccounting).toHaveBeenCalledWith(
+      started.generationId,
+      { inputTokens: 8, outputTokens: 5 },
+      accounting,
+    );
   });
 
   it("memoizes one unavailable coordinator lookup for a typed provider outcome", async () => {

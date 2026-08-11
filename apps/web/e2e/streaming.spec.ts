@@ -407,7 +407,9 @@ test("@critical-stream reloads canonical active state and remotely stops without
   expect(fixture.cancellations).toEqual([{ conversationId, generationId }]);
 });
 
-test("recovers canonical interrupted output without retrying the generation", async ({ page }) => {
+test("@critical-stream recovers canonical interrupted output without retrying the generation", async ({
+  page,
+}) => {
   const conversationId = browserUuid(20);
   const fixture = await installStreamingFixture(page, [
     {
@@ -431,9 +433,27 @@ test("recovers canonical interrupted output without retrying the generation", as
   await expect(
     page.getByText(copy.conversations.generation.terminal.incomplete, { exact: true }),
   ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: copy.conversations.generation.actions.stop }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: copy.conversations.messages.tryAgain }),
+  ).toBeEnabled();
   await draft.fill("Nuevo borrador después de la interrupción.");
   await expect(
     page.getByRole("button", { name: copy.conversations.generation.actions.send }),
+  ).toBeEnabled();
+
+  await page.reload();
+  await expect(page.getByText("Contenido parcial conservado.", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText(copy.conversations.generation.terminal.incomplete, { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: copy.conversations.generation.actions.stop }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: copy.conversations.messages.tryAgain }),
   ).toBeEnabled();
   expect(fixture.starts).toHaveLength(1);
   expect(fixture.conversation(conversationId).responses[0]?.status).toBe("incomplete");

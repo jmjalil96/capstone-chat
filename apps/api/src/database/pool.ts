@@ -6,7 +6,10 @@ const applicationPoolLimits = {
   max: 10,
   // The bounded search query can cross PostgreSQL's JIT cost threshold even though compiling the
   // plan costs far more than executing it for this OLTP workload.
-  options: "-c jit=off",
+  // Server-side guards match the client query bound so a lost client cannot leave work or a
+  // transaction holding scarce production connections and locks.
+  options:
+    "-c jit=off -c statement_timeout=5000 -c lock_timeout=5000 -c idle_in_transaction_session_timeout=5000",
   query_timeout: 5_000,
 } as const;
 

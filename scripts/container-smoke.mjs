@@ -48,6 +48,8 @@ assert(
 );
 
 const containerName = `capstone-chat-smoke-${process.pid}`;
+const entrypointContainerName = `capstone-chat-entrypoint-smoke-${process.pid}`;
+const secretVolumeName = `capstone-chat-smoke-secrets-${process.pid}`;
 const baseUrl = `http://127.0.0.1:${port}`;
 const containerDatabaseUrl = databaseUrlForContainer(databaseUrl);
 const bootstrap = `
@@ -71,6 +73,35 @@ function docker(arguments_, options = {}) {
 
 function cleanup() {
   spawnSync("docker", ["rm", "--force", containerName], { encoding: "utf8" });
+  spawnSync("docker", ["rm", "--force", entrypointContainerName], { encoding: "utf8" });
+  spawnSync("docker", ["volume", "rm", "--force", secretVolumeName], { encoding: "utf8" });
+}
+
+async function waitForDefaultEntrypoint() {
+  const deadline = Date.now() + 30_000;
+  const probe = `
+    const response = await fetch("http://127.0.0.1:3000/api/health/ready");
+    const body = await response.json();
+    if (
+      response.status !== 200 ||
+      response.headers.get("x-capstone-revision") !== ${JSON.stringify(revision)} ||
+      body.status !== "ready"
+    ) {
+      process.exit(1);
+    }
+  `;
+  while (Date.now() < deadline) {
+    const candidate = spawnSync(
+      "docker",
+      ["exec", entrypointContainerName, "node", "--input-type=module", "--eval", probe],
+      { encoding: "utf8" },
+    );
+    if (candidate.status === 0) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error("The image default entrypoint did not serve liveness within 30 seconds");
 }
 
 async function response(path) {
@@ -108,6 +139,155 @@ function assertSecurityHeaders(response_) {
 
 let containerStarted = false;
 try {
+  docker(["volume", "create", secretVolumeName]);
+  docker(
+    [
+      "run",
+      "--rm",
+      "--interactive",
+      "--user",
+      "0:0",
+      "--volume",
+      `${secretVolumeName}:/secrets`,
+      "--entrypoint",
+      "sh",
+      image,
+      "-ec",
+      "umask 027; cat > /secrets/runtime.json; chown 0:1000 /secrets/runtime.json; chmod 0440 /secrets/runtime.json",
+    ],
+    {
+      input: JSON.stringify({
+        BETTER_AUTH_SECRET: "container-secret-loader-auth-value",
+        DATABASE_URL:
+          "postgresql://app:container-password@database.example:5432/capstone?sslmode=verify-full",
+        OPENROUTER_API_KEY: "container-secret-loader-model-value",
+        OTEL_EXPORTER_OTLP_HEADERS: "api-key=container-secret-loader-telemetry-value",
+        RESEND_API_KEY: "container-secret-loader-email-value",
+      }),
+    },
+  );
+  docker(
+    [
+      "run",
+      "--rm",
+      "--interactive",
+      "--user",
+      "0:0",
+      "--volume",
+      `${secretVolumeName}:/secrets`,
+      "--entrypoint",
+      "sh",
+      image,
+      "-ec",
+      "umask 027; cat > /secrets/migration.json; chown 0:1000 /secrets/migration.json; chmod 0440 /secrets/migration.json",
+    ],
+    { input: JSON.stringify({ DATABASE_URL: containerDatabaseUrl }) },
+  );
+  docker([
+    "run",
+    "--rm",
+    "--group-add",
+    "1000",
+    "--volume",
+    `${secretVolumeName}:/secrets:ro`,
+    "--env",
+    "CAPSTONE_SECRET_FILE=/secrets/runtime.json",
+    "--env",
+    "NODE_ENV=production",
+    "--env",
+    "HOST=127.0.0.1",
+    "--env",
+    "PUBLIC_ORIGIN=https://chat.capstone.com.ec",
+    "--env",
+    "CLIENT_ADDRESS_SOURCE=caddy",
+    "--env",
+    "EMAIL_DELIVERY=resend",
+    "--env",
+    "EMAIL_FROM=Capstone Chat <no-reply@mail.capstone.com.ec>",
+    "--env",
+    "MODEL_GATEWAY=openrouter",
+    "--env",
+    "OTEL_EXPORTER_OTLP_ENDPOINT=https://otlp.nr-data.net",
+    "--env",
+    `DEPLOYMENT_REVISION=${revision}`,
+    "--entrypoint",
+    "node",
+    image,
+    "--input-type=module",
+    "--eval",
+    `
+      const { loadEnvironmentFile } = await import("./apps/api/dist/environment.js");
+      loadEnvironmentFile();
+      const { loadConfig } = await import("./apps/api/dist/config.js");
+      const config = loadConfig();
+      if (
+        config.nodeEnv !== "production" ||
+        config.clientAddressSource !== "caddy" ||
+        config.databaseUrl.length === 0 ||
+        config.openRouterApiKey === null ||
+        config.resendApiKey === null ||
+        config.otlpHeaders["api-key"] === undefined
+      ) {
+        throw new Error("strict production configuration did not load inside the image");
+      }
+    `,
+  ]);
+  docker([
+    "run",
+    "--detach",
+    "--init",
+    "--name",
+    entrypointContainerName,
+    "--add-host",
+    "host.docker.internal:host-gateway",
+    "--group-add",
+    "1000",
+    "--volume",
+    `${secretVolumeName}:/secrets:ro`,
+    "--env",
+    "CAPSTONE_SECRET_FILE=/secrets/migration.json",
+    "--env",
+    "NODE_ENV=test",
+    "--env",
+    "HOST=127.0.0.1",
+    "--env",
+    "PORT=3000",
+    "--env",
+    "PUBLIC_ORIGIN=http://localhost:3000",
+    "--env",
+    "CLIENT_ADDRESS_SOURCE=socket",
+    "--env",
+    "EMAIL_DELIVERY=fake",
+    "--env",
+    "MODEL_GATEWAY=fake",
+    "--env",
+    "LOG_LEVEL=silent",
+    "--env",
+    `DEPLOYMENT_REVISION=${revision}`,
+    image,
+  ]);
+  await waitForDefaultEntrypoint();
+  docker(["rm", "--force", entrypointContainerName]);
+  docker([
+    "run",
+    "--rm",
+    "--add-host",
+    "host.docker.internal:host-gateway",
+    "--group-add",
+    "1000",
+    "--volume",
+    `${secretVolumeName}:/secrets:ro`,
+    "--env",
+    "CAPSTONE_SECRET_FILE=/secrets/migration.json",
+    "--env",
+    "NODE_ENV=test",
+    "--entrypoint",
+    "node",
+    image,
+    "apps/api/dist/entrypoint.js",
+    "migrate",
+  ]);
+
   docker(
     [
       "run",
@@ -123,6 +303,8 @@ try {
       "DATABASE_URL",
       "--env",
       "NODE_ENV=test",
+      "--env",
+      "CLIENT_ADDRESS_SOURCE=socket",
       "--env",
       "HOST=0.0.0.0",
       "--env",
@@ -154,6 +336,10 @@ try {
 
   const readiness = await waitForReadiness();
   assert(readiness.headers.get("cache-control") === "no-store", "readiness must not be cached");
+  assert(
+    readiness.headers.get("x-capstone-revision") === revision,
+    "readiness revision does not match the image",
+  );
   assert((await readiness.json()).status === "ready", "readiness response is not ready");
 
   const shell = await response("/");
@@ -222,7 +408,5 @@ try {
   }
   throw error;
 } finally {
-  if (containerStarted) {
-    cleanup();
-  }
+  cleanup();
 }

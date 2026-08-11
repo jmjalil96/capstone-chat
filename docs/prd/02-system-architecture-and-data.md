@@ -38,17 +38,26 @@ The initial system does not introduce microservices, Redis, or a separate queue.
 - Readiness rejects new traffic while a replica is starting, unhealthy, or draining.
 - During deployment, a replica stops accepting new requests and drains active streams for a configured period.
 - Streams remaining after the drain period are cancelled and retained as incomplete.
-- Database credentials, Better Auth secrets, and the OpenRouter key are injected through the hosting platform's secret manager.
+- Production credentials are loaded from narrowly permissioned, read-only files on an encrypted
+  attached Volume; recoverable source copies remain in the approved company-controlled password
+  manager and never in the image, repository, process arguments, or unencrypted host disk.
 - The deployment contract remains vendor-neutral.
 
-The approved production launch deployment is one paid Render Web Service and one paid Render
-managed PostgreSQL database in the Virginia region. The Web Service runs the OCI image and serves
-both Fastify and the built Vite application from one origin. PostgreSQL is reached over Render's
-private network. Launch uses one application instance, no PostgreSQL high availability or read
-replica, and the Render Pro workspace tier required for the approved backup posture. Exact paid
-instance sizes are selected from measured Phase 8 load results before the production-readiness
-claim. These are deployment choices rather than Render-specific application architecture; the OCI
-image, configuration boundary, and PostgreSQL contract remain portable.
+The approved production launch candidate is one USD 6 DigitalOcean Basic shared-CPU Droplet with
+one vCPU and 1 GiB RAM in RIC1, plus one USD 5 PlanetScale Postgres PS-5 ARM Single Node cluster in
+AWS `us-east-1`. Caddy serves the one public origin and proxies to exactly one active loopback-bound
+application slot. PlanetScale is reached over the public Internet only from the Droplet's fixed
+reserved IPv4 `/32`, with direct PostgreSQL `verify-full` TLS and separate application, migration,
+and recovery credentials. Launch uses one active application instance, one single-node database,
+no automatic failover, no database high availability, and no read replica.
+
+The database starts with 10 GB included storage, may grow once to an enforced 15 GB ceiling, and
+uses backups every 12 hours retained for 84 hours. The host has no paid Droplet backup because it
+holds no authoritative application data and must be reproducible from source, immutable OCI
+images, the managed database, and the approved recovery store. The exact managed topology remains
+provisional until it passes the separately authorized production-shaped rehearsal twice. These are
+deployment choices rather than provider-specific application architecture; the OCI image,
+configuration boundary, and PostgreSQL contract remain portable.
 
 ## Reconciliation
 
@@ -70,11 +79,14 @@ image, configuration boundary, and PostgreSQL contract remain portable.
 **Locked**
 
 - Managed PostgreSQL provides encrypted automated backups and point-in-time recovery.
-- Production uses the Render Pro database's seven-day point-in-time-recovery retention.
+- PlanetScale creates backups every 12 hours and retains each for 84 hours, preserving at least 72
+  continuously accessible hours of point-in-time recovery after the schedule has aged fully.
 - V1 does not build a custom backup service.
 - Database restoration is an operational disaster-recovery procedure, not an employee or administrator conversation-restore feature.
 - A documented restore procedure must be successfully exercised before production.
-- Conversation deletion is immediate and irreversible in the active application, while deleted content ages out of inaccessible encrypted backups according to their retention period.
+- Conversation deletion is immediate and irreversible in the active application. Deleted content
+  may remain inaccessible in encrypted database backups until the approved 84-hour retention
+  window expires; that operating window does not assert an undocumented physical-media schedule.
 - The production recovery-point objective is at most 15 minutes and the recovery-time objective is
   at most four hours.
 - The restore procedure is rehearsed against an isolated restored database before launch. The
@@ -114,8 +126,9 @@ Shared executable TypeScript is limited to transport contracts. The brand packag
 - Playwright runs in a separate CI job so browser failures and artifacts remain easy to inspect.
 - CI does not receive an OpenRouter key and never calls real models.
 - Dependency caching may improve CI speed, but generated build output is not committed.
-- GitHub Actions remains the authoritative validation gate for production deployment. Render deploys
-  only after the approved checks pass.
+- GitHub Actions remains the authoritative validation gate for production deployment. It publishes
+  an immutable GHCR image only after the approved checks pass; a named operator explicitly deploys
+  that exact digest to the Droplet after verifying the matching commit and green result.
 - A task orchestrator is added only if measured build time or dependency ordering requires it.
 
 ## Local development
@@ -436,8 +449,15 @@ Message content is stored as typed JSON blocks. V1 supports a text block whose c
 **Locked**
 
 - Fastify/Pino emits structured JSON logs.
-- New Relic Free is the single v1 observability destination.
-- Render sends platform logs and infrastructure metrics directly to New Relic.
+- New Relic Free is the single external v1 application/log telemetry destination.
+- Fastify sends application traces and metrics directly by OTLP. One bounded, unprivileged Fluent
+  Bit host process forwards only content-free Capstone application JSON logs through New Relic's
+  HTTPS Log API; it has bounded memory/retries, no disk buffer, and may drop telemetry rather than
+  blocking the product.
+- DigitalOcean Monitoring owns Droplet CPU, memory, disk, network, restart, and availability
+  signals. PlanetScale's protected dashboard owns database performance, storage, connections,
+  backups, WAL, and Query Insights. V1 does not copy those provider-native signals into New Relic
+  with an infrastructure agent, collector, sidecar, scraper, or second backend.
 - Fastify emits backend traces and application metrics through vendor-neutral OpenTelemetry OTLP.
 - V1 does not use OpenTelemetry browser instrumentation.
 - A sanitized frontend-error endpoint captures UI failures without conversation content.

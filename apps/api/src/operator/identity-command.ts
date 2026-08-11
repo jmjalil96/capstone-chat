@@ -1,5 +1,5 @@
 import { createAuthentication } from "../auth/authentication.js";
-import { loadConfig } from "../config.js";
+import { loadIdentityOperatorConfig } from "../config.js";
 import { createCursorCodec } from "../conversations/cursor.js";
 import { createDatabase } from "../database/database.js";
 import { createDatabasePool } from "../database/pool.js";
@@ -71,7 +71,7 @@ async function run(): Promise<void> {
   }
 
   const argumentsMap = parseOperatorArguments(process.argv.slice(3));
-  const config = loadConfig();
+  const config = loadIdentityOperatorConfig();
   const pool = createDatabasePool(config.databaseUrl);
   const database = createDatabase(pool);
   const identity = createIdentityService(database);

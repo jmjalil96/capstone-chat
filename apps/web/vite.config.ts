@@ -21,11 +21,10 @@ interface ViteEnvironment {
   readonly CAPSTONE_WEB_PORT?: string;
   readonly DEPLOYMENT_REVISION?: string;
   readonly PORT?: string;
-  readonly RENDER_GIT_COMMIT?: string;
 }
 
 function deploymentRevision(environment: ViteEnvironment): string {
-  const value = environment.RENDER_GIT_COMMIT?.trim() || environment.DEPLOYMENT_REVISION?.trim();
+  const value = environment.DEPLOYMENT_REVISION?.trim();
   return value !== undefined && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(value)
     ? value
     : "unknown";
@@ -117,7 +116,6 @@ export default defineConfig(({ mode }) => {
     "CAPSTONE_WEB_",
     "DEPLOYMENT_REVISION",
     "PORT",
-    "RENDER_GIT_COMMIT",
   ]);
   return createViteConfig(environment);
 });

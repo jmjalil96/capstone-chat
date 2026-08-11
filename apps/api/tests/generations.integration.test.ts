@@ -23,6 +23,8 @@ import {
   workspaceModelPolicies,
 } from "../src/database/model-policy-schema.js";
 import { ApplicationError } from "../src/errors.js";
+import { lockDraftGenerationAdmission } from "../src/generations/admission.js";
+import { preloadDraftContext } from "../src/generations/context-preload.js";
 import { FakeModelGateway } from "../src/generations/fake-model-gateway.js";
 import type { GenerationRequest, ModelGateway } from "../src/generations/model-gateway.js";
 import { continueMessage, systemPrompt } from "../src/generations/prompt.js";
@@ -244,6 +246,119 @@ describe.sequential("generation lifecycle integration", () => {
     });
   }
 
+  it("preloads an owned first-message draft as one empty context window", async () => {
+    const { conversation } = await adoptedConversation("Primera pregunta");
+
+    const preloaded = await preloadDraftContext(database, createModelPolicyService(database), {
+      conversationId: conversation.id,
+      mode: "simulated",
+      observedRevision: conversation.revision,
+      parentMessageId: null,
+      tier: "balanced",
+      userId: actor.employee.id,
+      workspaceId: actor.workspace.id,
+    });
+
+    expect(preloaded).toMatchObject({
+      endpointMessageId: null,
+      revision: conversation.revision,
+      window: {
+        previousCompaction: null,
+        recentTurns: [],
+        sourceOverflow: false,
+        sourceTurns: [],
+      },
+    });
+  });
+
+  it("preloads one complete owned turn without a separate conversation or policy read", async () => {
+    const conversation = await conversationsService.create(actor);
+    const userMessage = await conversationsService.insertImmutableMessage(actor, {
+      content: [{ text: "Pregunta previa", type: "text" }],
+      conversationId: conversation.id,
+      parentMessageId: null,
+      role: "user",
+    });
+    const assistantMessage = await conversationsService.insertImmutableMessage(actor, {
+      content: [{ text: "Respuesta previa", type: "text" }],
+      conversationId: conversation.id,
+      parentMessageId: userMessage.id,
+      role: "assistant",
+    });
+    await database
+      .update(conversations)
+      .set({ selectedLeafMessageId: assistantMessage.id })
+      .where(eq(conversations.id, conversation.id));
+    let statementCount = 0;
+    let contextRowCount = 0;
+    let policyRowCount = 0;
+    const instrumentedDatabase = new Proxy(database, {
+      get(target, property, receiver) {
+        if (property !== "execute") {
+          return Reflect.get(target, property, receiver);
+        }
+        return async (query: Parameters<typeof database.execute>[0]) => {
+          statementCount += 1;
+          const result = await database.execute(query);
+          contextRowCount += result.rows.filter(
+            (row) => (row as Record<string, unknown>).rowKind === "context",
+          ).length;
+          policyRowCount += result.rows.filter(
+            (row) => (row as Record<string, unknown>).rowKind === "policy",
+          ).length;
+          return result;
+        };
+      },
+    });
+
+    const preloaded = await preloadDraftContext(
+      instrumentedDatabase,
+      createModelPolicyService(database),
+      {
+        conversationId: conversation.id,
+        mode: "simulated",
+        observedRevision: conversation.revision,
+        parentMessageId: assistantMessage.id,
+        tier: "balanced",
+        userId: actor.employee.id,
+        workspaceId: actor.workspace.id,
+      },
+    );
+
+    expect({ contextRowCount, policyRowCount, statementCount }).toEqual({
+      contextRowCount: 1,
+      policyRowCount: 2,
+      statementCount: 1,
+    });
+    expect(preloaded?.window).toMatchObject({
+      previousCompaction: null,
+      recentTurns: [
+        {
+          assistant: { id: assistantMessage.id, text: "Respuesta previa" },
+          user: { id: userMessage.id, text: "Pregunta previa" },
+        },
+      ],
+      sourceOverflow: false,
+      sourceTurns: [],
+    });
+  });
+
+  it("returns no speculative context across the conversation owner boundary", async () => {
+    const { conversation, parentMessageId } = await longConversationDraft();
+
+    await expect(
+      preloadDraftContext(database, createModelPolicyService(database), {
+        conversationId: conversation.id,
+        mode: "simulated",
+        observedRevision: conversation.revision,
+        parentMessageId,
+        tier: "balanced",
+        userId: `other-${randomUUID()}`,
+        workspaceId: actor.workspace.id,
+      }),
+    ).resolves.toBeNull();
+  });
+
   it("preserves the conversation and draft when its mapped tier is no longer approved", async () => {
     const catalogRows = await database
       .select({ id: modelCatalog.id })
@@ -299,6 +414,250 @@ describe.sequential("generation lifecycle integration", () => {
       scope: { conversationId: conversation.id, kind: "conversation" },
     });
     await expect(database.select().from(generations)).resolves.toEqual([]);
+  });
+
+  it("uses authoritative policy committed after context preloading", async () => {
+    const { conversation, draft } = await adoptedConversation("Política todavía vigente");
+    const budget = createBudgetService(database);
+    let announcePreloaded: () => void = () => undefined;
+    const preloaded = new Promise<void>((resolve) => {
+      announcePreloaded = resolve;
+    });
+    let releaseAuthority: () => void = () => undefined;
+    const authorityRelease = new Promise<void>((resolve) => {
+      releaseAuthority = resolve;
+    });
+    let announceAuthorityAttempt: () => void = () => undefined;
+    const authorityAttempted = new Promise<void>((resolve) => {
+      announceAuthorityAttempt = resolve;
+    });
+    const authoritativeService = createGenerationService(database, {
+      budget: {
+        ...budget,
+        async lockAdmissionAuthority(...argumentsList) {
+          announcePreloaded();
+          await authorityRelease;
+          announceAuthorityAttempt();
+          return budget.lockAdmissionAuthority(...argumentsList);
+        },
+      },
+    });
+    const response = authoritativeService.startResponse(actor, conversation.id, randomUUID(), {
+      content: [{ text: draft.content, type: "text" }],
+      draftRevision: draft.revision,
+      modelTier: "balanced",
+      observedRevision: conversation.revision,
+      parentMessageId: null,
+      source: "draft",
+    });
+    await preloaded;
+
+    await database.transaction(async (transaction) => {
+      await transaction
+        .select({ id: workspaces.id })
+        .from(workspaces)
+        .where(eq(workspaces.id, actor.workspace.id))
+        .for("update");
+      await transaction
+        .update(workspaceModelPolicies)
+        .set({ enabled: false })
+        .where(
+          and(
+            eq(workspaceModelPolicies.workspaceId, actor.workspace.id),
+            eq(workspaceModelPolicies.tier, "balanced"),
+          ),
+        );
+      releaseAuthority();
+      await authorityAttempted;
+    });
+
+    await expectCode(response, "TIER_UNAVAILABLE");
+    await expect(database.select().from(messages)).resolves.toEqual([]);
+    await expect(database.select().from(generations)).resolves.toEqual([]);
+    await expect(conversationsService.get(actor, conversation.id)).resolves.toMatchObject({
+      conversation: { revision: conversation.revision },
+    });
+    await expect(
+      conversationsService.getDraft(actor, {
+        conversationId: conversation.id,
+        kind: "conversation",
+      }),
+    ).resolves.toMatchObject({ content: draft.content, revision: draft.revision });
+  });
+
+  it("locks conversation and draft before waiting for policy", async () => {
+    const { conversation, draft } = await adoptedConversation("Orden de bloqueo estable");
+    const budget = createBudgetService(database);
+    const modelPolicy = createModelPolicyService(database);
+    const policyHolder = await pool.connect();
+    let holderCommitted = false;
+    try {
+      await policyHolder.query("BEGIN");
+      await policyHolder.query(
+        `
+          SELECT workspace_id
+          FROM workspace_model_policies
+          WHERE workspace_id = $1 AND tier = 'balanced'
+          FOR UPDATE
+        `,
+        [actor.workspace.id],
+      );
+
+      let admissionSettled = false;
+      const pendingAdmission = database
+        .transaction(async (transaction) => {
+          await budget.lockAdmissionAuthority(transaction, actor.workspace.id, actor.employee.id);
+          return lockDraftGenerationAdmission(
+            transaction,
+            {
+              at: new Date(),
+              conversationId: conversation.id,
+              draftContent: draft.content,
+              draftRevision: draft.revision,
+              idempotencyKey: randomUUID(),
+              mode: "simulated",
+              observedRevision: conversation.revision,
+              parentMessageId: null,
+              tier: "balanced",
+              userId: actor.employee.id,
+              workspaceId: actor.workspace.id,
+            },
+            modelPolicy,
+          );
+        })
+        .finally(() => {
+          admissionSettled = true;
+        });
+
+      await new Promise((resolve) => setTimeout(resolve, 75));
+      expect(admissionSettled).toBe(false);
+      await expect(
+        pool.query("SELECT id FROM conversations WHERE id = $1 FOR UPDATE NOWAIT", [
+          conversation.id,
+        ]),
+      ).rejects.toMatchObject({ code: "55P03" });
+      await expect(
+        pool.query(
+          `
+            SELECT id
+            FROM drafts
+            WHERE workspace_id = $1 AND user_id = $2 AND conversation_id = $3
+            FOR UPDATE NOWAIT
+          `,
+          [actor.workspace.id, actor.employee.id, conversation.id],
+        ),
+      ).rejects.toMatchObject({ code: "55P03" });
+
+      await policyHolder.query("COMMIT");
+      holderCommitted = true;
+      const pending = await pendingAdmission;
+      expect(pending.conversation).toMatchObject({
+        conversationId: conversation.id,
+        draftContent: draft.content,
+        draftRevision: draft.revision,
+        idempotencyFound: false,
+      });
+      expect(pending.resolve().policies.chat.tier).toBe("balanced");
+    } finally {
+      if (!holderCommitted) {
+        await policyHolder.query("ROLLBACK");
+      }
+      policyHolder.release();
+    }
+  });
+
+  it("returns a stale-conversation error without waiting for model policy", async () => {
+    const { conversation, draft } = await adoptedConversation("Error previo a la política");
+    const policyHolder = await pool.connect();
+    let responseCode: Promise<string> | undefined;
+    let outcome: string | undefined;
+    try {
+      await policyHolder.query("BEGIN");
+      await policyHolder.query(
+        `
+          SELECT workspace_id
+          FROM workspace_model_policies
+          WHERE workspace_id = $1 AND tier = 'balanced'
+          FOR UPDATE
+        `,
+        [actor.workspace.id],
+      );
+
+      responseCode = generationService
+        .startResponse(actor, conversation.id, randomUUID(), {
+          content: [{ text: draft.content, type: "text" }],
+          draftRevision: draft.revision,
+          modelTier: "balanced",
+          observedRevision: conversation.revision + 1,
+          parentMessageId: null,
+          source: "draft",
+        })
+        .then(
+          () => "success",
+          (error: unknown) => (error instanceof ApplicationError ? error.code : "unexpected"),
+        );
+      outcome = await Promise.race([
+        responseCode,
+        new Promise<string>((resolve) => setTimeout(() => resolve("policy-blocked"), 250)),
+      ]);
+    } finally {
+      await policyHolder.query("ROLLBACK");
+      policyHolder.release();
+    }
+
+    expect(outcome).toBe("CONVERSATION_CHANGED");
+    await expect(responseCode).resolves.toBe("CONVERSATION_CHANGED");
+  });
+
+  it.each([
+    { code: "CONVERSATION_CHANGED", target: "conversation" as const },
+    { code: "DRAFT_CHANGED", target: "draft" as const },
+  ])("rolls back every workflow row when the final $target CAS loses", async ({ code, target }) => {
+    const { conversation, draft } = await adoptedConversation("No debe quedar parcialmente");
+    const functionName = `suppress_generation_${target}_write`;
+    const triggerName = `suppress_generation_${target}_write_trigger`;
+    const tableName = target === "conversation" ? "conversations" : "drafts";
+    const operation = target === "conversation" ? "UPDATE" : "DELETE";
+    await pool.query(`
+      CREATE FUNCTION ${functionName}() RETURNS trigger AS $$
+      BEGIN
+        RETURN NULL;
+      END;
+      $$ LANGUAGE plpgsql;
+      CREATE TRIGGER ${triggerName}
+      BEFORE ${operation} ON ${tableName}
+      FOR EACH ROW EXECUTE FUNCTION ${functionName}();
+    `);
+    try {
+      await expectCode(
+        generationService.startResponse(actor, conversation.id, randomUUID(), {
+          content: [{ text: draft.content, type: "text" }],
+          draftRevision: draft.revision,
+          modelTier: "balanced",
+          observedRevision: conversation.revision,
+          parentMessageId: null,
+          source: "draft",
+        }),
+        code,
+      );
+    } finally {
+      await pool.query(`
+        DROP TRIGGER ${triggerName} ON ${tableName};
+        DROP FUNCTION ${functionName}();
+      `);
+    }
+
+    await expect(database.select().from(messages)).resolves.toEqual([]);
+    await expect(database.select().from(generations)).resolves.toEqual([]);
+    await expect(conversationsService.get(actor, conversation.id)).resolves.toMatchObject({
+      conversation: { revision: conversation.revision },
+    });
+    await expect(
+      conversationsService.getDraft(actor, {
+        conversationId: conversation.id,
+        kind: "conversation",
+      }),
+    ).resolves.toMatchObject({ content: draft.content, revision: draft.revision });
   });
 
   it("admits a preparing response through the valid internal Fast route when Fast is employee-disabled", async () => {
@@ -1204,13 +1563,13 @@ describe.sequential("generation lifecycle integration", () => {
     const concurrentService = createGenerationService(database, {
       budget: {
         ...budget,
-        async lockAdmission(...argumentsList) {
+        async lockAdmissionAuthority(...argumentsList) {
           arrivals += 1;
           if (arrivals === 2) {
             releaseBarrier();
           }
           await barrier;
-          return budget.lockAdmission(...argumentsList);
+          return budget.lockAdmissionAuthority(...argumentsList);
         },
       },
     });

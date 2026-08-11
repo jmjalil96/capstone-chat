@@ -149,12 +149,16 @@ Representative events:
 ```json
 {"type":"response.started","messageId":"msg_123"}
 {"type":"context.compacting"}
+{"type":"stream.heartbeat"}
 {"type":"content.delta","text":"The answer"}
 {"type":"content.delta","text":" continues..."}
 {"type":"response.completed","usage":{"inputTokens":200,"outputTokens":80}}
 ```
 
 The event contract is extensible, but only approved v1 content and lifecycle events are implemented.
+`stream.heartbeat` is a closed, content-free liveness event with no additional fields. It may appear
+between `response.started` and the terminal event, including while model output is quiet. It does
+not change visible content, lifecycle state, revisions, checkpoints, usage, cost, or timing.
 
 Every known stream event is validated against its shared TypeBox schema in the browser. Unknown event types are ignored for forward compatibility, while malformed known events end the stream with a protocol error.
 
@@ -172,7 +176,7 @@ Every known stream event is validated against its shared TypeBox schema in the b
 
 The idempotency key prevents an accidental browser retry from creating a duplicate generation.
 
-An interrupted downstream stream is not resumed in v1. Fastify cancels the upstream request, retains checkpointed partial output as incomplete, and the browser refetches the canonical conversation state. Any replacement generation requires an explicit employee action.
+An interrupted downstream stream is not resumed in v1. Fastify cancels the upstream request, retains checkpointed partial output as incomplete, and the browser refetches the canonical conversation state. The server emits a content-free heartbeat every 15 seconds while a connected response is otherwise silent. The browser treats 35 seconds without any response bytes as interruption, cancels its reader, and adopts canonical durable state. Any replacement generation requires an explicit employee action.
 
 ## Stream persistence and backpressure
 

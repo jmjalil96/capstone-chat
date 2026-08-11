@@ -1,5 +1,5 @@
 import type { StreamEvent } from "@capstone/protocol";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { parseResponseStream, type StreamReadError } from "./stream-parser";
 
@@ -59,6 +59,10 @@ async function expectCode(chunks: readonly Uint8Array[], code: StreamReadError["
   await expect(collect(chunks)).rejects.toMatchObject({ code });
 }
 
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 describe("response stream parser", () => {
   it("reconstructs UTF-8, JSON, and delimiters split at arbitrary byte boundaries", async () => {
     const payload = lines(started, { type: "content.delta", text: "Sí, brújula 🧭" }, completed);
@@ -93,6 +97,16 @@ describe("response stream parser", () => {
         bytes(`\r\n ${"  "}\n${JSON.stringify(started)}\r\n\t\n${JSON.stringify(completed)}\r\n`),
       ]),
     ).resolves.toEqual([started, completed]);
+  });
+
+  it("validates heartbeats as content-free liveness without changing event order", async () => {
+    await expect(
+      collect([lines(started, { type: "stream.heartbeat" }, completed)]),
+    ).resolves.toEqual([started, { type: "stream.heartbeat" }, completed]);
+    await expectCode(
+      [lines(started, { type: "stream.heartbeat", sequence: 1 }, completed)],
+      "STREAM_PROTOCOL_ERROR",
+    );
   });
 
   it("enforces the compaction mini-state", async () => {
@@ -263,5 +277,70 @@ describe("response stream parser", () => {
     })();
 
     await expect(reading).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("interrupts and cancels a stream that exceeds the browser inactivity bound", async () => {
+    vi.useFakeTimers();
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelled = true;
+      },
+      start(controller) {
+        controller.enqueue(lines(started, { type: "content.delta", text: "Parcial visible" }));
+      },
+    });
+    const reading = (async () => {
+      const received: StreamEvent[] = [];
+      for await (const event of parseResponseStream(stream, new AbortController().signal, {
+        inactivityTimeoutMilliseconds: 20,
+        maxLineBytes: 65_536,
+      })) {
+        received.push(event);
+      }
+      return received;
+    })();
+    const interrupted = expect(reading).rejects.toMatchObject({ code: "STREAM_INTERRUPTED" });
+
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(20);
+
+    await interrupted;
+    expect(cancelled).toBe(true);
+  });
+
+  it("resets the inactivity bound for each heartbeat byte sequence", async () => {
+    vi.useFakeTimers();
+    let target!: ReadableStreamDefaultController<Uint8Array>;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        target = controller;
+        controller.enqueue(lines(started));
+      },
+    });
+    const reading = (async () => {
+      const received: StreamEvent[] = [];
+      for await (const event of parseResponseStream(stream, new AbortController().signal, {
+        inactivityTimeoutMilliseconds: 20,
+        maxLineBytes: 65_536,
+      })) {
+        received.push(event);
+      }
+      return received;
+    })();
+    const completedReading = expect(reading).resolves.toEqual([
+      started,
+      { type: "stream.heartbeat" },
+      completed,
+    ]);
+
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(19);
+    target.enqueue(lines({ type: "stream.heartbeat" }));
+    await vi.advanceTimersByTimeAsync(19);
+    target.enqueue(lines(completed));
+    target.close();
+
+    await completedReading;
   });
 });

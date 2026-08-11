@@ -131,6 +131,9 @@ export const generations = pgTable(
     uniqueIndex("generations_openrouter_generation_id_unique")
       .on(table.openRouterGenerationId)
       .where(sql`${table.openRouterGenerationId} IS NOT NULL`),
+    index("generations_conversation_idx")
+      .on(table.conversationId)
+      .where(sql`${table.conversationId} IS NOT NULL`),
     index("generations_workspace_budget_period_idx").on(
       table.workspaceId,
       table.budgetPeriodStart,

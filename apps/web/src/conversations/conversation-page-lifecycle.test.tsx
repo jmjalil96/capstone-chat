@@ -310,6 +310,145 @@ describe("conversation recovery lifecycle", () => {
     expect(chatMocks.recoverConversation).toHaveBeenCalledTimes(failedRecoveryCalls + 1);
   });
 
+  it("does not present a canonically interrupted runtime as an active remote stream", async () => {
+    const assistantMessageId = "33333333-3333-4333-8333-333333333333";
+    const userMessageId = "44444444-4444-4444-8444-444444444444";
+    const generationId = "55555555-5555-4555-8555-555555555555";
+    chatMocks.snapshots.set(firstConversationId, {
+      awaitingCanonical: false,
+      committedUserText: undefined,
+      contextWarning: false,
+      conversationId: firstConversationId,
+      consumesDraft: false,
+      errorCode: "STREAM_INTERRUPTED",
+      generationId,
+      locallyOwned: true,
+      messageId: assistantMessageId,
+      phase: "interrupted",
+      reason: "error",
+      recoveryRequired: true,
+      revision: 2,
+      text: "Respuesta parcial",
+      userMessageId,
+    });
+    let responseStatus: "active" | "incomplete" = "active";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url.endsWith("/draft")) {
+          return json({
+            scope: { kind: "conversation", conversationId: firstConversationId },
+            content: "",
+            revision: 0,
+            updatedAt: null,
+          });
+        }
+        if (url.endsWith(`/api/conversations/${firstConversationId}`)) {
+          return json({
+            conversation: {
+              id: firstConversationId,
+              title: "Respuesta interrumpida",
+              isArchived: false,
+              revision: 2,
+              createdAt: "2026-08-07T12:00:00.000Z",
+              updatedAt: "2026-08-07T12:00:01.000Z",
+            },
+            selectedLeafId: assistantMessageId,
+            messages: [
+              {
+                id: userMessageId,
+                parentMessageId: null,
+                role: "user",
+                content: [{ type: "text", text: "Pregunta" }],
+                createdAt: "2026-08-07T12:00:00.000Z",
+                siblingCount: 0,
+              },
+              {
+                id: assistantMessageId,
+                parentMessageId: userMessageId,
+                role: "assistant",
+                content: [{ type: "text", text: "Respuesta parcial" }],
+                createdAt: "2026-08-07T12:00:01.000Z",
+                siblingCount: 0,
+              },
+            ],
+            nextCursor: null,
+          });
+        }
+        if (url.endsWith(`/api/conversations/${firstConversationId}/response-states`)) {
+          return json({
+            conversationId: firstConversationId,
+            revision: responseStatus === "active" ? 1 : 2,
+            responses: [
+              {
+                generationId,
+                messageId: assistantMessageId,
+                status: responseStatus,
+                reason: responseStatus === "active" ? null : "error",
+                errorCode: responseStatus === "active" ? null : "STREAM_INTERRUPTED",
+              },
+            ],
+          });
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      }),
+    );
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    seedModelTierQueries(queryClient, queryScope, [firstConversationId]);
+    const router = createMemoryRouter(
+      [
+        {
+          Component: TestLayout,
+          children: [{ path: "/c/:conversationId", Component: ConversationPage }],
+        },
+      ],
+      { initialEntries: [`/c/${firstConversationId}`] },
+    );
+    render(
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByText("Respuesta parcial", { exact: true })).toBeVisible();
+    expect(
+      screen.getByText(copy.conversations.generation.terminal.incomplete, {
+        selector: ".response-outcome",
+      }),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: copy.conversations.generation.actions.stop }),
+    ).not.toBeInTheDocument();
+    const interruptedAlert = screen.getByRole("alert");
+    expect(interruptedAlert).toHaveTextContent(copy.conversations.generation.status.interrupted);
+    expect(
+      within(interruptedAlert).getByRole("button", { name: copy.conversations.common.retry }),
+    ).toBeEnabled();
+
+    responseStatus = "incomplete";
+    chatMocks.snapshots.delete(firstConversationId);
+    await act(async () => {
+      await queryClient.invalidateQueries();
+      await router.navigate(`/c/${firstConversationId}`, {
+        replace: true,
+        state: { testRender: "reloaded-incomplete" },
+      });
+    });
+
+    expect(
+      screen.getByText(copy.conversations.generation.terminal.incomplete, {
+        selector: ".response-outcome",
+      }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: copy.conversations.messages.tryAgain }),
+    ).toBeEnabled();
+    expect(
+      screen.queryByRole("button", { name: copy.conversations.generation.actions.stop }),
+    ).not.toBeInTheDocument();
+  });
+
   it("reconciles a failed remote Stop once after polling observes terminal state", async () => {
     const assistantMessageId = "33333333-3333-4333-8333-333333333333";
     const userMessageId = "44444444-4444-4444-8444-444444444444";

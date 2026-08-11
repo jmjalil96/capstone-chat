@@ -7,11 +7,26 @@ OTLP, and the deployment, recovery, load, browser, accessibility, and operator g
 Approved employees can use the complete conversation experience, choose Fast, Balanced, or Pro for
 each next response, and continue long selected branches through bounded backend-owned compaction.
 
+The approved provisional production candidate is one USD 6 DigitalOcean Basic shared-CPU Droplet
+(one vCPU / 1 GiB) in RIC1, one encrypted 1 GiB Volume, and one USD 5 PlanetScale Postgres PS-5 ARM
+Single Node cluster in AWS `us-east-1`. Caddy exposes the one origin; the application is
+loopback-only, and PlanetScale accepts `verify-full` TLS connections only from the Droplet's fixed
+reserved IPv4 `/32`. New Relic receives content-free Fastify OTLP and bounded application logs;
+DigitalOcean and PlanetScale retain their own infrastructure/database signals. Backups run every
+12 hours and are retained for 84 hours. The database has a 15 GB ceiling.
+
+The starting infrastructure estimate is USD 11.10/month. One company-controlled Bitwarden Teams
+owner adds USD 4, for an approved USD 15.10 operational base; the 15 GB database ceiling raises it
+to approximately USD 15.73 before taxes, variable backup/network charges, temporary resources, and
+model use. The second Bitwarden recovery owner is deferred and remains a visible launch risk. The
+exact managed topology remains unaccepted until it passes the full 20-employee/40-stream gate twice.
+
 Development and automated tests still default to the deterministic zero-cost `FakeModelGateway`.
 Real inference is an explicit `MODEL_GATEWAY=openrouter` opt-in and requires a dedicated key, a live
-validated catalog, and a fresh privacy attestation. No Render, Resend, New Relic, DNS, paid
-OpenRouter, or recovery resource is created by repository setup. Production acceptance remains a
-separate operator exercise with fresh authorization and evidence from the committed runbooks.
+validated catalog, and a fresh privacy attestation. No DigitalOcean, PlanetScale, GitHub Package,
+Resend, New Relic, DNS, paid OpenRouter, or recovery resource is created by repository setup.
+Production acceptance remains a separate operator exercise with fresh authorization and evidence
+from the committed runbooks.
 
 ## Prerequisites
 
@@ -376,7 +391,7 @@ report that the service is unavailable. Restart it with `docker compose start po
 | `pnpm build` | Build the protocol, production API JavaScript, and static web assets |
 | `pnpm report:bundle` | Report production assets and prove the admin route is absent from the initial module graph |
 | `pnpm verify:repository` | Scan nonignored repository text, dependencies, and architecture boundaries |
-| `pnpm verify:operations` | Validate the Render Blueprint, runbook links/commands, and recovery-evidence validator |
+| `pnpm verify:operations` | Validate the DigitalOcean/PlanetScale host contract, runbook links/commands, and recovery-evidence validator |
 | `pnpm verify:recovery -- <safe-evidence.json>` | Validate accepted, content-free PITR evidence and recompute RPO/RTO limits |
 | `pnpm smoke:container -- <image> <full-revision>` | Start and probe a built image against a migrated loopback test database |
 | `pnpm run ci` | Run repository checks, operations validation, types, tests, builds, and the bundle report |
@@ -408,21 +423,21 @@ or contact a real email or model provider. The broad suite remains Chromium-firs
 scroll, Markdown-overflow, copy, and branch interactions also run in Firefox and WebKit with isolated
 mutable fixture conversations.
 
-The opt-in capacity harness is intentionally outside `pnpm test` and CI. Its acceptance path runs
-the production-built OCI image with the committed Render `pro_plus` candidate limits (4 CPU and 8
-GB RAM) against a newly created, empty disposable PostgreSQL 18 database. Generate a test-only
-secret, migrate that database, and build the exact candidate image:
+The opt-in capacity harness is intentionally outside `pnpm test` and CI. Local built-container runs
+are regression and diagnostic evidence only; they do not reproduce the shared host, Caddy, Docker,
+Fluent Bit, DigitalOcean Monitoring, public database path, or PS-5 limits. Generate a test-only
+secret, migrate an empty disposable PostgreSQL 18 database, and build the exact candidate image:
 
 ```sh
 export CAPSTONE_LOAD_DATABASE_URL='<isolated PostgreSQL URL>'
 export CAPSTONE_LOAD_AUTH_SECRET='<generated test-only value of at least 32 characters>'
 DATABASE_URL="$CAPSTONE_LOAD_DATABASE_URL" pnpm db:migrate
 docker build --file apps/api/Dockerfile \
-  --build-arg RENDER_GIT_COMMIT="$(git rev-parse HEAD)" \
+  --build-arg DEPLOYMENT_REVISION="$(git rev-parse HEAD)" \
   --tag capstone-chat:phase8-load .
 ```
 
-Run the unchanged five measured waves. Before their warmed heap/RSS baseline, the harness runs five
+Run the unchanged five measured waves. Before their warmed heap/RSS baseline, the harness runs ten
 complete unmeasured workload waves so lazy schema compilation and V8 tiering are finite warm-up
 rather than false leak evidence. The wrapper constrains and verifies the image as the non-root
 `node` user, starts its compiled load entry point with explicit garbage collection, waits for
@@ -432,19 +447,32 @@ readiness, runs the harness, and always removes the container:
 pnpm test:load:container -- capstone-chat:phase8-load
 ```
 
+The direct driver also accepts `--employees <4-100>` for an explicitly isolated capacity search.
+It defaults to 20 employees, always keeps the approved two distinct-conversation workflows per
+employee, and does not relax the five-wave latency, correctness, settlement, pool, or memory gates.
+This option is diagnostic only; the accepted production workload remains 20 employees and 40
+streams.
+
 The compiled server injects the deterministic load gateway through a test-only process entry point;
 it never contacts OpenRouter. The wrapper accepts only a loopback disposable database URL. The
 harness additionally refuses the production origin, credentials in the target URL, missing
 confirmations, a nonempty or mismatched fixture database, or an invalid NDJSON lifecycle. Its report
 contains only safe identifiers, counts, resource measurements, and latency percentiles. Delete the
 disposable database after the wrapper stops. A source/`tsx` load server can still aid debugging, but
-it is not capacity evidence.
+it is not managed capacity evidence. Historical Render Standard/Starter constraints and results
+remain recorded in the superseded implementation plan only. Production qualification requires the
+separately authorized exact RIC1 one-vCPU/one-GiB whole host with the 640 MiB application
+containment and exact PS-5 database to pass the unchanged workload and 500 ms response-start gate
+twice from clean state.
 
 GitHub Actions runs formatting/linting, repository and operations validation, type checking, clean
 migrations, unit/PostgreSQL integration tests, production builds, the bundle report, dependency
 audit, and a non-root built-image startup/static/API smoke as named steps in one quality job.
 Playwright remains a separate job so browser failures and artifacts are isolated. CI uses only
-synthetic identities, a test-only auth secret, fake providers, and the local PostgreSQL service.
+synthetic identities, a test-only auth secret, fake application providers, and the job-local
+PostgreSQL service while executing tests. After both exact-commit jobs pass on `main`, the separate
+publish job uses `GITHUB_TOKEN` to push only that full-revision image to GitHub Container Registry;
+it does not contact Resend, OpenRouter, New Relic, DigitalOcean, or PlanetScale.
 
 ## Auth schema regeneration
 
@@ -468,7 +496,7 @@ object through the process.
 | Variable | Local example | Meaning |
 | --- | --- | --- |
 | `NODE_ENV` | `development` | `development`, `test`, or `production` |
-| `HOST` | `127.0.0.1` | Fastify listen address; defaults to `0.0.0.0` in production |
+| `HOST` | `127.0.0.1` | Fastify listen address; production requires loopback and Caddy owns public traffic |
 | `PORT` | `3000` | Fastify listen port |
 | `DATABASE_URL` | `postgresql://capstone:capstone@127.0.0.1:5432/capstone_chat` | PostgreSQL connection URL |
 | `PUBLIC_ORIGIN` | `http://localhost:5173` | Exact browser origin, with no path; HTTPS is required in production |
@@ -479,8 +507,9 @@ object through the process.
 | `LOG_LEVEL` | `info` | Pino log level |
 | `MODEL_GATEWAY` | `fake` | `fake` or `openrouter`; production requires `openrouter` |
 | `OPENROUTER_API_KEY` | unset | Backend-only key required when `MODEL_GATEWAY=openrouter` |
-| `DEPLOYMENT_REVISION` | `development` | Safe release label outside production |
-| `RENDER_GIT_COMMIT` | unset | Full commit identifier supplied by Render and required in production |
+| `DEPLOYMENT_REVISION` | `development` | Safe local label; production requires the full 40-character deployed Git revision |
+| `CLIENT_ADDRESS_SOURCE` | `socket` | `socket` for local/test; production requires the trusted Caddy boundary |
+| `CAPSTONE_SECRET_FILE` | unset | Absolute root-owned mode-`0440` production JSON file mounted read-only from the encrypted Volume |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | New Relic regional HTTPS OTLP origin; required in production |
 | `OTEL_EXPORTER_OTLP_HEADERS` | unset | Exactly one backend-only `api-key=…` header; required in production |
 
@@ -489,11 +518,12 @@ port. They default to 5173 and 5432 and are not exposed in the browser bundle. I
 changes, update `PUBLIC_ORIGIN` to the same browser origin and port so authentication's exact-origin
 check remains aligned.
 
-Fastify keeps unrestricted proxy trust disabled. Development and test use the socket address;
-production accepts exactly one syntactically valid `CF-Connecting-IP` value from Render's selected
-edge contract and rejects an absent or ambiguous value. Startup, request, email, model, telemetry,
-and recovery output excludes database URLs, bodies, cookies, credentials, tokens, provider payloads,
-and employee content.
+Fastify keeps unrestricted proxy trust disabled. Development and test use the socket address. In
+production Caddy strips every public forwarded/client claim, derives one private client-address
+header from the remote peer, and sends it only over loopback. Fastify accepts that private value
+only from the loopback proxy and rejects missing, ambiguous, malformed, or non-loopback claims.
+Startup, request, email, model, telemetry, and recovery output excludes database URLs, bodies,
+cookies, credentials, tokens, provider payloads, and employee content.
 
 ## Identity security policy
 
@@ -517,30 +547,29 @@ responses are not stored as immutable content.
 
 ## Production artifact and acceptance boundary
 
-Build both applications and the API image from the repository root:
+Build both applications and the revision-labeled API image from the repository root:
 
 ```sh
 pnpm build
-docker build --file apps/api/Dockerfile --tag capstone-chat-api .
+docker build --file apps/api/Dockerfile \
+  --build-arg DEPLOYMENT_REVISION="$(git rev-parse HEAD)" \
+  --tag capstone-chat-api .
 ```
 
 The API image runs as the non-root `node` user and includes the compiled runtime, migrations, and
 `apps/web/dist`. Fastify serves the SPA and API from the same origin with explicit API-404, fallback,
-cache, security-header, and streaming boundaries. The committed [Render Blueprint](./render.yaml)
-describes one Virginia Web Service and one private PostgreSQL database; its paid sizes remain
-candidates until the authorized production-shaped rehearsal supplies evidence.
+cache, security-header, and streaming boundaries. The committed
+[`deploy/digitalocean`](./deploy/digitalocean/) artifacts define one hardened Ubuntu host, Caddy,
+two transient loopback slots with one durable active authority, bounded Fluent Bit delivery, and
+the supervised deploy/reconcile path. PlanetScale remains the only authoritative application data
+store.
 
-The migration job receives only `NODE_ENV` and `DATABASE_URL`; it does not receive the Better Auth
-secret, public origin, or email configuration. Apply migrations as a separate deployment action
-before starting API replicas with their complete production configuration:
-
-```sh
-docker run --rm \
-  --env NODE_ENV=production \
-  --env DATABASE_URL \
-  capstone-chat-api \
-  node apps/api/dist/database/migrate-command.js
-```
+Production migrations run as a separate short-lived non-root container before activation and read
+only `/run/capstone-secrets/migration.json`. The long-running slot reads only
+`/run/capstone-secrets/runtime.json`. Neither secret appears in Docker arguments or the unencrypted
+host disk, and API startup never applies migrations. Operators request an exact revision/digest via
+`/opt/capstone-chat/bin/request-deploy.sh`; the supervised deployment unit owns migration,
+readiness, switch, drain, rollback, and crash reconciliation.
 
 `EMAIL_DELIVERY=disabled` is an honest non-production validation mode, not a launch-capable setup.
 Production rejects disabled/fake email, the fake model gateway, a noncanonical origin, absent release
@@ -558,7 +587,7 @@ Repository implementation does not authorize or perform deployment. Follow the i
 [operations runbooks](./docs/operations/README.md) for provisioning, domain/TLS, deploy/rollback,
 provider/budget setup, employee access, incidents, secret rotation, and isolated PITR recovery.
 Those runbooks require content-free evidence and fresh approval before external mutation, paid
-inference, disposable Render resources, or recovery-resource creation.
+inference, disposable DigitalOcean/PlanetScale resources, or recovery-resource creation.
 
 ## Workspace boundaries
 

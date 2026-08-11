@@ -102,6 +102,11 @@ Connection loss follows the same upstream-cancellation path. V1 does not resume 
 
 Stream forwarding honors downstream backpressure and bounded buffering. Database checkpoints are coalesced, terminal writes are guarded against races, and a completion event is sent only after content and accounting have been durably committed.
 
+While a connected downstream response is otherwise quiet, Fastify emits the approved content-free
+`stream.heartbeat` every 15 seconds. The browser bounds downstream silence at 35 seconds, then
+performs the same canonical incomplete-response recovery as another interrupted transport. A
+heartbeat never changes content, accounting, first-token timing, checkpoints, or lifecycle state.
+
 ## Fallback and retry policy
 
 **Locked**

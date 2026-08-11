@@ -41,7 +41,7 @@ export interface AuthenticationEvents {
 }
 
 export function createAuthentication(input: {
-  config: ApiConfig;
+  config: Pick<ApiConfig, "authSecret" | "nodeEnv" | "publicOrigin">;
   database: AppDatabase;
   emailSender: EmailSender;
   events: AuthenticationEvents;

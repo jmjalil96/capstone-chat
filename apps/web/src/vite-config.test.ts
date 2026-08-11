@@ -29,7 +29,7 @@ describe("Vite development configuration", () => {
   });
 
   it("injects only a validated deployment revision into the browser build", () => {
-    expect(createViteConfig({ RENDER_GIT_COMMIT: "release-abc123" }).define).toEqual({
+    expect(createViteConfig({ DEPLOYMENT_REVISION: "release-abc123" }).define).toEqual({
       "import.meta.env.VITE_DEPLOYMENT_REVISION": '"release-abc123"',
     });
     expect(

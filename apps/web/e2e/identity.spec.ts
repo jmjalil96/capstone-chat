@@ -150,6 +150,60 @@ test("renders the authenticated conversation shell for an active member", async 
   ).toBeVisible();
 });
 
+test("@critical-identity moves an open authenticated app to sign-in when a draft save is revoked", async ({
+  page,
+}) => {
+  await page.route("**/api/session", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(session),
+    });
+  });
+  await page.route("**/api/conversations?**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ conversations: [], nextCursor: null }),
+    });
+  });
+  await page.route("**/api/drafts/new", async (route) => {
+    if (route.request().method() === "PUT") {
+      await route.fulfill({
+        status: 401,
+        contentType: "application/json",
+        body: JSON.stringify({
+          code: "AUTHENTICATION_REQUIRED",
+          message: "Authentication required",
+          requestId: "request-revoked-draft",
+        }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        scope: { kind: "new" },
+        content: "",
+        revision: 0,
+        updatedAt: null,
+      }),
+    });
+  });
+
+  await page.goto("/");
+  await page
+    .getByRole("textbox", { name: copy.conversations.draft.label })
+    .fill("Este borrador pertenece a la sesión revocada.");
+
+  await expect(page).toHaveURL(/\/sign-in$/u);
+  await expect(
+    page.getByRole("heading", { level: 1, name: copy.identity.signIn.title }),
+  ).toBeVisible();
+  await expect(page.getByText(session.employee.email)).toHaveCount(0);
+});
+
 test("uses a modal mobile drawer and restores focus to its opener", async ({ page }) => {
   const maximumTitle = "T".repeat(120);
   const maximumSnippet = "S".repeat(162);

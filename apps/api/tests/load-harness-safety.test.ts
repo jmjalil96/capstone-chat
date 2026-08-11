@@ -12,7 +12,16 @@ describe("load harness safety", () => {
   it("requires an explicit isolated non-production target and bounded wave count", () => {
     expect(
       parseLoadOptions(["--target", "http://127.0.0.1:3015", "--waves", "5", ...confirmations]),
-    ).toMatchObject({ waves: 5 });
+    ).toMatchObject({ employees: 20, responseStartedP95ObjectiveMilliseconds: 500, waves: 5 });
+    expect(
+      parseLoadOptions([
+        "--target",
+        "http://127.0.0.1:3015",
+        "--employees",
+        "100",
+        ...confirmations,
+      ]),
+    ).toMatchObject({ employees: 100 });
     expect(() => parseLoadOptions(["--target", "http://127.0.0.1:3015"])).toThrow(
       "--confirm-isolated-database",
     );
@@ -31,6 +40,60 @@ describe("load harness safety", () => {
     expect(() =>
       parseLoadOptions(["--target", "http://127.0.0.1:3015", "--waves", "6", ...confirmations]),
     ).toThrow("--waves");
+    for (const employees of ["3", "101", "04", "4.5"]) {
+      expect(() =>
+        parseLoadOptions([
+          "--target",
+          "http://127.0.0.1:3015",
+          "--employees",
+          employees,
+          ...confirmations,
+        ]),
+      ).toThrow("--employees");
+    }
+  });
+
+  it("accepts only the allowlisted response-start p95 objectives", () => {
+    expect(
+      parseLoadOptions([
+        "--target",
+        "http://127.0.0.1:3015",
+        "--response-start-p95-ms",
+        "750",
+        ...confirmations,
+      ]),
+    ).toMatchObject({ responseStartedP95ObjectiveMilliseconds: 750 });
+
+    expect(() =>
+      parseLoadOptions([
+        "--target",
+        "http://127.0.0.1:3015",
+        "--response-start-p95-ms",
+        ...confirmations,
+      ]),
+    ).toThrow("value is missing");
+    for (const objective of [
+      "",
+      "0500",
+      "0750",
+      "500.0",
+      "five-hundred",
+      "0",
+      "499",
+      "501",
+      "749",
+      "751",
+    ]) {
+      expect(() =>
+        parseLoadOptions([
+          "--target",
+          "http://127.0.0.1:3015",
+          "--response-start-p95-ms",
+          objective,
+          ...confirmations,
+        ]),
+      ).toThrow("--response-start-p95-ms");
+    }
   });
 
   it("parses fragmented lines and rejects oversized or incomplete NDJSON", () => {
@@ -56,6 +119,7 @@ describe("load harness safety", () => {
     const valid = new StreamLifecycleGuard();
     valid.accept("response.started");
     valid.accept("context.compacting");
+    valid.accept("stream.heartbeat");
     valid.accept("context.compacted");
     valid.accept("content.delta");
     valid.accept("response.completed");

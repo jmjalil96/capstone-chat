@@ -8,6 +8,7 @@ const knownEventTypes = new Set([
   "context.compacting",
   "context.compacted",
   "context.warning",
+  "stream.heartbeat",
   "content.delta",
   "response.completed",
   "response.cancelled",
@@ -33,10 +34,14 @@ export class StreamReadError extends Error {
 }
 
 export interface StreamParserLimits {
+  readonly inactivityTimeoutMilliseconds?: number;
   readonly maxLineBytes: number;
 }
 
+export const STREAM_INACTIVITY_TIMEOUT_MS = 35_000;
+
 const defaultLimits: StreamParserLimits = {
+  inactivityTimeoutMilliseconds: STREAM_INACTIVITY_TIMEOUT_MS,
   maxLineBytes: STREAM_MAX_LINE_BYTES,
 };
 
@@ -74,6 +79,41 @@ function parseLine(line: string): unknown {
   }
 }
 
+async function readWithInactivityTimeout(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  timeoutMilliseconds: number,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timeout = window.setTimeout(() => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      void reader.cancel().catch(() => undefined);
+      reject(new StreamReadError("STREAM_INTERRUPTED"));
+    }, timeoutMilliseconds);
+    void reader.read().then(
+      (result) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        window.clearTimeout(timeout);
+        resolve(result);
+      },
+      (error: unknown) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        window.clearTimeout(timeout);
+        reject(error);
+      },
+    );
+  });
+}
+
 export async function* parseResponseStream(
   stream: ReadableStream<Uint8Array>,
   signal: AbortSignal,
@@ -84,6 +124,8 @@ export async function* parseResponseStream(
   }
 
   const reader = stream.getReader();
+  const inactivityTimeoutMilliseconds =
+    limits.inactivityTimeoutMilliseconds ?? STREAM_INACTIVITY_TIMEOUT_MS;
   const decoder = new TextDecoder("utf-8", { fatal: true });
   const parts: Uint8Array[] = [];
   let bufferedBytes = 0;
@@ -96,7 +138,7 @@ export async function* parseResponseStream(
 
   try {
     while (true) {
-      const read = await reader.read();
+      const read = await readWithInactivityTimeout(reader, inactivityTimeoutMilliseconds);
       if (signal.aborted) {
         throw abortError();
       }

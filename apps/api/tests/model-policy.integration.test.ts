@@ -997,6 +997,192 @@ describe.sequential("model policy and budget persistence", () => {
     });
   });
 
+  it("bounds current-period spend while retaining active chat concurrency across rollover", async () => {
+    const workspaceId = await insertWorkspace("budget-period-admission", "America/Guayaquil");
+    const userId = `user-${randomUUID()}`;
+    await database.insert(user).values({
+      email: "budget-period-admission@example.test",
+      emailVerified: true,
+      id: userId,
+      name: "Budget Period User",
+    });
+    await database.insert(workspaceMemberships).values({
+      role: "member",
+      status: "active",
+      userId,
+      workspaceId,
+    });
+    const currentPeriod = {
+      end: new Date("2026-09-01T05:00:00.000Z"),
+      start: new Date("2026-08-01T05:00:00.000Z"),
+    } as const;
+    const previousPeriod = {
+      end: currentPeriod.start,
+      start: new Date("2026-07-01T05:00:00.000Z"),
+    } as const;
+    const currentStartedAt = new Date("2026-08-10T12:00:00.000Z");
+    const previousStartedAt = new Date("2026-07-10T12:00:00.000Z");
+    const currentCompletedAt = new Date("2026-08-10T12:00:01.000Z");
+    const previousCompletedAt = new Date("2026-07-10T12:00:01.000Z");
+
+    async function insertPeriodGeneration(input: {
+      readonly accountingStatus: "actual" | "estimated" | "reserved" | null;
+      readonly active?: boolean;
+      readonly costUsd: string;
+      readonly period: typeof currentPeriod;
+      readonly startedAt: Date;
+    }): Promise<string> {
+      const { generationId } = await insertExpiredReservedGeneration({
+        budgetPeriodEnd: input.period.end,
+        budgetPeriodStart: input.period.start,
+        reservationExpiresAt: new Date(input.startedAt.getTime() + 60_000),
+        reservedCostUsd: input.costUsd,
+        startedAt: input.startedAt,
+        userId,
+        workspaceId,
+      });
+      if (input.active === true) {
+        return generationId;
+      }
+      const completedAt = input.period === currentPeriod ? currentCompletedAt : previousCompletedAt;
+      if (input.accountingStatus === null) {
+        await database
+          .update(generations)
+          .set({
+            accountingStatus: null,
+            budgetPeriodEnd: null,
+            budgetPeriodStart: null,
+            completedAt,
+            completionPriceCeilingPerToken: null,
+            costBasis: null,
+            costUsd: null,
+            estimatedInputTokens: null,
+            maximumOutputTokens: null,
+            promptPriceCeilingPerToken: null,
+            purpose: "chat",
+            requestPriceCeilingUsd: null,
+            requestedModel: null,
+            reservationExpiresAt: null,
+            reservationMarginBasisPoints: null,
+            reservedCostUsd: null,
+            resolvedModel: null,
+            status: "completed",
+            terminalReason: "stop",
+            updatedAt: completedAt,
+          })
+          .where(eq(generations.id, generationId));
+        return generationId;
+      }
+      await database
+        .update(generations)
+        .set({
+          accountingSettledAt: input.accountingStatus === "reserved" ? null : completedAt,
+          accountingStatus: input.accountingStatus,
+          completedAt,
+          costBasis: input.accountingStatus === "reserved" ? null : input.accountingStatus,
+          costUsd: input.accountingStatus === "reserved" ? null : input.costUsd,
+          status: "completed",
+          terminalReason: "stop",
+          updatedAt: completedAt,
+        })
+        .where(eq(generations.id, generationId));
+      return generationId;
+    }
+
+    await insertPeriodGeneration({
+      accountingStatus: "reserved",
+      active: true,
+      costUsd: "99",
+      period: previousPeriod,
+      startedAt: previousStartedAt,
+    });
+    await insertPeriodGeneration({
+      accountingStatus: "actual",
+      costUsd: "98",
+      period: previousPeriod,
+      startedAt: previousStartedAt,
+    });
+    const currentReservedGenerationId = await insertPeriodGeneration({
+      accountingStatus: "reserved",
+      costUsd: "1",
+      period: currentPeriod,
+      startedAt: currentStartedAt,
+    });
+    await insertPeriodGeneration({
+      accountingStatus: "actual",
+      costUsd: "2",
+      period: currentPeriod,
+      startedAt: currentStartedAt,
+    });
+    await insertPeriodGeneration({
+      accountingStatus: "estimated",
+      costUsd: "3",
+      period: currentPeriod,
+      startedAt: currentStartedAt,
+    });
+    await insertPeriodGeneration({
+      accountingStatus: null,
+      costUsd: "97",
+      period: currentPeriod,
+      startedAt: currentStartedAt,
+    });
+
+    const budget = createBudgetService(database);
+    await expect(
+      database.transaction((transaction) =>
+        budget.lockAdmission(
+          transaction,
+          workspaceId,
+          userId,
+          new Date("2026-08-20T12:00:00.000Z"),
+        ),
+      ),
+    ).resolves.toMatchObject({ activeGenerationCount: 1, consumedUsd: "6" });
+
+    const lockHolder = await pool.connect();
+    let committed = false;
+    try {
+      await lockHolder.query("BEGIN");
+      await lockHolder.query("SELECT id FROM workspaces WHERE id = $1 FOR UPDATE", [workspaceId]);
+      await lockHolder.query(
+        `
+          UPDATE generations
+          SET status = 'active', terminal_reason = NULL, completed_at = NULL,
+            reserved_cost_usd = 4, updated_at = '2026-08-10T12:00:02.000Z'
+          WHERE id = $1
+        `,
+        [currentReservedGenerationId],
+      );
+      let waiterSettled = false;
+      const waitingAdmission = database
+        .transaction((transaction) =>
+          budget.lockAdmission(
+            transaction,
+            workspaceId,
+            userId,
+            new Date("2026-08-20T12:00:00.000Z"),
+          ),
+        )
+        .finally(() => {
+          waiterSettled = true;
+        });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(waiterSettled).toBe(false);
+      await lockHolder.query("COMMIT");
+      committed = true;
+
+      await expect(waitingAdmission).resolves.toMatchObject({
+        activeGenerationCount: 2,
+        consumedUsd: "9",
+      });
+    } finally {
+      if (!committed) {
+        await lockHolder.query("ROLLBACK");
+      }
+      lockHolder.release();
+    }
+  });
+
   it("reserves exactly, settles authoritative cost, and reconciles expiry without lock inversion", async () => {
     const workspaceId = await insertWorkspace("budget-lifecycle", "America/Guayaquil");
     const userId = `user-${randomUUID()}`;

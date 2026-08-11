@@ -88,6 +88,7 @@ function renderRoute(
   sessionFixture: SessionFixture = "authenticated",
   strict = false,
 ) {
+  let draftWritesRequireAuthentication = false;
   window.history.replaceState(null, "", path);
   let draftWritesFail = false;
   const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
@@ -108,6 +109,16 @@ function renderRoute(
 
     if (url.includes("/api/drafts/new")) {
       if (method === "PUT") {
+        if (draftWritesRequireAuthentication) {
+          return response(
+            {
+              code: "AUTHENTICATION_REQUIRED",
+              message: "Authentication required",
+              requestId: "request-session-expired",
+            },
+            401,
+          );
+        }
         if (draftWritesFail) {
           return response(
             { code: "INTERNAL_ERROR", message: "Unavailable", requestId: "request-draft" },
@@ -162,6 +173,9 @@ function renderRoute(
     router,
     setDraftWritesFailing: (failing: boolean) => {
       draftWritesFail = failing;
+    },
+    setDraftWritesRequireAuthentication: (required: boolean) => {
+      draftWritesRequireAuthentication = required;
     },
     user,
   };
@@ -354,6 +368,31 @@ describe("identity routes", () => {
     expect(
       await screen.findByRole("heading", { level: 1, name: copy.identity.signIn.title }),
     ).toBeVisible();
+  });
+
+  it("moves an open application to sign-in when a protected request returns 401", async () => {
+    const { queryClient, setDraftWritesRequireAuthentication, user } = renderRoute("/");
+    const editor = await screen.findByRole("textbox", { name: copy.conversations.draft.label });
+    await waitFor(() => expect(editor).toBeEnabled());
+    const protectedKey = conversationQueryKeys.detail(
+      conversationQueryScope(validSession),
+      "private-session-expiry-fixture",
+    );
+    queryClient.setQueryData(protectedKey, { content: "must-be-cleared" });
+    setDraftWritesRequireAuthentication(true);
+
+    await user.type(editor, "La sesión caducó");
+
+    expect(
+      await screen.findByRole(
+        "heading",
+        { level: 1, name: copy.identity.signIn.title },
+        { timeout: 2_000 },
+      ),
+    ).toBeVisible();
+    expect(queryClient.getQueryData(sessionQueryKey)).toEqual({ status: "anonymous" });
+    expect(queryClient.getQueryData(protectedKey)).toBeUndefined();
+    expect(screen.queryByText(validSession.employee.email)).not.toBeInTheDocument();
   });
 
   it("fences a delayed employee draft save across a direct authenticated session change", async () => {

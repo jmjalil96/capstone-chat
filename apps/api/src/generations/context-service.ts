@@ -1,9 +1,9 @@
-import { sql } from "drizzle-orm";
+import { type SQL, sql } from "drizzle-orm";
 import type { AppDatabaseExecutor } from "../database/database.js";
 import type { ApplicableCompaction, ContextTurn } from "./context-planner.js";
 import { contextCompactionTuning } from "./context-planner.js";
 
-interface ContextWindowRow extends Record<string, unknown> {
+export interface ContextWindowRow extends Record<string, unknown> {
   readonly branchFound: boolean;
   readonly branchValid: boolean;
   readonly previousCompactionId: string | null;
@@ -19,6 +19,12 @@ export interface ContextWindow {
   readonly recentTurns: readonly ContextTurn[];
   readonly sourceOverflow: boolean;
   readonly sourceTurns: readonly ContextTurn[];
+}
+
+function assertMaximumSourceBytes(maximumSourceBytes: number): void {
+  if (!Number.isSafeInteger(maximumSourceBytes) || maximumSourceBytes <= 0) {
+    throw new RangeError("Context source byte bound is invalid");
+  }
 }
 
 function parseTurns(value: unknown, label: string): readonly ContextTurn[] {
@@ -45,35 +51,23 @@ function parseTurns(value: unknown, label: string): readonly ContextTurn[] {
   });
 }
 
-export async function loadContextWindow(
-  transaction: AppDatabaseExecutor,
-  conversationId: string,
-  endpointMessageId: string | null,
+export function contextWindowQuery(
+  conversationId: SQL,
+  endpointMessageId: SQL,
   maximumSourceBytes: number,
-): Promise<ContextWindow> {
-  if (endpointMessageId === null) {
-    return Object.freeze({
-      previousCompaction: null,
-      recentTurns: [],
-      sourceOverflow: false,
-      sourceTurns: [],
-    });
-  }
-  if (!Number.isSafeInteger(maximumSourceBytes) || maximumSourceBytes <= 0) {
-    throw new RangeError("Context source byte bound is invalid");
-  }
-
-  const result = await transaction.execute<ContextWindowRow>(sql`
+): SQL<ContextWindowRow> {
+  assertMaximumSourceBytes(maximumSourceBytes);
+  return sql<ContextWindowRow>`
     WITH RECURSIVE branch AS (
       SELECT message.id, message.parent_message_id, message.role, 0::integer AS depth
       FROM messages AS message
-      WHERE message.conversation_id = ${conversationId}::uuid
-        AND message.id = ${endpointMessageId}::uuid
+      WHERE message.conversation_id = ${conversationId}
+        AND message.id = ${endpointMessageId}
       UNION ALL
       SELECT parent.id, parent.parent_message_id, parent.role, branch.depth + 1
       FROM messages AS parent
       INNER JOIN branch
-        ON parent.conversation_id = ${conversationId}::uuid
+        ON parent.conversation_id = ${conversationId}
        AND parent.id = branch.parent_message_id
     ),
     branch_state AS (
@@ -94,7 +88,7 @@ export async function loadContextWindow(
       SELECT compaction.id, compaction.summary, compaction.through_message_id, branch.depth
       FROM conversation_compactions AS compaction
       INNER JOIN branch ON branch.id = compaction.through_message_id
-      WHERE compaction.conversation_id = ${conversationId}::uuid
+      WHERE compaction.conversation_id = ${conversationId}
         AND compaction.status = 'completed'
         AND compaction.prompt_version = 'capstone-compaction-v1'
         AND branch.role = 'assistant'
@@ -120,10 +114,10 @@ export async function loadContextWindow(
         ON user_branch.depth = assistant_branch.depth + 1
        AND assistant_branch.parent_message_id = user_branch.id
       INNER JOIN messages AS assistant_message
-        ON assistant_message.conversation_id = ${conversationId}::uuid
+        ON assistant_message.conversation_id = ${conversationId}
        AND assistant_message.id = assistant_branch.id
       INNER JOIN messages AS user_message
-        ON user_message.conversation_id = ${conversationId}::uuid
+        ON user_message.conversation_id = ${conversationId}
        AND user_message.id = user_branch.id
       CROSS JOIN boundary
       WHERE assistant_branch.role = 'assistant'
@@ -165,10 +159,10 @@ export async function loadContextWindow(
         ) ORDER BY recent.depth DESC)
         FROM recent_turns AS recent
         INNER JOIN messages AS user_message
-          ON user_message.conversation_id = ${conversationId}::uuid
+          ON user_message.conversation_id = ${conversationId}
          AND user_message.id = recent.user_id
         INNER JOIN messages AS assistant_message
-          ON assistant_message.conversation_id = ${conversationId}::uuid
+          ON assistant_message.conversation_id = ${conversationId}
          AND assistant_message.id = recent.assistant_id
       ), '[]'::jsonb) AS "recentTurns",
       COALESCE((
@@ -180,18 +174,20 @@ export async function loadContextWindow(
         ) ORDER BY source.depth DESC)
         FROM source_selected AS source
         INNER JOIN messages AS user_message
-          ON user_message.conversation_id = ${conversationId}::uuid
+          ON user_message.conversation_id = ${conversationId}
          AND user_message.id = source.user_id
         INNER JOIN messages AS assistant_message
-          ON assistant_message.conversation_id = ${conversationId}::uuid
+          ON assistant_message.conversation_id = ${conversationId}
          AND assistant_message.id = source.assistant_id
       ), '[]'::jsonb) AS "sourceTurns",
       EXISTS (
         SELECT 1 FROM source_ranked
         WHERE accumulated_bytes > ${maximumSourceBytes}
       ) AS "sourceOverflow"
-  `);
-  const row = result.rows[0];
+  `;
+}
+
+export function contextWindowFromRow(row: ContextWindowRow | undefined): ContextWindow {
   if (row === undefined || !row.branchFound) {
     throw new Error("Selected conversation branch could not be reconstructed");
   }
@@ -219,4 +215,57 @@ export async function loadContextWindow(
     sourceOverflow: row.sourceOverflow,
     sourceTurns,
   });
+}
+
+function contextTurnBytes(turn: ContextTurn): number {
+  return (
+    128 + Buffer.byteLength(turn.user.text, "utf8") + Buffer.byteLength(turn.assistant.text, "utf8")
+  );
+}
+
+export function boundContextWindow(
+  window: ContextWindow,
+  maximumSourceBytes: number,
+): ContextWindow {
+  assertMaximumSourceBytes(maximumSourceBytes);
+  let selectedBytes = 0;
+  const sourceTurns: ContextTurn[] = [];
+  for (const turn of window.sourceTurns) {
+    const nextBytes = selectedBytes + contextTurnBytes(turn);
+    if (nextBytes > maximumSourceBytes) {
+      break;
+    }
+    sourceTurns.push(turn);
+    selectedBytes = nextBytes;
+  }
+  return Object.freeze({
+    previousCompaction: window.previousCompaction,
+    recentTurns: window.recentTurns,
+    sourceOverflow: window.sourceOverflow || sourceTurns.length < window.sourceTurns.length,
+    sourceTurns: Object.freeze(sourceTurns),
+  });
+}
+
+export async function loadContextWindow(
+  transaction: AppDatabaseExecutor,
+  conversationId: string,
+  endpointMessageId: string | null,
+  maximumSourceBytes: number,
+): Promise<ContextWindow> {
+  if (endpointMessageId === null) {
+    return Object.freeze({
+      previousCompaction: null,
+      recentTurns: [],
+      sourceOverflow: false,
+      sourceTurns: [],
+    });
+  }
+  const result = await transaction.execute<ContextWindowRow>(
+    contextWindowQuery(
+      sql`${conversationId}::uuid`,
+      sql`${endpointMessageId}::uuid`,
+      maximumSourceBytes,
+    ),
+  );
+  return contextWindowFromRow(result.rows[0]);
 }

@@ -14,7 +14,7 @@ import {
 } from "../conversations/content.js";
 import { conversationCompactions } from "../database/compaction-schema.js";
 import { conversations, messages } from "../database/conversation-schema.js";
-import type { AppDatabase } from "../database/database.js";
+import { type AppDatabase, executePrepared } from "../database/database.js";
 import { generations } from "../database/generation-schema.js";
 import { isPostgresError } from "../database/postgres-error.js";
 import { ApplicationError } from "../errors.js";
@@ -36,13 +36,15 @@ import {
   type ResolvedTierPolicy,
 } from "../model-policy/service.js";
 import type { ApplicationTelemetry } from "../observability/telemetry-contract.js";
+import { lockConversationAdmission, lockDraftGenerationAdmission } from "./admission.js";
 import {
   type ContextPlan,
   ContextPlanTooLargeError,
   type PendingContextPlan,
   planContext,
 } from "./context-planner.js";
-import { type ContextWindow, loadContextWindow } from "./context-service.js";
+import { preloadDraftContext } from "./context-preload.js";
+import { boundContextWindow, type ContextWindow, loadContextWindow } from "./context-service.js";
 import type {
   GatewayAccounting,
   GatewayCompletionReason,
@@ -84,27 +86,12 @@ interface PreloadedContextWindow {
   readonly window: ContextWindow;
 }
 
-interface InsertedResponseMessagesRow extends Record<string, unknown> {
-  readonly assistantMessageId: string;
-  readonly userMessageId: string;
-}
-
-interface CommittedDraftResponseRow extends Record<string, unknown> {
+interface InsertedResponseWorkflowRow extends Record<string, unknown> {
+  readonly assistantMessageId: string | null;
   readonly draftDeleted: boolean;
+  readonly generationId: string | null;
   readonly revision: number | null;
-}
-
-interface AdmissionConversationRow extends Record<string, unknown> {
-  readonly activeGeneration: boolean | null;
-  readonly archivedAt: Date | null;
-  readonly conversationId: string | null;
-  readonly draftContent: string | null;
-  readonly draftId: string | null;
-  readonly draftRevision: number | null;
-  readonly idempotencyFound: boolean;
-  readonly revision: number | null;
-  readonly selectedLeafMessageId: string | null;
-  readonly title: string | null;
+  readonly userMessageId: string | null;
 }
 
 type DatabaseTransaction = Parameters<Parameters<AppDatabase["transaction"]>[0]>[0];
@@ -275,20 +262,6 @@ export function createGenerationService(
       // Telemetry cannot affect generation authority or persistence.
     }
   }
-  async function assertEmptyConversation(
-    transaction: DatabaseTransaction,
-    conversationId: string,
-  ): Promise<void> {
-    const existing = await transaction
-      .select({ id: messages.id })
-      .from(messages)
-      .where(eq(messages.conversationId, conversationId))
-      .limit(1);
-    if (existing.length !== 0) {
-      throw new Error("Empty conversation has stored messages");
-    }
-  }
-
   async function selectedPathMessage(
     transaction: DatabaseTransaction,
     conversationId: string,
@@ -331,7 +304,18 @@ export function createGenerationService(
     conversationId: string,
     input: CreateResponseRequest,
   ): Promise<PreloadedContextWindow | null> {
-    if (input.source !== "draft" && input.source !== "continue") {
+    if (input.source === "draft") {
+      return preloadDraftContext(database, modelPolicy, {
+        conversationId,
+        mode,
+        observedRevision: input.observedRevision,
+        parentMessageId: input.parentMessageId,
+        tier: input.modelTier,
+        userId: actor.employee.id,
+        workspaceId: actor.workspace.id,
+      });
+    }
+    if (input.source !== "continue") {
       return null;
     }
     const rows = await database
@@ -402,85 +386,44 @@ export function createGenerationService(
     }
 
     try {
-      // Selected-branch reconstruction is bounded but query-heavy. It is immutable at a matching
-      // conversation revision, so prepare it before taking the workspace-wide budget lock and
-      // revalidate that revision, endpoint, and policy-derived byte bound inside the transaction.
+      // Selected-branch reconstruction is immutable at a matching conversation revision. Prepare
+      // its bounded window before the workspace-wide budget lock, then revalidate revision,
+      // endpoint, and the fresh policy-derived byte bound inside the transaction.
       const preloadedContext = await preloadSelectedContext(actor, conversationId, input);
       return await database.transaction(async (transaction) => {
         const startedAt = new Date();
-        const admission = await budget.lockAdmission(
-          transaction,
-          actor.workspace.id,
-          actor.employee.id,
-          startedAt,
-        );
+        await budget.lockAdmissionAuthority(transaction, actor.workspace.id, actor.employee.id);
 
-        // This keeps idempotency ahead of the active-conversation conflict while spending one
-        // serialized round trip under the workspace budget lock. An idempotent retry deliberately
-        // skips the conversation lock entirely.
-        const admissionRows = await transaction.execute<AdmissionConversationRow>(sql`
-          WITH idempotency AS MATERIALIZED (
-            SELECT EXISTS (
-              SELECT 1
-              FROM generations AS existing_generation
-              WHERE existing_generation.workspace_id = ${actor.workspace.id}::uuid
-                AND existing_generation.user_id = ${actor.employee.id}
-                AND existing_generation.idempotency_key = ${idempotencyKey}::uuid
-            ) AS found
-          ),
-          locked_conversation AS MATERIALIZED (
-            SELECT
-              conversation.id,
-              conversation.archived_at,
-              conversation.revision,
-              conversation.selected_leaf_message_id,
-              conversation.title,
-              EXISTS (
-                SELECT 1
-                FROM generations AS active_generation
-                WHERE active_generation.conversation_id = conversation.id
-                  AND active_generation.status IN ('preparing', 'active')
-                  AND (active_generation.purpose IS NULL OR active_generation.purpose = 'chat')
-              ) AS active_generation
-            FROM conversations AS conversation
-            CROSS JOIN idempotency
-            WHERE NOT idempotency.found
-              AND conversation.id = ${conversationId}::uuid
-              AND conversation.workspace_id = ${actor.workspace.id}::uuid
-              AND conversation.user_id = ${actor.employee.id}
-            LIMIT 1
-            FOR UPDATE OF conversation
-          ),
-          locked_draft AS MATERIALIZED (
-            SELECT draft.id, draft.content, draft.revision
-            FROM drafts AS draft
-            CROSS JOIN locked_conversation
-            WHERE ${input.source === "draft"}
-              AND draft.workspace_id = ${actor.workspace.id}::uuid
-              AND draft.user_id = ${actor.employee.id}
-              AND draft.conversation_id = locked_conversation.id
-            LIMIT 1
-            FOR UPDATE OF draft
-          )
-          SELECT
-            idempotency.found AS "idempotencyFound",
-            locked_conversation.id AS "conversationId",
-            locked_conversation.archived_at AS "archivedAt",
-            locked_conversation.revision,
-            locked_conversation.selected_leaf_message_id AS "selectedLeafMessageId",
-            locked_conversation.title,
-            locked_conversation.active_generation AS "activeGeneration",
-            locked_draft.id AS "draftId",
-            locked_draft.content AS "draftContent",
-            locked_draft.revision AS "draftRevision"
-          FROM idempotency
-          LEFT JOIN locked_conversation ON true
-          LEFT JOIN locked_draft ON true
-        `);
-        const conversationAdmission = admissionRows.rows[0];
-        if (conversationAdmission === undefined) {
-          throw new Error("Generation admission returned no row");
-        }
+        // The ordinary draft path uses one fresh post-authority snapshot. Other sources keep their
+        // recursive validation ahead of policy locking so invalid requests retain error precedence.
+        const pendingDraftAdmission =
+          input.source === "draft"
+            ? await lockDraftGenerationAdmission(
+                transaction,
+                {
+                  at: startedAt,
+                  conversationId,
+                  draftContent: submittedMessageText ?? "",
+                  draftRevision: input.draftRevision,
+                  idempotencyKey,
+                  mode,
+                  observedRevision: input.observedRevision,
+                  parentMessageId: input.parentMessageId,
+                  tier: input.modelTier,
+                  userId: actor.employee.id,
+                  workspaceId: actor.workspace.id,
+                },
+                modelPolicy,
+              )
+            : null;
+        const conversationAdmission =
+          pendingDraftAdmission?.conversation ??
+          (await lockConversationAdmission(transaction, {
+            conversationId,
+            idempotencyKey,
+            userId: actor.employee.id,
+            workspaceId: actor.workspace.id,
+          }));
         if (conversationAdmission.idempotencyFound) {
           return generationAlreadyExists();
         }
@@ -523,8 +466,11 @@ export function createGenerationService(
             messageText = submittedMessageText ?? "";
             historyEndpointId = conversation.selectedLeafMessageId;
             userParentMessageId = input.parentMessageId;
-            if (conversation.selectedLeafMessageId === null) {
-              await assertEmptyConversation(transaction, conversationId);
+            if (
+              conversation.selectedLeafMessageId === null &&
+              conversationAdmission.hasMessages === true
+            ) {
+              throw new Error("Empty conversation has stored messages");
             }
             if (
               conversationAdmission.draftId === null ||
@@ -619,12 +565,16 @@ export function createGenerationService(
           throw new ApplicationError(413, "MESSAGE_TOO_LARGE", generationCopy.messageTooLarge);
         }
 
-        const policies = await modelPolicy.resolveGenerationPolicies(
-          transaction,
-          actor.workspace.id,
-          input.modelTier,
-          mode,
-        );
+        const { admission, policies } =
+          pendingDraftAdmission?.resolve() ??
+          (await modelPolicy.resolveGenerationAdmission(
+            transaction,
+            actor.workspace.id,
+            actor.employee.id,
+            startedAt,
+            input.modelTier,
+            mode,
+          ));
         const resolvedTier = policies.chat;
         const fastTier = policies.fast;
         const maximumSourceBytes = Math.min(
@@ -635,8 +585,8 @@ export function createGenerationService(
           preloadedContext !== null &&
           preloadedContext.revision === conversation.revision &&
           preloadedContext.endpointMessageId === historyEndpointId &&
-          preloadedContext.maximumSourceBytes === maximumSourceBytes
-            ? preloadedContext.window
+          preloadedContext.maximumSourceBytes >= maximumSourceBytes
+            ? boundContextWindow(preloadedContext.window, maximumSourceBytes)
             : await loadContextWindow(
                 transaction,
                 conversationId,
@@ -672,9 +622,58 @@ export function createGenerationService(
           startedAt,
         );
 
+        const contextParameters =
+          contextPlan.mode === "pending"
+            ? {
+                mode: "pending",
+                promptVersion: contextPlan.compaction.request.systemPrompt.version,
+                strategy: contextPlan.strategy,
+                throughMessageId: contextPlan.compaction.throughMessageId,
+              }
+            : contextPlan.mode === "compacted"
+              ? { compactionId: contextPlan.compactionId, mode: "compacted" }
+              : contextPlan.mode === "fallback"
+                ? { mode: "fallback", reason: contextPlan.reason }
+                : { mode: "full" };
+        const effectiveParameters = {
+          context: contextParameters,
+          ...(mode === "openrouter"
+            ? {
+                maximumOutputTokens: resolvedTier.maximumOutputTokens,
+                priceCeiling: {
+                  completionUsdPerMillion: unitPricePerMillion(
+                    resolvedTier.completionPriceCeilingPerToken,
+                  ),
+                  promptUsdPerMillion: unitPricePerMillion(resolvedTier.promptPriceCeilingPerToken),
+                  requestUsd: resolvedTier.requestPriceCeilingUsd,
+                },
+                provider: {
+                  dataCollection: "deny",
+                  requireParameters: true,
+                  zeroDataRetention: true,
+                },
+                reasoning: { exclude: true },
+              }
+            : {}),
+        };
+        const generationStatus = contextPlan.mode === "pending" ? "preparing" : "active";
+        const realReservation = mode === "openrouter" ? reservation : null;
+
         let assistantMessageId: string | undefined;
+        let generationId: string | undefined;
+        let updatedRevision: number | undefined;
         if (insertUserMessage) {
-          const inserted = await transaction.execute<InsertedResponseMessagesRow>(sql`
+          const committedAt = new Date();
+          const nextTitle =
+            input.source === "edit"
+              ? conversation.title
+              : (conversation.title ?? createInitialTitle(messageText));
+          // The ordinary path commits its immutable messages, reservation, selection, and draft
+          // consumption as one guarded statement while the workspace budget lock is held.
+          const inserted = await executePrepared<InsertedResponseWorkflowRow>(
+            transaction,
+            "generation-response-workflow-v1",
+            sql`
             WITH user_message AS (
               INSERT INTO messages (conversation_id, parent_message_id, role, content)
               VALUES (
@@ -694,16 +693,108 @@ export function createGenerationService(
                 ${JSON.stringify(toStoredContent(""))}::jsonb
               FROM user_message
               RETURNING id
+            ),
+            inserted_generation AS (
+              INSERT INTO generations (
+                workspace_id,
+                user_id,
+                conversation_id,
+                assistant_message_id,
+                idempotency_key,
+                requested_tier,
+                purpose,
+                requested_model,
+                resolved_model,
+                system_prompt_version,
+                effective_parameters,
+                status,
+                accounting_status,
+                estimated_input_tokens,
+                maximum_output_tokens,
+                reserved_cost_usd,
+                prompt_price_ceiling_per_token,
+                completion_price_ceiling_per_token,
+                request_price_ceiling_usd,
+                reservation_margin_basis_points,
+                budget_period_start,
+                budget_period_end,
+                reservation_expires_at,
+                started_at,
+                created_at,
+                updated_at
+              )
+              SELECT
+                ${actor.workspace.id}::uuid,
+                ${actor.employee.id},
+                ${conversationId}::uuid,
+                assistant_message.id,
+                ${idempotencyKey}::uuid,
+                ${input.modelTier},
+                'chat',
+                ${mode === "openrouter" ? resolvedTier.resolvedModel : null},
+                ${mode === "openrouter" ? resolvedTier.resolvedModel : null},
+                ${systemPrompt.version},
+                ${JSON.stringify(effectiveParameters)}::jsonb,
+                ${generationStatus},
+                ${realReservation?.accountingStatus ?? null},
+                ${realReservation?.estimatedInputTokens ?? null},
+                ${realReservation?.maximumOutputTokens ?? null},
+                ${realReservation?.reservedCostUsd ?? null},
+                ${realReservation?.promptPriceCeilingPerToken ?? null},
+                ${realReservation?.completionPriceCeilingPerToken ?? null},
+                ${realReservation?.requestPriceCeilingUsd ?? null},
+                ${realReservation?.reservationMarginBasisPoints ?? null},
+                ${realReservation?.budgetPeriodStart ?? null},
+                ${realReservation?.budgetPeriodEnd ?? null},
+                ${realReservation?.reservationExpiresAt ?? null},
+                ${startedAt},
+                ${startedAt},
+                ${startedAt}
+              FROM assistant_message
+              RETURNING id
+            ),
+            updated_conversation AS (
+              UPDATE conversations AS conversation
+              SET
+                revision = ${conversation.revision + 1},
+                selected_leaf_message_id = assistant_message.id,
+                preferred_tier = ${input.modelTier},
+                title = ${nextTitle},
+                updated_at = ${committedAt}
+              FROM assistant_message
+              WHERE conversation.id = ${conversationId}::uuid
+                AND conversation.workspace_id = ${actor.workspace.id}::uuid
+                AND conversation.user_id = ${actor.employee.id}
+                AND conversation.revision = ${input.observedRevision}
+              RETURNING conversation.revision
+            ),
+            deleted_draft AS (
+              DELETE FROM drafts AS draft
+              USING updated_conversation
+              WHERE draft.id = ${consumedDraftId ?? null}::uuid
+                AND draft.revision = ${draftRevision ?? -1}
+              RETURNING draft.id
             )
             SELECT
-              user_message.id AS "userMessageId",
-              assistant_message.id AS "assistantMessageId"
-            FROM user_message
-            CROSS JOIN assistant_message
-          `);
+              ${consumedDraftId === undefined}
+                OR EXISTS (SELECT 1 FROM deleted_draft) AS "draftDeleted",
+              (SELECT id FROM user_message) AS "userMessageId",
+              (SELECT id FROM assistant_message) AS "assistantMessageId",
+              (SELECT id FROM inserted_generation) AS "generationId",
+              (SELECT revision FROM updated_conversation) AS revision
+            `,
+          );
           const row = inserted.rows[0];
-          userMessageId = row?.userMessageId;
-          assistantMessageId = row?.assistantMessageId;
+          if (row === undefined || row.revision === null) {
+            return changed();
+          }
+          if (!row.draftDeleted) {
+            return draftChanged();
+          }
+          userMessageId = row.userMessageId ?? undefined;
+          assistantMessageId = row.assistantMessageId ?? undefined;
+          generationId = row.generationId ?? undefined;
+          updatedRevision = row.revision;
         } else if (userMessageId !== undefined) {
           const assistantRows = await transaction
             .insert(messages)
@@ -715,123 +806,56 @@ export function createGenerationService(
             })
             .returning({ id: messages.id });
           assistantMessageId = assistantRows[0]?.id;
+          if (assistantMessageId !== undefined) {
+            const generationRows = await transaction
+              .insert(generations)
+              .values({
+                assistantMessageId,
+                conversationId,
+                createdAt: startedAt,
+                effectiveParameters,
+                idempotencyKey,
+                purpose: "chat",
+                requestedTier: input.modelTier,
+                ...(realReservation === null
+                  ? {}
+                  : {
+                      accountingStatus: realReservation.accountingStatus,
+                      budgetPeriodEnd: realReservation.budgetPeriodEnd,
+                      budgetPeriodStart: realReservation.budgetPeriodStart,
+                      completionPriceCeilingPerToken:
+                        realReservation.completionPriceCeilingPerToken,
+                      estimatedInputTokens: realReservation.estimatedInputTokens,
+                      maximumOutputTokens: realReservation.maximumOutputTokens,
+                      promptPriceCeilingPerToken: realReservation.promptPriceCeilingPerToken,
+                      requestPriceCeilingUsd: realReservation.requestPriceCeilingUsd,
+                      requestedModel: resolvedTier.resolvedModel,
+                      reservationExpiresAt: realReservation.reservationExpiresAt,
+                      reservationMarginBasisPoints: realReservation.reservationMarginBasisPoints,
+                      reservedCostUsd: realReservation.reservedCostUsd,
+                      resolvedModel: resolvedTier.resolvedModel,
+                    }),
+                startedAt,
+                status: generationStatus,
+                systemPromptVersion: systemPrompt.version,
+                userId: actor.employee.id,
+                updatedAt: startedAt,
+                workspaceId: actor.workspace.id,
+              })
+              .returning({ id: generations.id });
+            generationId = generationRows[0]?.id;
+          }
         }
-        if (userMessageId === undefined || assistantMessageId === undefined) {
-          throw new Error("Response message insertion returned no row");
+        if (
+          userMessageId === undefined ||
+          assistantMessageId === undefined ||
+          generationId === undefined
+        ) {
+          throw new Error("Response workflow insertion returned no row");
         }
 
-        const contextParameters =
-          contextPlan.mode === "pending"
-            ? {
-                mode: "pending",
-                promptVersion: contextPlan.compaction.request.systemPrompt.version,
-                strategy: contextPlan.strategy,
-                throughMessageId: contextPlan.compaction.throughMessageId,
-              }
-            : contextPlan.mode === "compacted"
-              ? { compactionId: contextPlan.compactionId, mode: "compacted" }
-              : contextPlan.mode === "fallback"
-                ? { mode: "fallback", reason: contextPlan.reason }
-                : { mode: "full" };
-        const generationRows = await transaction
-          .insert(generations)
-          .values({
-            assistantMessageId,
-            conversationId,
-            createdAt: startedAt,
-            effectiveParameters: {
-              context: contextParameters,
-              ...(mode === "openrouter"
-                ? {
-                    maximumOutputTokens: resolvedTier.maximumOutputTokens,
-                    priceCeiling: {
-                      completionUsdPerMillion: unitPricePerMillion(
-                        resolvedTier.completionPriceCeilingPerToken,
-                      ),
-                      promptUsdPerMillion: unitPricePerMillion(
-                        resolvedTier.promptPriceCeilingPerToken,
-                      ),
-                      requestUsd: resolvedTier.requestPriceCeilingUsd,
-                    },
-                    provider: {
-                      dataCollection: "deny",
-                      requireParameters: true,
-                      zeroDataRetention: true,
-                    },
-                    reasoning: { exclude: true },
-                  }
-                : {}),
-            },
-            idempotencyKey,
-            purpose: "chat",
-            requestedTier: input.modelTier,
-            ...(mode === "openrouter"
-              ? {
-                  accountingStatus: reservation.accountingStatus,
-                  budgetPeriodEnd: reservation.budgetPeriodEnd,
-                  budgetPeriodStart: reservation.budgetPeriodStart,
-                  completionPriceCeilingPerToken: reservation.completionPriceCeilingPerToken,
-                  estimatedInputTokens: reservation.estimatedInputTokens,
-                  maximumOutputTokens: reservation.maximumOutputTokens,
-                  requestPriceCeilingUsd: reservation.requestPriceCeilingUsd,
-                  requestedModel: resolvedTier.resolvedModel,
-                  reservationExpiresAt: reservation.reservationExpiresAt,
-                  reservationMarginBasisPoints: reservation.reservationMarginBasisPoints,
-                  reservedCostUsd: reservation.reservedCostUsd,
-                  resolvedModel: resolvedTier.resolvedModel,
-                  promptPriceCeilingPerToken: reservation.promptPriceCeilingPerToken,
-                }
-              : {}),
-            startedAt,
-            status: contextPlan.mode === "pending" ? "preparing" : "active",
-            systemPromptVersion: systemPrompt.version,
-            userId: actor.employee.id,
-            updatedAt: startedAt,
-            workspaceId: actor.workspace.id,
-          })
-          .returning();
-        const generation = generationRows[0];
-        if (generation === undefined) {
-          throw new Error("Generation insertion returned no row");
-        }
-
-        const now = new Date();
-        let updatedRevision: number | undefined;
-        if (consumedDraftId !== undefined) {
-          const committed = await transaction.execute<CommittedDraftResponseRow>(sql`
-            WITH updated_conversation AS (
-              UPDATE conversations AS conversation
-              SET
-                revision = ${conversation.revision + 1},
-                selected_leaf_message_id = ${assistantMessageId}::uuid,
-                preferred_tier = ${input.modelTier},
-                title = ${conversation.title ?? createInitialTitle(messageText)},
-                updated_at = ${now}
-              WHERE conversation.id = ${conversationId}::uuid
-                AND conversation.workspace_id = ${actor.workspace.id}::uuid
-                AND conversation.user_id = ${actor.employee.id}
-                AND conversation.revision = ${input.observedRevision}
-              RETURNING revision
-            ),
-            deleted_draft AS (
-              DELETE FROM drafts AS draft
-              WHERE draft.id = ${consumedDraftId}::uuid
-                AND draft.revision = ${draftRevision ?? -1}
-              RETURNING id
-            )
-            SELECT
-              (SELECT revision FROM updated_conversation) AS revision,
-              EXISTS (SELECT 1 FROM deleted_draft) AS "draftDeleted"
-          `);
-          const row = committed.rows[0];
-          if (row?.revision === null || row?.revision === undefined) {
-            return changed();
-          }
-          if (!row.draftDeleted) {
-            return draftChanged();
-          }
-          updatedRevision = row.revision;
-        } else {
+        if (updatedRevision === undefined) {
+          const now = new Date();
           const updatedRows = await transaction
             .update(conversations)
             .set({
@@ -873,7 +897,7 @@ export function createGenerationService(
             : {}),
           ...(contextPlan.mode === "fallback" ? { contextWarning: true as const } : {}),
           conversationId,
-          generationId: generation.id,
+          generationId,
           messageId: assistantMessageId,
           request: {
             ...plannedChatRequest,

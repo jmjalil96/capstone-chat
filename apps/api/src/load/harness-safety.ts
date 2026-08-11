@@ -10,13 +10,16 @@ type StreamLifecycleType =
   | "response.cancelled"
   | "response.completed"
   | "response.failed"
-  | "response.started";
+  | "response.started"
+  | "stream.heartbeat";
 
 function normalizedHostname(hostname: string): string {
   return hostname.endsWith(".") ? hostname.slice(0, -1) : hostname;
 }
 
 export interface LoadOptions {
+  readonly employees: number;
+  readonly responseStartedP95ObjectiveMilliseconds: 500 | 750;
   readonly target: URL;
   readonly waves: number;
 }
@@ -52,7 +55,12 @@ export function parseLoadOptions(argumentsList: readonly string[]): LoadOptions 
       parsed.set(argument, true);
       continue;
     }
-    if (argument !== "--target" && argument !== "--waves") {
+    if (
+      argument !== "--employees" &&
+      argument !== "--response-start-p95-ms" &&
+      argument !== "--target" &&
+      argument !== "--waves"
+    ) {
       throw new Error("Unknown load argument");
     }
     const value = argumentsList[index + 1];
@@ -90,7 +98,25 @@ export function parseLoadOptions(argumentsList: readonly string[]): LoadOptions 
   if (typeof rawWaves !== "string" || !/^[1-5]$/u.test(rawWaves)) {
     throw new Error("--waves must be an integer from 1 to 5");
   }
-  return { target, waves: Number(rawWaves) };
+  const rawEmployees = parsed.get("--employees") ?? "20";
+  if (typeof rawEmployees !== "string" || !/^(?:[4-9]|[1-9]\d|100)$/u.test(rawEmployees)) {
+    throw new Error("--employees must be an integer from 4 to 100");
+  }
+  const rawResponseStartedP95Objective = parsed.get("--response-start-p95-ms") ?? "500";
+  if (
+    typeof rawResponseStartedP95Objective !== "string" ||
+    !/^(?:500|750)$/u.test(rawResponseStartedP95Objective)
+  ) {
+    throw new Error("--response-start-p95-ms must be 500 or 750");
+  }
+  const responseStartedP95ObjectiveMilliseconds =
+    rawResponseStartedP95Objective === "500" ? 500 : 750;
+  return {
+    employees: Number(rawEmployees),
+    responseStartedP95ObjectiveMilliseconds,
+    target,
+    waves: Number(rawWaves),
+  };
 }
 
 export class BoundedNdjsonDecoder {

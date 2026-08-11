@@ -1,6 +1,6 @@
 import { isIP } from "node:net";
 import type { FastifyRequest } from "fastify";
-import type { RuntimeMode } from "../config.js";
+import type { ClientAddressSource } from "../config.js";
 import { ApplicationError } from "../errors.js";
 
 const capturedAddresses = new WeakMap<FastifyRequest, string | null>();
@@ -25,14 +25,30 @@ function normalizedEdgeAddress(value: string | string[] | undefined): string | n
 
 export function captureTrustedClientAddress(
   request: FastifyRequest,
-  runtimeMode: RuntimeMode,
+  source: ClientAddressSource,
 ): void {
-  delete request.headers["x-capstone-client-ip"];
+  const caddyAddress = request.headers["x-capstone-client-ip"];
+  for (const header of [
+    "cf-connecting-ip",
+    "forwarded",
+    "x-capstone-client-ip",
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-forwarded-port",
+    "x-forwarded-proto",
+    "x-real-ip",
+  ]) {
+    delete request.headers[header];
+  }
+
+  const socketAddress = normalizedEdgeAddress(request.raw.socket.remoteAddress);
   capturedAddresses.set(
     request,
-    runtimeMode === "production"
-      ? normalizedEdgeAddress(request.headers["cf-connecting-ip"])
-      : request.ip,
+    source === "caddy"
+      ? socketAddress === "127.0.0.1"
+        ? normalizedEdgeAddress(caddyAddress)
+        : null
+      : normalizedEdgeAddress(request.ip),
   );
 }
 

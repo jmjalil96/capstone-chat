@@ -4,6 +4,10 @@ Status: implemented and accepted
 
 Code authorization: granted by the user on 2026-08-07
 
+Cross-phase contract amendment: the user-authorized 2026-08-10 production-acceptance correction
+adds the closed, content-free `stream.heartbeat` event described below. It does not reopen any other
+Phase 4 behavior.
+
 ## Implementation record
 
 - Planning artifact authored on 2026-08-07. The user approved implementation on 2026-08-07.
@@ -464,7 +468,7 @@ not hide other protocol or authorization failures.
 
 ## Complete v1 NDJSON event catalog
 
-The following eight event types are the entire approved v1 stream catalog. Phase 4 encodes all of
+The following nine event types are the entire approved v1 stream catalog. Phase 4 encodes all of
 them as closed TypeBox schemas and a discriminated known-event union. Adding another known event or
 changing a field meaning requires an explicit contract amendment.
 
@@ -474,6 +478,7 @@ changing a field meaning requires an explicit contract amendment.
 | `context.compacting` | no additional fields | Older context is being compacted before generation | Phase 7 |
 | `context.compacted` | no additional fields | Compaction completed and ordinary generation is proceeding | Phase 7 |
 | `context.warning` | `code: CONTEXT_COMPACTION_FALLBACK` | Compaction failed safely and approved oldest-turn fallback is being used | Phase 7 |
+| `stream.heartbeat` | no additional fields | Content-free downstream liveness during an otherwise quiet connected response | Phase 8 production-acceptance correction |
 | `content.delta` | `text` | One non-empty ordered text delta for the active assistant response | Phase 4 |
 | `response.completed` | `messageId`, `revision`, `reason`, `usage` | A successful terminal response is durable | Phase 4 |
 | `response.cancelled` | `messageId`, `revision`, optional `usage` | Explicit employee cancellation is durable | Phase 4 |
@@ -515,6 +520,9 @@ Event rules:
 - `response.started` is the first known event and appears exactly once.
 - Zero or one `context.compacting` may follow it. If emitted, it is followed by exactly one
   `context.compacted` or `context.warning` before the ordinary response continues.
+- Zero or more `stream.heartbeat` events may appear after `response.started` and before the terminal
+  event. They satisfy downstream liveness only and do not change visible content, event ordering,
+  revisions, checkpoints, usage, cost, first-token timing, or lifecycle state.
 - `content.delta` contains non-empty valid Unicode text. Event order defines text order; v1 has no
   sequence numbers because it does not resume streams.
 - Exactly one of `response.completed`, `response.cancelled`, or `response.failed` terminates a
@@ -942,7 +950,7 @@ restoration during deltas.
 
 - Add narrowly named protocol modules for generation requests, response state, stream events, and
   parser-facing inferred types.
-- Encode the eight known NDJSON event schemas exactly as approved above.
+- Encode the nine known NDJSON event schemas exactly as approved above.
 - Centralize the full stable error union without changing the ordinary envelope fields.
 - Add schema tests for every event, terminal reason, usage shape, request union, response state,
   idempotency header, extra-property rejection, and all catalog codes.
@@ -1285,7 +1293,7 @@ From the frozen accepted Phase 3 baseline with Docker and the supported browsers
 Phase 4 is complete only when:
 
 - The accepted Phase 3 baseline remains reproducible and every required Phase 4 gate succeeds.
-- The complete eight-event NDJSON catalog and stable error catalog are encoded once in
+- The complete nine-event NDJSON catalog and stable error catalog are encoded once in
   `packages/protocol`, covered, and used consistently by Fastify and the browser.
 - PostgreSQL atomically creates one authoritative turn, consumes only the matching draft, enforces
   one active generation per conversation, prevents idempotency duplicates, checkpoints partial

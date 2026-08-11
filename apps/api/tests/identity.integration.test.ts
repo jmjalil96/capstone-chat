@@ -104,10 +104,16 @@ describe.sequential("identity integration", () => {
     await container.stop();
   });
 
-  function startApplication(sender: EmailSender = new FakeEmailSender()): ApiApplication {
+  function startApplication(
+    sender: EmailSender = new FakeEmailSender(),
+    clientAddressSource?: "caddy" | "socket",
+  ): ApiApplication {
     const started = createApplication(
       loadConfig({
         BETTER_AUTH_SECRET: "capstone-chat-test-secret-with-more-than-thirty-two-characters",
+        ...(clientAddressSource === undefined
+          ? {}
+          : { CLIENT_ADDRESS_SOURCE: clientAddressSource }),
         DATABASE_URL: databaseUrl,
         EMAIL_DELIVERY: "fake",
         LOG_LEVEL: "silent",
@@ -447,6 +453,36 @@ describe.sequential("identity integration", () => {
     expect(wrongContentType.statusCode).toBe(415);
     expect(wrongContentType.json()).toMatchObject({ code: "JSON_REQUIRED" });
     expect(allowedBoundary.statusCode).toBe(404);
+  });
+
+  it("supports the supervised anonymous-session smoke through the Caddy address boundary", async () => {
+    const app = startApplication(new FakeEmailSender(), "caddy");
+
+    const missingPrivateHeader = await app.server.inject({
+      method: "GET",
+      url: "/api/session",
+      remoteAddress: "127.0.0.1",
+    });
+    const trustedLoopback = await app.server.inject({
+      method: "GET",
+      url: "/api/session",
+      headers: { "x-capstone-client-ip": "192.0.2.1" },
+      remoteAddress: "127.0.0.1",
+    });
+    const untrustedSocket = await app.server.inject({
+      method: "GET",
+      url: "/api/session",
+      headers: { "x-capstone-client-ip": "192.0.2.1" },
+      remoteAddress: "198.51.100.10",
+    });
+
+    expect(missingPrivateHeader.statusCode).toBe(400);
+    expect(missingPrivateHeader.json()).toMatchObject({ code: "BAD_REQUEST" });
+    expect(trustedLoopback.statusCode).toBe(401);
+    expect(trustedLoopback.headers["cache-control"]).toBe("no-store");
+    expect(trustedLoopback.json()).toMatchObject({ code: "AUTHENTICATION_REQUIRED" });
+    expect(untrustedSocket.statusCode).toBe(400);
+    expect(untrustedSocket.json()).toMatchObject({ code: "BAD_REQUEST" });
   });
 
   it("accepts verification credentials only through the bounded same-origin JSON wrapper", async () => {
@@ -889,18 +925,20 @@ describe.sequential("identity integration", () => {
         ...loadConfig({
           BETTER_AUTH_SECRET: "capstone-chat-test-secret-with-more-than-thirty-two-characters",
           DATABASE_URL: databaseUrl,
+          DEPLOYMENT_REVISION: "0123456789abcdef0123456789abcdef01234567",
           EMAIL_DELIVERY: "resend",
           EMAIL_FROM: "Capstone Chat <no-reply@mail.capstone.com.ec>",
           LOG_LEVEL: "silent",
           MODEL_GATEWAY: "openrouter",
-          NODE_ENV: "production",
+          NODE_ENV: "test",
           OPENROUTER_API_KEY: "test-openrouter-key-never-sent",
           OTEL_EXPORTER_OTLP_ENDPOINT: "https://otlp.nr-data.net",
           OTEL_EXPORTER_OTLP_HEADERS: "api-key=test-license-key",
           PUBLIC_ORIGIN: productionOrigin,
-          RENDER_GIT_COMMIT: "0123456789abcdef0123456789abcdef01234567",
           RESEND_API_KEY: "re_test_only",
         }),
+        nodeEnv: "production",
+        publicOrigin: productionOrigin,
         webAssetsDirectory: null,
       },
       { emailSender: productionEmailSender, modelGateway: inertProductionGateway },
@@ -910,7 +948,6 @@ describe.sequential("identity integration", () => {
       method: "POST",
       url: "/api/auth/sign-in/email",
       headers: {
-        "cf-connecting-ip": "198.51.100.10",
         "content-type": "application/json",
         origin: productionOrigin,
       },

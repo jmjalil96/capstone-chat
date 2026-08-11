@@ -1,0 +1,44 @@
+[Unit]
+Description=Reconcile Capstone runtime to the durable active release
+Documentation=file:/opt/capstone-chat/README.md
+After=docker.service capstone-caddy.service capstone-fluent-bit.service network-online.target
+Requires=docker.service capstone-caddy.service
+Wants=capstone-fluent-bit.service network-online.target
+RequiresMountsFor=/srv/capstone-secure
+Before=multi-user.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+Environment=CAPSTONE_DEPLOY_SUPERVISED=1
+Environment=XDG_DATA_HOME=/srv/capstone-secure/caddy/data
+Environment=XDG_CONFIG_HOME=/srv/capstone-secure/caddy/config
+ExecStart=/opt/capstone-chat/bin/deploy.sh reconcile
+# Two absent/stale slot convergence paths (385s each) plus Caddy/authority
+# verification (100s) and 30s scheduler/daemon headroom.
+TimeoutStartSec=900s
+TimeoutStopSec=900s
+KillMode=mixed
+LimitCORE=0
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadOnlyPaths=/etc/capstone-chat /opt/capstone-chat /srv/capstone-secure
+ReadWritePaths=/run/capstone-caddy /run/capstone-chat /var/lib/capstone-chat
+RestrictAddressFamilies=AF_INET AF_UNIX
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

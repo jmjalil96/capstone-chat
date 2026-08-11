@@ -4,6 +4,12 @@ import { useEffect } from "react";
 import { Navigate, Outlet, useNavigate } from "react-router";
 
 import { type SessionQueryResult, sessionQueryKey, sessionQueryOptions } from "../api/session";
+import {
+  expireAuthenticatedSession,
+  isAuthenticationRequiredError,
+  reportAuthenticationRequired,
+  subscribeAuthenticationRequired,
+} from "../api/session-boundary";
 import { copy } from "../copy";
 import { signOut } from "./auth-actions";
 import { FormMessage } from "./form-feedback";
@@ -29,6 +35,32 @@ export function RequireSession({ standalone = false }: { readonly standalone?: b
       queryClient.removeQueries({ queryKey: ["conversations"] });
     }
   }, [queryClient, session.data]);
+
+  useEffect(() => {
+    const expire = () => expireAuthenticatedSession(queryClient);
+    const errorFromEvent = (event: unknown): unknown => {
+      if (typeof event !== "object" || event === null || !("action" in event)) {
+        return undefined;
+      }
+      const action = Reflect.get(event, "action");
+      return typeof action === "object" && action !== null
+        ? Reflect.get(action, "error")
+        : undefined;
+    };
+    const expireForError = (event: unknown) => {
+      if (isAuthenticationRequiredError(errorFromEvent(event))) {
+        reportAuthenticationRequired();
+      }
+    };
+    const unsubscribeAuthentication = subscribeAuthenticationRequired(expire);
+    const unsubscribeQueries = queryClient.getQueryCache().subscribe(expireForError);
+    const unsubscribeMutations = queryClient.getMutationCache().subscribe(expireForError);
+    return () => {
+      unsubscribeAuthentication();
+      unsubscribeQueries();
+      unsubscribeMutations();
+    };
+  }, [queryClient]);
 
   let gate: React.ReactNode;
 

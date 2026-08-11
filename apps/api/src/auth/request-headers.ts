@@ -9,6 +9,9 @@ export function createTrustedAuthHeaders(request: FastifyRequest): Headers {
     "forwarded",
     "x-capstone-client-ip",
     "x-forwarded-for",
+    "x-forwarded-host",
+    "x-forwarded-port",
+    "x-forwarded-proto",
     "x-real-ip",
   ]) {
     headers.delete(header);

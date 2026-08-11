@@ -33,6 +33,7 @@ describe("health routes", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ status: "live" });
+    expect(response.headers["x-capstone-revision"]).toBe("test");
     expect(response.headers["x-request-id"]).toBe("request-123");
     expect(response.headers["cache-control"]).toBe("no-store");
     expect(pool.query).not.toHaveBeenCalled();
@@ -50,6 +51,7 @@ describe("health routes", () => {
 
     expect(response.statusCode).toBe(503);
     expect(response.json()).toEqual({ database: "unknown", status: "unavailable" });
+    expect(response.headers["x-capstone-revision"]).toBe("test");
     expect(response.headers["cache-control"]).toBe("no-store");
     expect(pool.query).not.toHaveBeenCalled();
     await application.shutdown();
@@ -71,6 +73,7 @@ describe("health routes", () => {
 
     expect(readyResponse.statusCode).toBe(200);
     expect(readyResponse.json()).toEqual({ database: "up", status: "ready" });
+    expect(readyResponse.headers["x-capstone-revision"]).toBe("test");
 
     pool.query.mockRejectedValue(new Error("database is unavailable"));
     const unavailableResponse = await application.server.inject({
@@ -80,6 +83,7 @@ describe("health routes", () => {
 
     expect(unavailableResponse.statusCode).toBe(503);
     expect(unavailableResponse.json()).toEqual({ database: "down", status: "unavailable" });
+    expect(unavailableResponse.headers["x-capstone-revision"]).toBe("test");
     expect(application.lifecycle.phase).toBe("unhealthy");
     await application.shutdown();
   });

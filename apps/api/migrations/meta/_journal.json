@@ -43,6 +43,13 @@
       "when": 1786230000000,
       "tag": "0005_observability_recovery",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1786294883632,
+      "tag": "0006_conversation_generation_lookup",
+      "breakpoints": true
     }
   ]
 }

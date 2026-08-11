@@ -1,0 +1,6 @@
+header {
+	Cache-Control "no-store"
+	Retry-After "300"
+	-Server
+}
+respond "Servicio temporalmente no disponible. Inténtalo de nuevo más tarde.\n" 503

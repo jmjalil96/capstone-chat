@@ -1,6 +1,6 @@
 import { isUtf8 } from "node:buffer";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { lstatSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -14,7 +14,19 @@ if (listed.status !== 0) {
   process.exit(1);
 }
 
-const files = listed.stdout.split("\0").filter(Boolean);
+const files = listed.stdout
+  .split("\0")
+  .filter(Boolean)
+  .filter((file) => {
+    try {
+      return lstatSync(path.join(repositoryRoot, file)).isFile();
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+        return false;
+      }
+      throw error;
+    }
+  });
 const violations = [];
 const sourceExtension = /\.(?:cjs|cts|js|jsx|mjs|mts|ts|tsx)$/u;
 const importPattern =

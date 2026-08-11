@@ -1,3 +1,4 @@
+import { settleWithin } from "../lifecycle-timeout.js";
 import type { EmailSender, EmailSenderKind, IdentityEmail } from "./email.js";
 
 const lifecycleTiming = Object.freeze({
@@ -5,22 +6,8 @@ const lifecycleTiming = Object.freeze({
   drainMilliseconds: 1_000,
 });
 
-function settleWithin(operation: Promise<unknown>, milliseconds: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const timeout = setTimeout(() => resolve(false), milliseconds);
-    timeout.unref();
-    void operation.then(
-      () => {
-        clearTimeout(timeout);
-        resolve(true);
-      },
-      () => {
-        clearTimeout(timeout);
-        resolve(true);
-      },
-    );
-  });
-}
+export const emailShutdownMaximumMilliseconds =
+  lifecycleTiming.drainMilliseconds + lifecycleTiming.abortWaitMilliseconds;
 
 export abstract class LifecycleEmailSender implements EmailSender {
   abstract readonly kind: EmailSenderKind;

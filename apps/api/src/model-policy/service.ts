@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { and, eq, isNull, lte, or, sql } from "drizzle-orm";
 import type { CursorCodec } from "../conversations/cursor.js";
 import { conversations } from "../database/conversation-schema.js";
 import type { AppDatabase, AppDatabaseExecutor, AppTransaction } from "../database/database.js";
@@ -12,6 +12,12 @@ import {
 } from "../database/model-policy-schema.js";
 import { createModelPolicyAdministration } from "./administration.js";
 import {
+  type BudgetAdmission,
+  type BudgetAdmissionStateRow,
+  budgetAdmissionFromState,
+  budgetAdmissionStateQuery,
+} from "./budget-service.js";
+import {
   type CatalogModelSnapshot,
   type ModelTier,
   modelTiers,
@@ -22,6 +28,7 @@ import {
   ModelPolicyNotFoundError,
   ModelPolicyUnavailableError,
 } from "./errors.js";
+import { type GenerationPolicyRow, generationPolicyRowsQuery } from "./generation-policy-query.js";
 import {
   applyReservationMarginToUnitPrice,
   applyReservationMarginToUsd,
@@ -68,6 +75,14 @@ export interface ResolvedTierPolicy {
   readonly reservationMarginBasisPoints: number;
   readonly resolvedModel: string;
   readonly tier: ModelTier;
+}
+
+export interface ResolvedGenerationAdmission {
+  readonly admission: BudgetAdmission;
+  readonly policies: {
+    readonly chat: ResolvedTierPolicy;
+    readonly fast: ResolvedTierPolicy | null;
+  };
 }
 
 export interface ModelPolicyBootstrapInput {
@@ -122,25 +137,11 @@ interface ExistingPolicyRow {
   readonly tier: string;
 }
 
-interface ResolvedTierRow {
-  readonly approvedCatalogId: string | null;
-  readonly attestationVerifiedAt: Date | string | null;
-  readonly attestationVersion: string | null;
-  readonly available: boolean;
-  readonly catalogMaximumOutputTokens: number;
-  readonly completionPricePerToken: string;
-  readonly contextLength: number;
-  readonly employeeActiveGenerationLimit: number;
-  readonly enabled: boolean;
-  readonly maximumOutputTokens: number;
-  readonly metadataSource: string;
-  readonly monthlyBudgetUsd: string;
-  readonly promptPricePerToken: string;
-  readonly requestPriceUsd: string;
-  readonly reservationMarginBasisPoints: number;
-  readonly resolvedModel: string;
-  readonly tier: string;
-}
+type NullableGenerationPolicyRow = {
+  readonly [Key in keyof GenerationPolicyRow]: GenerationPolicyRow[Key] | null;
+};
+
+type ResolvedGenerationAdmissionRow = BudgetAdmissionStateRow & NullableGenerationPolicyRow;
 
 function assertPositiveInteger(value: number, label: string): void {
   if (!Number.isSafeInteger(value) || value <= 0) {
@@ -163,7 +164,7 @@ function expectedSource(mode: ModelPolicyMode): "openrouter" | "simulated" {
 }
 
 function resolvedPrivacyIsVerified(
-  row: ResolvedTierRow,
+  row: GenerationPolicyRow,
   mode: ModelPolicyMode,
   checkedAt: Date,
 ): boolean {
@@ -182,7 +183,7 @@ function resolvedPrivacyIsVerified(
 }
 
 function toResolvedTierPolicy(
-  row: ResolvedTierRow | undefined,
+  row: GenerationPolicyRow | undefined,
   tier: ModelTier,
   mode: ModelPolicyMode,
   checkedAt: Date,
@@ -221,6 +222,39 @@ function toResolvedTierPolicy(
     resolvedModel: row.resolvedModel,
     tier,
   });
+}
+
+function resolvedGenerationPoliciesFromRows(
+  rows: readonly GenerationPolicyRow[],
+  tier: ModelTier,
+  mode: ModelPolicyMode,
+  checkedAt: Date,
+): ResolvedGenerationAdmission["policies"] {
+  const chat = toResolvedTierPolicy(
+    rows.find((row) => row.tier === tier),
+    tier,
+    mode,
+    checkedAt,
+    true,
+  );
+  if (tier === "fast") {
+    return Object.freeze({ chat, fast: chat });
+  }
+  let fast: ResolvedTierPolicy | null = null;
+  try {
+    fast = toResolvedTierPolicy(
+      rows.find((row) => row.tier === "fast"),
+      "fast",
+      mode,
+      checkedAt,
+      false,
+    );
+  } catch (error: unknown) {
+    if (!(error instanceof ModelPolicyUnavailableError)) {
+      throw error;
+    }
+  }
+  return Object.freeze({ chat, fast });
 }
 
 function catalogMatches(row: ExistingPolicyRow, snapshot: CatalogModelSnapshot): boolean {
@@ -826,57 +860,11 @@ export function createModelPolicyService(
     executor: AppDatabaseExecutor,
     workspaceId: string,
     tiers: readonly ModelTier[],
-  ): Promise<readonly ResolvedTierRow[]> {
-    return executor
-      .select({
-        approvedCatalogId: workspaceCatalogApprovals.modelCatalogId,
-        attestationVerifiedAt: sql<Date | null>`(
-          SELECT privacy.verified_at
-          FROM openrouter_privacy_attestations AS privacy
-          WHERE privacy.workspace_id = ${workspaceModelPolicies.workspaceId}
-          LIMIT 1
-        )`,
-        attestationVersion: sql<string | null>`(
-          SELECT privacy.attestation_version
-          FROM openrouter_privacy_attestations AS privacy
-          WHERE privacy.workspace_id = ${workspaceModelPolicies.workspaceId}
-          LIMIT 1
-        )`,
-        available: modelCatalog.available,
-        catalogMaximumOutputTokens: modelCatalog.maximumOutputTokens,
-        completionPricePerToken: modelCatalog.completionPricePerToken,
-        contextLength: modelCatalog.contextLength,
-        employeeActiveGenerationLimit: workspaceCostPolicies.employeeActiveGenerationLimit,
-        enabled: workspaceModelPolicies.enabled,
-        maximumOutputTokens: workspaceModelPolicies.maximumOutputTokens,
-        metadataSource: modelCatalog.metadataSource,
-        monthlyBudgetUsd: workspaceCostPolicies.monthlyBudgetUsd,
-        promptPricePerToken: modelCatalog.promptPricePerToken,
-        reservationMarginBasisPoints: workspaceCostPolicies.reservationMarginBasisPoints,
-        requestPriceUsd: modelCatalog.requestPriceUsd,
-        resolvedModel: modelCatalog.openRouterModelId,
-        tier: workspaceModelPolicies.tier,
-      })
-      .from(workspaceModelPolicies)
-      .innerJoin(
-        workspaceCostPolicies,
-        eq(workspaceCostPolicies.workspaceId, workspaceModelPolicies.workspaceId),
-      )
-      .innerJoin(modelCatalog, eq(modelCatalog.id, workspaceModelPolicies.modelCatalogId))
-      .innerJoin(
-        workspaceCatalogApprovals,
-        and(
-          eq(workspaceCatalogApprovals.workspaceId, workspaceModelPolicies.workspaceId),
-          eq(workspaceCatalogApprovals.modelCatalogId, workspaceModelPolicies.modelCatalogId),
-        ),
-      )
-      .where(
-        and(
-          eq(workspaceModelPolicies.workspaceId, workspaceId),
-          inArray(workspaceModelPolicies.tier, tiers),
-        ),
-      )
-      .for("share");
+  ): Promise<readonly GenerationPolicyRow[]> {
+    const result = await executor.execute<GenerationPolicyRow>(
+      generationPolicyRowsQuery(workspaceId, tiers, { lockRows: true }),
+    );
+    return result.rows;
   }
 
   async function resolveTierPolicy(
@@ -900,31 +888,68 @@ export function createModelPolicyService(
     const checkedAt = now();
     const requestedTiers = tier === "fast" ? (["fast"] as const) : ([tier, "fast"] as const);
     const rows = await resolvedTierRows(executor, workspaceId, requestedTiers);
-    const chat = toResolvedTierPolicy(
-      rows.find((row) => row.tier === tier),
-      tier,
-      mode,
-      checkedAt,
-      true,
+    return resolvedGenerationPoliciesFromRows(rows, tier, mode, checkedAt);
+  }
+
+  function resolveGenerationPolicyRows(
+    rows: readonly GenerationPolicyRow[],
+    tier: ModelTier,
+    mode: ModelPolicyMode,
+  ): ResolvedGenerationAdmission["policies"] {
+    return resolvedGenerationPoliciesFromRows(rows, tier, mode, now());
+  }
+
+  async function resolveGenerationAdmission(
+    transaction: AppTransaction,
+    workspaceId: string,
+    userId: string,
+    at: Date,
+    tier: ModelTier,
+    mode: ModelPolicyMode,
+  ): Promise<ResolvedGenerationAdmission> {
+    const requestedTiers = tier === "fast" ? (["fast"] as const) : ([tier, "fast"] as const);
+    const rows = await transaction.execute<ResolvedGenerationAdmissionRow>(sql`
+      WITH admission_state AS MATERIALIZED (
+        ${budgetAdmissionStateQuery(workspaceId, userId, at)}
+      ),
+      resolved_tiers AS MATERIALIZED (
+        ${generationPolicyRowsQuery(workspaceId, requestedTiers, { lockRows: true })}
+      )
+      SELECT
+        admission_state."activeGenerationCount",
+        admission_state."consumedUsd",
+        admission_state."periodEnd",
+        admission_state."periodStart",
+        resolved_tiers."approvedCatalogId",
+        resolved_tiers."attestationVerifiedAt",
+        resolved_tiers."attestationVersion",
+        resolved_tiers.available,
+        resolved_tiers."catalogMaximumOutputTokens",
+        resolved_tiers."completionPricePerToken",
+        resolved_tiers."contextLength",
+        resolved_tiers."employeeActiveGenerationLimit",
+        resolved_tiers.enabled,
+        resolved_tiers."maximumOutputTokens",
+        resolved_tiers."metadataSource",
+        resolved_tiers."monthlyBudgetUsd",
+        resolved_tiers."promptPricePerToken",
+        resolved_tiers."requestPriceUsd",
+        resolved_tiers."reservationMarginBasisPoints",
+        resolved_tiers."resolvedModel",
+        resolved_tiers.tier
+      FROM admission_state
+      LEFT JOIN resolved_tiers ON true
+    `);
+    const first = rows.rows[0];
+    if (first === undefined) {
+      throw new Error("Generation admission returned no row");
+    }
+    const policyRows = rows.rows.flatMap((row): readonly GenerationPolicyRow[] =>
+      row.tier === null ? [] : [row as unknown as GenerationPolicyRow],
     );
-    if (tier === "fast") {
-      return Object.freeze({ chat, fast: chat });
-    }
-    let fast: ResolvedTierPolicy | null = null;
-    try {
-      fast = toResolvedTierPolicy(
-        rows.find((row) => row.tier === "fast"),
-        "fast",
-        mode,
-        checkedAt,
-        false,
-      );
-    } catch (error: unknown) {
-      if (!(error instanceof ModelPolicyUnavailableError)) {
-        throw error;
-      }
-    }
-    return Object.freeze({ chat, fast });
+    const admission = budgetAdmissionFromState(first, workspaceId, userId);
+    const policies = resolveGenerationPolicyRows(policyRows, tier, mode);
+    return Object.freeze({ admission, policies });
   }
 
   async function resolveTier(
@@ -1004,6 +1029,8 @@ export function createModelPolicyService(
     readEmployeeTierPolicy,
     releaseCatalogRefresh,
     resolveCompactionTier,
+    resolveGenerationAdmission,
+    resolveGenerationPolicyRows,
     resolveGenerationPolicies,
     resolveTier,
     setPreferredTier,

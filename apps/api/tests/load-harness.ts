@@ -31,11 +31,13 @@ import {
 import { createModelPolicyService } from "../src/model-policy/service.js";
 import { costControlTuning } from "../src/model-policy/settings.js";
 
-const employeeCount = 20;
 const jsonRequestTimeoutMilliseconds = 15_000;
 const maximumNdjsonLineBytes = 65_536;
 const streamTimeoutMilliseconds = 2 * 60 * 1_000;
-const warmupWaveCount = 5;
+// Low-frequency admin, failure, rejection, and serializer paths tier up after roughly 6-9 full
+// workload repetitions on Node 24. Ten unmeasured waves keep that finite V8 code generation out of
+// the strict post-baseline leak signal without changing the measured workload or its gates.
+const warmupWaveCount = 10;
 
 type Scenario = "cancel" | "failure" | "large" | "normal" | "seed" | "slow";
 
@@ -175,7 +177,12 @@ function requiredEnvironment(
   return value;
 }
 
-function loadOptions(): { readonly target: URL; readonly waves: number } {
+function loadOptions(): {
+  readonly employees: number;
+  readonly responseStartedP95ObjectiveMilliseconds: 500 | 750;
+  readonly target: URL;
+  readonly waves: number;
+} {
   return parseLoadOptions(process.argv.slice(2));
 }
 
@@ -332,6 +339,7 @@ function signedSessionCookie(secret: string, token: string): string {
 async function bootstrapEmployees(
   databaseUrl: string,
   authSecret: string,
+  employeeCount: number,
 ): Promise<readonly LoadEmployee[]> {
   const pool = createDatabasePool(databaseUrl);
   const database = createDatabase(pool);
@@ -856,6 +864,7 @@ async function verifyIsolation(
   employee: LoadEmployee,
   runId: string,
   result: StreamResult,
+  employeeCount: number,
 ): Promise<void> {
   const response = await jsonRequest(
     target,
@@ -867,7 +876,7 @@ async function verifyIsolation(
     throw new Error("A synthetic conversation could not be read after its stream");
   }
   const serialized = JSON.stringify(response.payload);
-  verifySerializedIsolation(serialized, runId, employee.index);
+  verifySerializedIsolation(serialized, runId, employee.index, employeeCount);
   if (
     !serialized.includes(
       `LOAD_RESPONSE:${runId}:${result.wave}:${employee.index}:${result.conversationIndex}:`,
@@ -877,7 +886,12 @@ async function verifyIsolation(
   }
 }
 
-function verifySerializedIsolation(serialized: string, runId: string, employeeIndex: number): void {
+function verifySerializedIsolation(
+  serialized: string,
+  runId: string,
+  employeeIndex: number,
+  employeeCount: number,
+): void {
   for (let index = 0; index < employeeCount; index += 1) {
     if (index !== employeeIndex) {
       for (const prefix of ["CAPSTONE_LOAD_V1", "LOAD_RESPONSE"]) {
@@ -941,11 +955,11 @@ async function runWave(
   const peakState = await databaseState(databaseUrl);
   const peakDiagnostics = await diagnosticsRequest(target, "read");
   if (
-    peakState.activeChatWorkflows !== employeeCount * 2 ||
-    peakState.reservedChatAccounting !== employeeCount * 2 ||
+    peakState.activeChatWorkflows !== employees.length * 2 ||
+    peakState.reservedChatAccounting !== employees.length * 2 ||
     peakState.activeCompactions > 1 ||
     peakState.reservedCompactionAccounting > 1 ||
-    peakDiagnostics.streams.active !== employeeCount * 2
+    peakDiagnostics.streams.active !== employees.length * 2
   ) {
     throw new Error("The measured wave did not reach its declared active-stream concurrency");
   }
@@ -1017,7 +1031,12 @@ async function runWave(
         operation.name === "conversation-list" ||
         operation.name === "conversation-search"
       ) {
-        verifySerializedIsolation(JSON.stringify(response.payload), runId, employee.index);
+        verifySerializedIsolation(
+          JSON.stringify(response.payload),
+          runId,
+          employee.index,
+          employees.length,
+        );
       }
       responses.push({ ...response, operation: operation.name });
       await pause(25);
@@ -1088,11 +1107,13 @@ async function runWave(
     throw new Error("A concurrency rejection changed branch or budget state");
   }
 
-  const cancellationSamples = [1, 6, 11, 16].map((employeeIndex) => ({
-    control: controls[employeeIndex * 2],
-    employee: employees[employeeIndex],
-    started: starts[employeeIndex * 2],
-  }));
+  const cancellationSamples = employees
+    .filter(({ index }) => measuredScenario(index, 0) === "cancel")
+    .map((employee) => ({
+      control: controls[employee.index * 2],
+      employee,
+      started: starts[employee.index * 2],
+    }));
   if (
     cancellationSamples.some(({ control, employee, started }) => !control || !employee || !started)
   ) {
@@ -1171,7 +1192,7 @@ async function runWave(
       if (!employee) {
         throw new Error("A stream result referenced an unknown employee");
       }
-      return verifyIsolation(target, employee, runId, result);
+      return verifyIsolation(target, employee, runId, result, employees.length);
     }),
   );
   return {
@@ -1316,7 +1337,7 @@ async function main(): Promise<void> {
   await diagnosticsRequest(options.target, "read");
   await assertEmptyLoadDatabase(databaseUrl);
   await verifyTargetDatabase(options.target, databaseUrl);
-  const employees = await bootstrapEmployees(databaseUrl, authSecret);
+  const employees = await bootstrapEmployees(databaseUrl, authSecret, options.employees);
   const runId = randomUUID();
   const compactionEmployee = employees[3];
   const warmEmployee = employees[0];
@@ -1461,7 +1482,12 @@ async function main(): Promise<void> {
     const responseStartedP95 = percentile(started, 95);
     const cancellationP50 = percentile(result.cancellationMilliseconds, 50);
     const cancellationP95 = percentile(result.cancellationMilliseconds, 95);
-    if (apiP95 > 300 || apiP99 > 750 || responseStartedP95 > 500 || cancellationP95 > 500) {
+    if (
+      apiP95 > 300 ||
+      apiP99 > 750 ||
+      responseStartedP95 > options.responseStartedP95ObjectiveMilliseconds ||
+      cancellationP95 > 500
+    ) {
       throw new LoadMeasurementError(
         "A measured wave exceeded a locked capacity latency objective",
         "capacity-latency-objective",
@@ -1471,6 +1497,7 @@ async function main(): Promise<void> {
           cancellationP95Milliseconds: cancellationP95,
           responseStartedP50Milliseconds: responseStartedP50,
           responseStartedP95Milliseconds: responseStartedP95,
+          responseStartedP95ObjectiveMilliseconds: options.responseStartedP95ObjectiveMilliseconds,
           targetCpuUtilizationPercent: activeWaveDiagnostics.cpu.utilizationPercent,
           targetEventLoopMaximumDelayMilliseconds:
             activeWaveDiagnostics.eventLoop.maximumDelayMilliseconds,
@@ -1548,21 +1575,31 @@ async function main(): Promise<void> {
     throw new LoadMeasurementError(
       "Measured waves showed monotonic post-idle memory growth",
       "target-memory-leak-slope",
-      Object.fromEntries(
-        measuredPostIdleMemory.flatMap((sample, index) => [
+      Object.fromEntries([
+        [
+          "responseStartedP95ObjectiveMilliseconds",
+          options.responseStartedP95ObjectiveMilliseconds,
+        ],
+        ...measuredPostIdleMemory.flatMap((sample, index) => [
           [`wave${index + 1}HeapUsedBytes`, sample.heapUsedBytes],
           [`wave${index + 1}RssBytes`, sample.rssBytes],
         ]),
-      ),
+      ]),
     );
   }
   process.stdout.write(
     `${JSON.stringify(
       {
         generatedAt: new Date().toISOString(),
+        objectives: {
+          apiP95Milliseconds: 300,
+          apiP99Milliseconds: 750,
+          cancellationP95Milliseconds: 500,
+          responseStartedP95Milliseconds: options.responseStartedP95ObjectiveMilliseconds,
+        },
         runId,
         targetOrigin: options.target.origin,
-        workload: { activeStreams: 40, employees: employeeCount },
+        workload: { activeStreams: options.employees * 2, employees: options.employees },
         warmedBaseline: warmedPostIdleDiagnostics.current,
         waves,
       },

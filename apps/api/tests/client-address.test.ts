@@ -9,8 +9,13 @@ import {
 function request(
   headers: Record<string, string | string[] | undefined>,
   ip = "127.0.0.1",
+  remoteAddress = ip,
 ): FastifyRequest {
-  return { headers: { ...headers }, ip } as unknown as FastifyRequest;
+  return {
+    headers: { ...headers },
+    ip,
+    raw: { socket: { remoteAddress } },
+  } as unknown as FastifyRequest;
 }
 
 describe("trusted client address", () => {
@@ -21,7 +26,7 @@ describe("trusted client address", () => {
       "x-forwarded-for": "198.51.100.12",
     });
 
-    captureTrustedClientAddress(local, "test");
+    captureTrustedClientAddress(local, "socket");
     const forwarded = createTrustedAuthHeaders(local);
 
     expect(resolveTrustedClientAddress(local)).toBe("127.0.0.1");
@@ -34,17 +39,19 @@ describe("trusted client address", () => {
   it.each([
     ["198.51.100.20", "198.51.100.20"],
     ["2001:0DB8:0:0:0:0:0:1", "2001:db8::1"],
-  ])("accepts one edge-sanitized production address: %s", (value, expected) => {
+  ])("accepts one Caddy-sanitized address over loopback: %s", (value, expected) => {
     const production = request({
-      "cf-connecting-ip": value,
-      "x-capstone-client-ip": "203.0.113.5",
+      "cf-connecting-ip": "203.0.113.5",
+      "x-capstone-client-ip": value,
       "x-forwarded-for": "203.0.113.6, 203.0.113.7",
     });
 
-    captureTrustedClientAddress(production, "production");
+    captureTrustedClientAddress(production, "caddy");
 
     expect(resolveTrustedClientAddress(production)).toBe(expected);
     expect(createTrustedAuthHeaders(production).get("x-capstone-client-ip")).toBe(expected);
+    expect(production.headers["cf-connecting-ip"]).toBeUndefined();
+    expect(production.headers["x-forwarded-for"]).toBeUndefined();
   });
 
   it.each([
@@ -54,14 +61,29 @@ describe("trusted client address", () => {
     "198.51.100.1, 198.51.100.2",
     ["198.51.100.1", "198.51.100.2"],
   ])("fails closed for an invalid production edge address: %j", (value) => {
-    const production = request({ "cf-connecting-ip": value });
+    const production = request({ "x-capstone-client-ip": value });
 
-    captureTrustedClientAddress(production, "production");
+    captureTrustedClientAddress(production, "caddy");
 
     expect(() => resolveTrustedClientAddress(production)).toThrow(
       "No se pudo validar el origen de red",
     );
     expect(() => createTrustedAuthHeaders(production)).toThrow(
+      "No se pudo validar el origen de red",
+    );
+  });
+
+  it("rejects a private-header claim that did not arrive over the Caddy loopback", () => {
+    const direct = request(
+      { "x-capstone-client-ip": "198.51.100.20" },
+      "198.51.100.99",
+      "198.51.100.99",
+    );
+
+    captureTrustedClientAddress(direct, "caddy");
+
+    expect(direct.headers["x-capstone-client-ip"]).toBeUndefined();
+    expect(() => resolveTrustedClientAddress(direct)).toThrow(
       "No se pudo validar el origen de red",
     );
   });

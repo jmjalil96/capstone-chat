@@ -282,4 +282,6 @@ export {
   ResponseStartedEventSchema,
   type StreamEvent,
   StreamEventSchema,
+  type StreamHeartbeatEvent,
+  StreamHeartbeatEventSchema,
 } from "./stream.js";

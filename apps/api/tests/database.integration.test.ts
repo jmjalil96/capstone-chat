@@ -2,10 +2,12 @@ import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import { sql } from "drizzle-orm";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApplication } from "../src/app.js";
 import { loadConfig } from "../src/config.js";
+import { createDatabase, executePrepared } from "../src/database/database.js";
 import { migrateDatabase, migrationsFolder } from "../src/database/migrate.js";
 import { createDatabasePool } from "../src/database/pool.js";
 
@@ -120,7 +122,7 @@ describe("PostgreSQL application schema", () => {
         "SELECT table_name AS \"tableName\" FROM information_schema.tables WHERE table_schema = 'public'",
       );
 
-      expect(appliedMigrations.rows).toHaveLength(6);
+      expect(appliedMigrations.rows).toHaveLength(7);
       expect(appliedMigrations.rows[0]?.hash).toMatch(/^[a-f0-9]{64}$/u);
       expect(Number(appliedMigrations.rows[0]?.createdAt)).toBeGreaterThan(0);
       expect(productTables.rows.map(({ tableName }) => tableName).sort()).toEqual(
@@ -186,7 +188,7 @@ describe("PostgreSQL application schema", () => {
         "SELECT table_name AS \"tableName\" FROM information_schema.tables WHERE table_schema = 'public' AND table_name IN ('conversations', 'drafts', 'messages') ORDER BY table_name",
       );
 
-      expect(migrations.rows).toHaveLength(6);
+      expect(migrations.rows).toHaveLength(7);
       expect(workspace.rows).toEqual([{ displayName: "Phase Two Preserved" }]);
       expect(phaseThreeTables.rows.map((row) => row.tableName)).toEqual([
         "conversations",
@@ -326,7 +328,7 @@ describe("PostgreSQL application schema", () => {
         "SELECT count(*)::text AS count FROM generations",
       );
 
-      expect(migrations.rows).toHaveLength(6);
+      expect(migrations.rows).toHaveLength(7);
       expect(preserved.rows).toEqual([
         {
           draftContent: "Borrador preservado",
@@ -614,6 +616,7 @@ describe("PostgreSQL application schema", () => {
           'generations_active_conversation_unique',
           'generations_assistant_message_unique',
           'generations_chat_workflow_conversation_unique',
+          'generations_conversation_idx',
           'generations_openrouter_generation_id_unique',
           'generations_reserved_expiry_idx',
           'generations_scoped_idempotency_unique',
@@ -689,6 +692,7 @@ describe("PostgreSQL application schema", () => {
         "generations_active_conversation_unique",
         "generations_assistant_message_unique",
         "generations_chat_workflow_conversation_unique",
+        "generations_conversation_idx",
         "generations_openrouter_generation_id_unique",
         "generations_reserved_expiry_idx",
         "generations_scoped_idempotency_unique",
@@ -1038,6 +1042,84 @@ describe("PostgreSQL application schema", () => {
     expect(migrationFiles.length).toBeGreaterThan(0);
     expect(migrationSql).toMatch(/\bCREATE (?:TABLE|TYPE)\b/iu);
     expect(migrationSql).not.toMatch(/\b(?:DELETE\s+FROM|DROP\s+(?:TABLE|COLUMN)|TRUNCATE)\b/iu);
+  });
+
+  it("keeps every Drizzle journal entry paired with its generated snapshot", async () => {
+    const journal = JSON.parse(
+      await readFile(resolve(migrationsFolder, "meta/_journal.json"), "utf8"),
+    ) as { readonly entries?: readonly { readonly idx?: number; readonly tag?: string }[] };
+    const snapshots = (await readdir(resolve(migrationsFolder, "meta")))
+      .filter((fileName) => /^\d{4}_snapshot\.json$/u.test(fileName))
+      .sort();
+    const migrationFiles = (await readdir(migrationsFolder))
+      .filter((fileName) => /^\d{4}_.+\.sql$/u.test(fileName))
+      .sort();
+
+    expect(journal.entries).toBeDefined();
+    expect(snapshots).toHaveLength(journal.entries?.length ?? -1);
+    expect(migrationFiles).toHaveLength(journal.entries?.length ?? -1);
+    expect(
+      journal.entries?.map(({ idx }) => `${String(idx).padStart(4, "0")}_snapshot.json`),
+    ).toEqual(snapshots);
+    expect(journal.entries?.map(({ tag }) => `${tag}.sql`)).toEqual(migrationFiles);
+  });
+
+  it("applies server-side timeouts to every application connection", async () => {
+    const applicationPool = createDatabasePool(databaseUrl);
+    try {
+      const settings = await applicationPool.query<{
+        idleInTransactionTimeout: string;
+        jit: string;
+        lockTimeout: string;
+        statementTimeout: string;
+      }>(`
+        SELECT current_setting('jit') AS jit,
+          current_setting('statement_timeout') AS "statementTimeout",
+          current_setting('lock_timeout') AS "lockTimeout",
+          current_setting('idle_in_transaction_session_timeout') AS "idleInTransactionTimeout"
+      `);
+
+      expect(settings.rows).toEqual([
+        {
+          idleInTransactionTimeout: "5s",
+          jit: "off",
+          lockTimeout: "5s",
+          statementTimeout: "5s",
+        },
+      ]);
+    } finally {
+      await applicationPool.end();
+    }
+  });
+
+  it("reuses a versioned server plan while binding fresh values", async () => {
+    const pool = new Pool({ connectionString: databaseUrl, max: 1 });
+    const database = createDatabase(pool);
+    const observed: number[] = [];
+
+    try {
+      for (let value = 1; value <= 6; value += 1) {
+        const result = await database.transaction((transaction) =>
+          executePrepared<{ value: number }>(
+            transaction,
+            "database-prepared-probe-v1",
+            sql`SELECT ${value}::integer AS value`,
+          ),
+        );
+        observed.push(result.rows[0]?.value ?? -1);
+      }
+      const plans = await pool.query<{ customPlans: string; genericPlans: string }>(`
+        SELECT custom_plans::text AS "customPlans", generic_plans::text AS "genericPlans"
+        FROM pg_prepared_statements
+        WHERE name = 'database-prepared-probe-v1'
+      `);
+
+      expect(observed).toEqual([1, 2, 3, 4, 5, 6]);
+      expect(Number(plans.rows[0]?.customPlans)).toBeGreaterThan(0);
+      expect(Number(plans.rows[0]?.genericPlans)).toBeGreaterThan(0);
+    } finally {
+      await pool.end();
+    }
   });
 
   it("keeps liveness healthy when PostgreSQL becomes unavailable", async () => {

@@ -5,8 +5,8 @@ const databaseUrl = process.env.CAPSTONE_LOAD_DATABASE_URL;
 const authSecret = process.env.CAPSTONE_LOAD_AUTH_SECRET;
 const portValue = process.env.CAPSTONE_LOAD_PORT ?? "3015";
 const port = Number(portValue);
-const candidateCpu = "4";
-const candidateMemory = "8g";
+const candidateCpu = "1";
+const candidateMemory = "2g";
 
 function assert(condition, message) {
   if (!condition) {
@@ -116,6 +116,8 @@ try {
       "--env",
       "HOST=0.0.0.0",
       "--env",
+      "CLIENT_ADDRESS_SOURCE=socket",
+      "--env",
       `PORT=${port}`,
       "--env",
       `PUBLIC_ORIGIN=${baseUrl}`,
@@ -148,12 +150,12 @@ try {
   const limits = docker([
     "inspect",
     "--format",
-    "{{.HostConfig.NanoCpus}} {{.HostConfig.Memory}} {{.Config.User}}",
+    "{{.HostConfig.NanoCpus}} {{.HostConfig.Memory}} {{.HostConfig.MemorySwap}} {{.HostConfig.PidsLimit}} {{.Config.User}}",
     containerName,
   ]);
   assert(
-    limits === "4000000000 8589934592 node",
-    "Docker did not apply the selected Pro Plus limits",
+    limits === "1000000000 2147483648 2147483648 256 node",
+    "Docker did not apply the selected Standard limits",
   );
   await waitForReadiness();
 

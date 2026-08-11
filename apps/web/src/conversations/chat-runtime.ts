@@ -466,6 +466,10 @@ export class ChatRuntime {
       return;
     }
 
+    if (event.type === "stream.heartbeat") {
+      return;
+    }
+
     if (event.type === "context.compacting") {
       if (entry.phase !== "stopping") {
         entry.phase = "compacting";

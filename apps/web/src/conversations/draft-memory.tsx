@@ -12,6 +12,7 @@ import {
   useState,
 } from "react";
 
+import { subscribeAuthenticationRequired } from "../api/session-boundary";
 import {
   ConversationApiError,
   type ConversationQueryScope,
@@ -225,6 +226,21 @@ export function DraftMemoryProvider({ children, queryScope }: DraftMemoryProvide
       });
     };
   }, [queryClient, queryScope, scopeKey]);
+  useLayoutEffect(
+    () =>
+      subscribeAuthenticationRequired(() => {
+        const generation = generationRef.current;
+        if (!generation?.active) {
+          return;
+        }
+        generation.active = false;
+        generation.controller.abort();
+        const actorKey = conversationQueryKeys.all(queryScope);
+        void queryClient.cancelQueries({ queryKey: actorKey });
+        queryClient.removeQueries({ queryKey: actorKey });
+      }),
+    [queryClient, queryScope],
+  );
   const value = useMemo(
     () => ({
       capture,

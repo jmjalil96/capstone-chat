@@ -35,6 +35,7 @@ import { createActorResolver } from "./identity/authorization.js";
 import { createEmailSender, type EmailSender, FakeEmailSender } from "./identity/email.js";
 import { createIdentityService, type IdentityService } from "./identity/service.js";
 import { createApplicationLifecycle } from "./lifecycle.js";
+import { settleWithin } from "./lifecycle-timeout.js";
 import { type BudgetService, createBudgetService } from "./model-policy/budget-service.js";
 import { refreshClaimedCatalog } from "./model-policy/catalog-refresh.js";
 import {
@@ -69,6 +70,7 @@ import {
   enforceCapstoneMutationBoundary,
   httpServerTuning,
 } from "./security/http.js";
+import { applicationShutdownBudget } from "./shutdown-budget.js";
 import {
   createKnownApplicationAssetValidator,
   registerStaticApplication,
@@ -153,7 +155,6 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
     createDatabasePool(config.databaseUrl, (error) => {
       server.log.error(operationalErrorMetadata(error), "idle database connection failed");
     });
-  const lifecycle = createApplicationLifecycle(pool);
   const database = dependencies.database ?? createDatabase(pool as Pool);
   const emailSender =
     dependencies.emailSender ??
@@ -188,6 +189,19 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
   const budget = dependencies.budget ?? createBudgetService(database, { telemetry });
   const modelPolicy =
     dependencies.modelPolicy ?? createModelPolicyService(database, { cursorCodec });
+  const lifecycle = createApplicationLifecycle(pool, {
+    ...(config.nodeEnv === "production"
+      ? {
+          onReadyValidationFailure(error: unknown) {
+            server.log.warn(
+              { ...operationalErrorMetadata(error), operation: "readiness-authority" },
+              "application readiness validation failed",
+            );
+          },
+          validateReady: () => modelPolicy.assertRuntimeMode("openrouter"),
+        }
+      : {}),
+  });
   const conversations =
     dependencies.conversations ??
     createConversationService(database, cursorCodec, config.modelGateway, modelPolicy);
@@ -279,7 +293,7 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
   });
 
   server.addHook("onRequest", (request, reply, done) => {
-    captureTrustedClientAddress(request, config.nodeEnv);
+    captureTrustedClientAddress(request, config.clientAddressSource);
     applySecurityHeaders(reply, config.nodeEnv);
     if (!ordinaryRequestDrain.track(request, reply)) {
       done(new ApplicationError(503, "INTERNAL_ERROR", "El servicio se está reiniciando."));
@@ -323,7 +337,7 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
       ? undefined
       : registerStaticApplication(server, config.webAssetsDirectory);
   registerErrorHandling(server, tryServeSpaShell);
-  registerHealthRoutes(server, lifecycle);
+  registerHealthRoutes(server, lifecycle, config.deploymentRevision);
   registerClientErrorRoute(server, {
     isKnownAsset: isKnownApplicationAsset,
     onReport: (report) => telemetry.recordClientError(report.kind, report.route),
@@ -401,12 +415,21 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
       streamRegistry.beginDraining();
       ordinaryRequestDrain.beginDraining();
       const shutdownErrors: unknown[] = [];
-      const maintenanceStopPromise = maintenance.stop().catch((error: unknown) => {
-        shutdownErrors.push(error);
-      });
-      const closePromise = server.close().catch((error: unknown) => {
-        shutdownErrors.push(error);
-      });
+      const captureShutdownOperation = (operation: () => Promise<unknown>): Promise<void> =>
+        Promise.resolve()
+          .then(operation)
+          .then(
+            () => undefined,
+            (error: unknown) => {
+              shutdownErrors.push(error);
+            },
+          );
+      const maintenanceStopPromise = captureShutdownOperation(() => maintenance.stop());
+      const closePromise = captureShutdownOperation(() => server.close());
+      const httpAndMaintenanceSettled = settleWithin(
+        Promise.all([closePromise, maintenanceStopPromise]),
+        applicationShutdownBudget.httpAndMaintenanceMaximumMilliseconds,
+      );
 
       const ordinaryIdle = await ordinaryRequestDrain.drainAndSeal(
         httpServerTuning.ordinaryDrainMilliseconds,
@@ -438,8 +461,9 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
       // Both independently bounded lifetimes have settled. Terminate only
       // residual idle or unparsed sockets before closing process-owned resources.
       server.server.closeAllConnections();
-      await closePromise;
-      await maintenanceStopPromise;
+      if (!(await httpAndMaintenanceSettled)) {
+        shutdownErrors.push(new Error("HTTP or maintenance shutdown exceeded its deadline"));
+      }
 
       if (resourceFenceFailed) {
         shutdownErrors.push(new Error("Application shutdown could not fence in-flight work"));
@@ -449,30 +473,37 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
         throw new AggregateError(shutdownErrors, "application shutdown failed");
       }
 
-      try {
-        await emailSender.close();
-      } catch (error: unknown) {
-        shutdownErrors.push(error);
-      }
+      const emailClosePromise = captureShutdownOperation(() => emailSender.close());
 
       try {
         stopPoolObservation();
       } catch {
         server.log.warn({ operation: "database-pool" }, "telemetry instrumentation failed");
       }
-      try {
-        await pool.end();
-      } catch (error: unknown) {
-        shutdownErrors.push(error);
+      const poolClosePromise = captureShutdownOperation(() => pool.end());
+      const [emailClosed, poolClosed] = await Promise.all([
+        settleWithin(emailClosePromise, applicationShutdownBudget.emailShutdownMaximumMilliseconds),
+        settleWithin(
+          poolClosePromise,
+          applicationShutdownBudget.databasePoolShutdownMaximumMilliseconds,
+        ),
+      ]);
+      if (!emailClosed) {
+        shutdownErrors.push(new Error("Transactional email shutdown exceeded its deadline"));
+      }
+      if (!poolClosed) {
+        shutdownErrors.push(new Error("Database pool shutdown exceeded its deadline"));
       }
 
-      try {
-        await telemetry.shutdown();
-      } catch (error: unknown) {
-        shutdownErrors.push(error);
-      } finally {
-        lifecycle.markStopped();
+      const telemetryShutdownPromise = captureShutdownOperation(() => telemetry.shutdown());
+      const telemetryStopped = await settleWithin(
+        telemetryShutdownPromise,
+        applicationShutdownBudget.telemetryShutdownMaximumMilliseconds,
+      );
+      if (!telemetryStopped) {
+        shutdownErrors.push(new Error("Telemetry shutdown exceeded its deadline"));
       }
+      lifecycle.markStopped();
 
       if (shutdownErrors.length === 1) {
         throw shutdownErrors[0];
