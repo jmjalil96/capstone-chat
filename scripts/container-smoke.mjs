@@ -71,6 +71,29 @@ function docker(arguments_, options = {}) {
   return result.stdout.trim();
 }
 
+function runTestOperator(arguments_, environment = []) {
+  docker([
+    "run",
+    "--rm",
+    "--add-host",
+    "host.docker.internal:host-gateway",
+    "--group-add",
+    "1000",
+    "--volume",
+    `${secretVolumeName}:/secrets:ro`,
+    "--env",
+    "CAPSTONE_SECRET_FILE=/secrets/migration.json",
+    "--env",
+    "NODE_ENV=test",
+    ...environment.flatMap((value) => ["--env", value]),
+    "--entrypoint",
+    "node",
+    image,
+    "apps/api/dist/entrypoint.js",
+    ...arguments_,
+  ]);
+}
+
 function cleanup() {
   spawnSync("docker", ["rm", "--force", containerName], { encoding: "utf8" });
   spawnSync("docker", ["rm", "--force", entrypointContainerName], { encoding: "utf8" });
@@ -286,6 +309,41 @@ try {
     image,
     "apps/api/dist/entrypoint.js",
     "migrate",
+  ]);
+  runTestOperator(
+    [
+      "identity",
+      "bootstrap",
+      "--workspace",
+      "container-smoke",
+      "--name",
+      "Capstone container smoke",
+      "--email",
+      "administrator@container-smoke.test",
+      "--invitation-delivery",
+      "disabled",
+    ],
+    ["EMAIL_DELIVERY=disabled"],
+  );
+  runTestOperator([
+    "model",
+    "bootstrap",
+    "--mode",
+    "simulated",
+    "--workspace",
+    "container-smoke",
+    "--monthly-budget-usd",
+    "100",
+    "--fast-max-output",
+    "4096",
+    "--balanced-max-output",
+    "8192",
+    "--pro-max-output",
+    "16384",
+    "--employee-generation-limit",
+    "2",
+    "--reservation-margin-bps",
+    "2000",
   ]);
 
   docker(
