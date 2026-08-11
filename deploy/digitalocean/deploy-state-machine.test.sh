@@ -555,11 +555,23 @@ fi
 
 temporary_root=$(mktemp -d "${TMPDIR:-/tmp}/capstone-deploy-test.XXXXXX")
 locker_pid=""
+stop_locker() {
+  [[ -n ${locker_pid} ]] || return 0
+  local pid=${locker_pid} attempt
+  kill -TERM -- "-${pid}" >/dev/null 2>&1 || true
+  wait "${pid}" >/dev/null 2>&1 || true
+  locker_pid=""
+  for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    if ! kill -0 -- "-${pid}" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.05
+  done
+  kill -KILL -- "-${pid}" >/dev/null 2>&1 || true
+  return 1
+}
 cleanup() {
-  if [[ -n ${locker_pid} ]]; then
-    kill "${locker_pid}" >/dev/null 2>&1 || true
-    wait "${locker_pid}" >/dev/null 2>&1 || true
-  fi
+  stop_locker >/dev/null 2>&1 || true
   [[ -d ${temporary_root} && ! -L ${temporary_root} && ${temporary_root} == */capstone-deploy-test.* ]] ||
     test_fail "temporary fixture root is unsafe"
   find "${temporary_root}" -depth -delete
@@ -598,7 +610,19 @@ run_scenario rollback success \
 
 if command -v flock >/dev/null 2>&1; then
   lock_ready="${temporary_root}/lock-ready"
-  flock --exclusive "${temporary_root}/deploy.lock" sh -c 'touch "$1"; sleep 30' sh "${lock_ready}" &
+  python3 -c '
+import fcntl
+import os
+import pathlib
+import signal
+import sys
+
+os.setsid()
+with open(sys.argv[1], "w", encoding="utf-8") as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    pathlib.Path(sys.argv[2]).touch()
+    signal.pause()
+' "${temporary_root}/deploy.lock" "${lock_ready}" &
   locker_pid=$!
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     [[ -e ${lock_ready} ]] && break
@@ -606,9 +630,7 @@ if command -v flock >/dev/null 2>&1; then
   done
   [[ -e ${lock_ready} ]] || test_fail "lock holder did not start"
   run_scenario concurrent-lock failure ''
-  kill "${locker_pid}" >/dev/null 2>&1 || true
-  wait "${locker_pid}" >/dev/null 2>&1 || true
-  locker_pid=""
+  stop_locker || test_fail "lock-holder process group survived cleanup"
 else
   export CAPSTONE_TEST_MOCK_FLOCK=1
   run_scenario concurrent-lock failure 'lock-denied'
