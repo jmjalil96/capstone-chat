@@ -116,12 +116,12 @@ printf '%s\n' \
   runtime_secret_schema_is_exact || fail_test "exact production runtime secret was rejected"
 )
 (
-  CAPSTONE_NODE_ENV=test
+  CAPSTONE_NODE_ENV="test"
   CAPSTONE_RUNTIME_SECRET_PATH=${rehearsal_runtime}
   runtime_secret_schema_is_exact || fail_test "exact rehearsal runtime secret was rejected"
 )
 (
-  CAPSTONE_NODE_ENV=test
+  CAPSTONE_NODE_ENV="test"
   CAPSTONE_RUNTIME_SECRET_PATH=${production_runtime}
   expect_failure "rehearsal runtime secret with real provider keys" runtime_secret_schema_is_exact
 )
