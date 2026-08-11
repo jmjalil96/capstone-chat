@@ -165,6 +165,8 @@ grep -Fq 'CAPSTONE_OTEL_EXPORTER_OTLP_ENDPOINT=https://otlp.nr-data.net' "${ARTI
   fail "official New Relic OTLP endpoint changed"
 grep -Fq -- '--env OTEL_EXPORTER_OTLP_ENDPOINT=${CAPSTONE_OTEL_EXPORTER_OTLP_ENDPOINT}' \
   "${ARTIFACT_ROOT}/capstone-chat@.service" || fail "application container is missing the OTLP endpoint"
+grep -Fq -- '--env WEB_ASSETS=production-build' \
+  "${ARTIFACT_ROOT}/capstone-chat@.service" || fail "deployed application does not enable the reviewed web build"
 grep -Fq 'INVOCATION_ID' "${ARTIFACT_ROOT}/deploy.sh" || fail "deploy script accepts unsupervised use"
 grep -Fq 'flock --exclusive --nonblock' "${ARTIFACT_ROOT}/deploy.sh" || fail "deployment lock is missing"
 python3 - "${ARTIFACT_ROOT}/deploy.sh" <<'PY'

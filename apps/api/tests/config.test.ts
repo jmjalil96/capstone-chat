@@ -147,6 +147,45 @@ describe("loadConfig", () => {
     });
   });
 
+  it("serves the production build only in production or an explicit test rehearsal", () => {
+    expect(loadConfig({ NODE_ENV: "test" }).webAssetsDirectory).toBeNull();
+
+    const rehearsal = loadConfig({
+      DATABASE_URL: productionEnvironment.DATABASE_URL,
+      NODE_ENV: "test",
+      WEB_ASSETS: "production-build",
+    });
+    expect(rehearsal.webAssetsDirectory).toMatch(/\/apps\/web\/dist\/?$/u);
+    expect(() =>
+      loadConfig({
+        DATABASE_URL: "postgresql://tester:tester@localhost:6543/test_database",
+        NODE_ENV: "test",
+        WEB_ASSETS: "production-build",
+      }),
+    ).toThrow("verify-full");
+
+    expect(() => loadConfig({ NODE_ENV: "development", WEB_ASSETS: "production-build" })).toThrow(
+      "managed test rehearsal",
+    );
+    expect(() => loadConfig({ NODE_ENV: "test", WEB_ASSETS: "true" })).toThrow(
+      "managed test rehearsal",
+    );
+    expect(() =>
+      loadConfig({
+        ...productionEnvironment,
+        MODEL_GATEWAY: "fake",
+        WEB_ASSETS: "production-build",
+      }),
+    ).toThrow("prohibited in production");
+    expect(() =>
+      loadConfig({
+        ...productionEnvironment,
+        EMAIL_DELIVERY: "disabled",
+        WEB_ASSETS: "production-build",
+      }),
+    ).toThrow("must be resend in production");
+  });
+
   it("uses the provider-neutral commit as the canonical production release", () => {
     const config = loadConfig(productionEnvironment);
 

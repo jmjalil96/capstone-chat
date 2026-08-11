@@ -189,18 +189,24 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
   const budget = dependencies.budget ?? createBudgetService(database, { telemetry });
   const modelPolicy =
     dependencies.modelPolicy ?? createModelPolicyService(database, { cursorCodec });
+  const readinessPolicyMode =
+    config.nodeEnv === "production"
+      ? "openrouter"
+      : config.nodeEnv === "test" && config.webAssetsDirectory !== null
+        ? "simulated"
+        : null;
   const lifecycle = createApplicationLifecycle(pool, {
-    ...(config.nodeEnv === "production"
-      ? {
+    ...(readinessPolicyMode === null
+      ? {}
+      : {
           onReadyValidationFailure(error: unknown) {
             server.log.warn(
               { ...operationalErrorMetadata(error), operation: "readiness-authority" },
               "application readiness validation failed",
             );
           },
-          validateReady: () => modelPolicy.assertRuntimeMode("openrouter"),
-        }
-      : {}),
+          validateReady: () => modelPolicy.assertRuntimeMode(readinessPolicyMode),
+        }),
   });
   const conversations =
     dependencies.conversations ??

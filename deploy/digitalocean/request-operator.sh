@@ -4,6 +4,7 @@ set -euo pipefail
 readonly REQUEST_ROOT=/run/capstone-operator
 readonly REQUEST_PATH="${REQUEST_ROOT}/request.json"
 readonly REQUEST_LOCK="${REQUEST_ROOT}/request.lock"
+readonly HOST_ENV=/etc/capstone-chat/host.env
 readonly INPUT_ROOT=/run/capstone-input
 readonly REQUEST_LIFECYCLE=/opt/capstone-chat/bin/request-lifecycle.sh
 readonly RETENTION_PLAN=/var/lib/capstone-chat/ghcr-retention-plan.json
@@ -12,6 +13,36 @@ umask 0077
 fail() {
   printf 'capstone operator request rejected: %s\n' "$1" >&2
   exit 1
+}
+
+load_request_mode() {
+  [[ -f ${HOST_ENV} && ! -L ${HOST_ENV} && $(stat -c '%u:%g:%a' "${HOST_ENV}") == 0:0:640 ]] ||
+    fail "the host contract is missing or unsafe"
+  ! grep -Eq '__[A-Z0-9_]+__' "${HOST_ENV}" || fail "the host contract still has a placeholder"
+  # shellcheck disable=SC1091
+  source "${HOST_ENV}"
+  case "${CAPSTONE_NODE_ENV:-}" in
+    production)
+      [[ ${CAPSTONE_PUBLIC_HOST:-} == chat.capstone.com.ec &&
+        ${CAPSTONE_PUBLIC_ORIGIN:-} == https://chat.capstone.com.ec &&
+        ${CAPSTONE_EMAIL_DELIVERY:-} == resend &&
+        ${CAPSTONE_MODEL_GATEWAY:-} == openrouter &&
+        ${CAPSTONE_EXPECTED_REGION:-} == ric1 ]] ||
+        fail "the production operator request contract changed"
+      request_mode=production
+      ;;
+    test)
+      [[ ${CAPSTONE_EMAIL_DELIVERY:-} == disabled &&
+        ${CAPSTONE_MODEL_GATEWAY:-} == fake &&
+        ${CAPSTONE_EXPECTED_REGION:-} == nyc3 &&
+        -n ${CAPSTONE_PUBLIC_HOST:-} &&
+        ${CAPSTONE_PUBLIC_HOST} != chat.capstone.com.ec &&
+        ${CAPSTONE_PUBLIC_ORIGIN:-} == "https://${CAPSTONE_PUBLIC_HOST}" ]] ||
+        fail "the managed rehearsal operator request contract is unsafe"
+      request_mode=rehearsal
+      ;;
+    *) fail "operator requests require production or the explicit managed test rehearsal" ;;
+  esac
 }
 
 show_retention_plan() {
@@ -105,6 +136,8 @@ stage_database_secret() {
 [[ ${EUID} -eq 0 ]] || fail "root is required; invoke this audited helper through sudo"
 [[ $# -ge 1 ]] || fail "expected one allowlisted operator operation"
 [[ -r /dev/tty && -w /dev/tty ]] || fail "a private interactive terminal is required"
+request_mode=""
+load_request_mode
 [[ -f ${REQUEST_LIFECYCLE} && ! -L ${REQUEST_LIFECYCLE} &&
   $(stat -c '%U:%G:%a' "${REQUEST_LIFECYCLE}") == root:root:750 ]] ||
   fail "request lifecycle helper is missing or unsafe"
@@ -112,6 +145,13 @@ stage_database_secret() {
 source "${REQUEST_LIFECYCLE}"
 operation=$1
 shift
+
+if [[ ${request_mode} == rehearsal ]]; then
+  case "${operation}" in
+    identity-bootstrap | model-policy-initialize | recovery-marker-create | recovery-marker-list | recovery-marker-delete | recovery-prepare) ;;
+    *) fail "the managed rehearsal permits only initialization and recovery operations" ;;
+  esac
+fi
 
 install -d -o root -g root -m 0700 "${REQUEST_ROOT}"
 exec 9>"${REQUEST_LOCK}"
@@ -158,17 +198,42 @@ trap cleanup EXIT
 
 case "${operation}" in
   identity-bootstrap)
-    [[ $# -eq 0 ]] || fail "identity-bootstrap accepts no command arguments"
+    identity_initialization=0
+    if [[ ${request_mode} == rehearsal ]]; then
+      [[ $# -eq 2 ]] ||
+        fail "rehearsal identity-bootstrap requires one full revision and one sha256 digest"
+      identity_initialization=1
+    elif [[ $# -eq 2 ]]; then
+      identity_initialization=1
+    else
+      [[ $# -eq 0 ]] ||
+        fail "identity-bootstrap accepts either no arguments or one full revision and sha256 digest"
+    fi
+    if [[ ${identity_initialization} -eq 1 ]]; then
+      revision=$1
+      digest=$2
+      [[ ${revision} =~ ^[0-9a-f]{40}$ ]] || fail "revision must be 40 lowercase hexadecimal characters"
+      [[ ${digest} =~ ^sha256:[0-9a-f]{64}$ ]] || fail "digest must be an immutable sha256 digest"
+    fi
     prompt_value workspace "Workspace identity"
     prompt_value name "Administrator display name" true
     prompt_value email "Administrator email" true
     write_field workspace "${workspace}"
     write_field name "${name}"
     write_field email "${email}"
-    jq -n --rawfile workspace "${field_root}/workspace" --rawfile name "${field_root}/name" \
-      --rawfile email "${field_root}/email" \
-      '{schema: 1, operation: "identity-bootstrap", input: {workspace: $workspace, name: $name, email: $email}}' \
-      >"${temporary}"
+    if [[ ${identity_initialization} -eq 1 ]]; then
+      jq -n --arg revision "${revision}" --arg digest "${digest}" \
+        --rawfile workspace "${field_root}/workspace" --rawfile name "${field_root}/name" \
+        --rawfile email "${field_root}/email" \
+        '{schema: 1, operation: "identity-bootstrap",
+          input: {digest: $digest, email: $email, name: $name, revision: $revision, workspace: $workspace}}' \
+        >"${temporary}"
+    else
+      jq -n --rawfile workspace "${field_root}/workspace" --rawfile name "${field_root}/name" \
+        --rawfile email "${field_root}/email" \
+        '{schema: 1, operation: "identity-bootstrap", input: {workspace: $workspace, name: $name, email: $email}}' \
+        >"${temporary}"
+    fi
     ;;
   identity-approve)
     [[ $# -eq 0 ]] || fail "identity-approve accepts no command arguments"
@@ -213,8 +278,10 @@ case "${operation}" in
     [[ ${revision} =~ ^[0-9a-f]{40}$ ]] || fail "revision must be 40 lowercase hexadecimal characters"
     [[ ${digest} =~ ^sha256:[0-9a-f]{64}$ ]] || fail "digest must be an immutable sha256 digest"
     prompt_value workspace "Workspace identity"
-    prompt_value input_source "Privacy attestation path under /run/capstone-input"
-    stage_json_input "${input_source}" "${REQUEST_ROOT}/input.json" "privacy attestation"
+    if [[ ${request_mode} == production ]]; then
+      prompt_value input_source "Privacy attestation path under /run/capstone-input"
+      stage_json_input "${input_source}" "${REQUEST_ROOT}/input.json" "privacy attestation"
+    fi
     write_field workspace "${workspace}"
     jq -n --arg revision "${revision}" --arg digest "${digest}" \
       --rawfile workspace "${field_root}/workspace" \

@@ -26,6 +26,112 @@ timeout() {
 }
 
 (
+  CAPSTONE_NODE_ENV="production"
+  CAPSTONE_EMAIL_DELIVERY="resend"
+  CAPSTONE_MODEL_GATEWAY="openrouter"
+  CAPSTONE_EXPECTED_REGION="ric1"
+  runtime_contract_is_exact || fail_test "exact production runtime contract was rejected"
+)
+
+(
+  CAPSTONE_NODE_ENV="test"
+  CAPSTONE_EMAIL_DELIVERY="disabled"
+  CAPSTONE_MODEL_GATEWAY="fake"
+  CAPSTONE_EXPECTED_REGION="nyc3"
+  CAPSTONE_PUBLIC_HOST="rehearsal.chat.capstone.test"
+  CAPSTONE_PUBLIC_ORIGIN="https://${CAPSTONE_PUBLIC_HOST}"
+  runtime_contract_is_exact || fail_test "exact managed rehearsal runtime contract was rejected"
+)
+
+(
+  CAPSTONE_NODE_ENV="test"
+  CAPSTONE_EMAIL_DELIVERY="disabled"
+  CAPSTONE_MODEL_GATEWAY="fake"
+  CAPSTONE_EXPECTED_REGION="nyc3"
+  CAPSTONE_PUBLIC_HOST="chat.capstone.com.ec"
+  CAPSTONE_PUBLIC_ORIGIN="https://${CAPSTONE_PUBLIC_HOST}"
+  expect_failure "managed rehearsal using the production hostname" runtime_contract_is_exact
+)
+
+(
+  CAPSTONE_NODE_ENV="production"
+  CAPSTONE_EMAIL_DELIVERY="resend"
+  CAPSTONE_MODEL_GATEWAY="openrouter"
+  CAPSTONE_EXPECTED_REGION="nyc3"
+  expect_failure "production runtime in the rehearsal region" runtime_contract_is_exact
+)
+
+(
+  CAPSTONE_NODE_ENV="test"
+  CAPSTONE_EMAIL_DELIVERY="disabled"
+  CAPSTONE_MODEL_GATEWAY="fake"
+  CAPSTONE_EXPECTED_REGION="ric1"
+  expect_failure "managed rehearsal runtime in the production region" runtime_contract_is_exact
+)
+
+(
+  CAPSTONE_NODE_ENV="production"
+  CAPSTONE_EMAIL_DELIVERY="disabled"
+  CAPSTONE_MODEL_GATEWAY="fake"
+  CAPSTONE_EXPECTED_REGION="ric1"
+  expect_failure "production runtime with rehearsal providers" runtime_contract_is_exact
+)
+
+(
+  CAPSTONE_NODE_ENV="test"
+  CAPSTONE_EMAIL_DELIVERY="resend"
+  CAPSTONE_MODEL_GATEWAY="openrouter"
+  CAPSTONE_EXPECTED_REGION="nyc3"
+  expect_failure "managed rehearsal runtime with production providers" runtime_contract_is_exact
+)
+
+(
+  CAPSTONE_NODE_ENV="staging"
+  CAPSTONE_EMAIL_DELIVERY="disabled"
+  CAPSTONE_MODEL_GATEWAY="fake"
+  CAPSTONE_EXPECTED_REGION="nyc3"
+  expect_failure "unknown runtime environment" runtime_contract_is_exact
+)
+
+temporary_root=$(mktemp -d "${TMPDIR:-/tmp}/capstone-host-negative.XXXXXX")
+cleanup() {
+  [[ -d ${temporary_root} && ! -L ${temporary_root} && ${temporary_root} == */capstone-host-negative.* ]] ||
+    fail_test "temporary fixture root is unsafe"
+  find "${temporary_root}" -depth -delete
+}
+trap cleanup EXIT
+
+production_runtime="${temporary_root}/production-runtime.json"
+rehearsal_runtime="${temporary_root}/rehearsal-runtime.json"
+printf '%s\n' \
+  '{"BETTER_AUTH_SECRET":"fixture-auth","DATABASE_URL":"postgresql://fixture","OPENROUTER_API_KEY":"fixture-model","OTEL_EXPORTER_OTLP_HEADERS":"api-key=fixture","RESEND_API_KEY":"fixture-email"}' \
+  >"${production_runtime}"
+printf '%s\n' \
+  '{"BETTER_AUTH_SECRET":"fixture-auth","DATABASE_URL":"postgresql://fixture","OTEL_EXPORTER_OTLP_HEADERS":"api-key=fixture"}' \
+  >"${rehearsal_runtime}"
+
+(
+  CAPSTONE_NODE_ENV=production
+  CAPSTONE_RUNTIME_SECRET_PATH=${production_runtime}
+  runtime_secret_schema_is_exact || fail_test "exact production runtime secret was rejected"
+)
+(
+  CAPSTONE_NODE_ENV=test
+  CAPSTONE_RUNTIME_SECRET_PATH=${rehearsal_runtime}
+  runtime_secret_schema_is_exact || fail_test "exact rehearsal runtime secret was rejected"
+)
+(
+  CAPSTONE_NODE_ENV=test
+  CAPSTONE_RUNTIME_SECRET_PATH=${production_runtime}
+  expect_failure "rehearsal runtime secret with real provider keys" runtime_secret_schema_is_exact
+)
+(
+  CAPSTONE_NODE_ENV=production
+  CAPSTONE_RUNTIME_SECRET_PATH=${rehearsal_runtime}
+  expect_failure "production runtime secret without provider keys" runtime_secret_schema_is_exact
+)
+
+(
   swapon() { return 1; }
   expect_failure "failed swap inventory" no_active_swap
 )

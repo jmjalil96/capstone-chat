@@ -6,15 +6,19 @@ PlanetScale Postgres PS-5 ARM Single Node cluster in AWS `us-east-1`. Caddy expo
 exactly one application slot is active for new traffic. PostgreSQL uses a fixed-source public route
 restricted to the Droplet `/32` and protected by `verify-full` TLS.
 
+The explicitly authorized disposable managed rehearsal substitutes NYC3 for RIC1 because the exact
+USD 6 Basic size was unavailable in RIC1 and ATL1 on 2026-08-11. Production remains RIC1. Rehearsal
+evidence must be labeled NYC3 and cannot close RIC1 scheduling, availability, or latency gates.
+
 Run commands from the repository root at the exact deployed revision, or through the audited host
 entry point identified by the DigitalOcean deployment artifacts. Replace angle-bracket placeholders
 locally. Never paste credentials, employee content, provider payloads, raw URLs, or token-bearing
 identity links into an issue, task, shell argument, log, screenshot, or committed evidence file.
 
-Repository implementation is authorized. DigitalOcean, PlanetScale, GitHub Packages, DNS, Resend,
-New Relic, OpenRouter, paid rehearsal, inference, production deployment, and PITR resource actions
-remain separately authorized external changes. A runbook describes the procedure; it does not grant
-permission to execute it.
+Repository implementation and the disposable NYC3 managed rehearsal are authorized, with actual
+provider usage capped at USD 5 excluding temporary card holds and taxes. Production DNS,
+credentials/data, deployment, paid inference, and production PITR actions remain separately gated.
+A runbook describes the procedure; it does not grant permission beyond that narrow rehearsal.
 
 ## Ownership and recovery
 

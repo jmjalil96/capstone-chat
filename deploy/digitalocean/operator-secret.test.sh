@@ -4,6 +4,8 @@ set -euo pipefail
 readonly TEST_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 readonly OPERATOR_PROGRAM="${TEST_ROOT}/operator.sh"
 readonly OPERATOR_UNIT="${TEST_ROOT}/capstone-operator.service"
+readonly OPERATOR_ENTRYPOINT="${TEST_ROOT}/operator-entrypoint.mjs"
+readonly REQUEST_PROGRAM="${TEST_ROOT}/request-operator.sh"
 
 fail_test() {
   printf 'Operator secret fixture failed: %s\n' "$1" >&2
@@ -25,6 +27,50 @@ original_pull_and_verify_initial_image=$(declare -f pull_and_verify_initial_imag
 original_run_interruptible=$(declare -f run_interruptible)
 original_capture_interruptible=$(declare -f capture_interruptible)
 validate_secret_file() { return 0; }
+
+operator_mode=rehearsal
+for operation in \
+  identity-bootstrap \
+  model-policy-initialize \
+  recovery-marker-create \
+  recovery-marker-list \
+  recovery-marker-delete \
+  recovery-prepare; do
+  operation_is_allowed || fail_test "the rehearsal rejected its ${operation} operation"
+done
+for operation in \
+  identity-approve \
+  identity-deactivate \
+  model-catalog-refresh \
+  model-policy-attest \
+  model-policy-bootstrap \
+  ghcr-retention-plan \
+  ghcr-retention-delete; do
+  if operation_is_allowed; then
+    fail_test "the rehearsal accepted its prohibited ${operation} operation"
+  fi
+done
+operator_mode=production
+operation=model-catalog-refresh
+operation_is_allowed || fail_test "the production operator surface was narrowed"
+
+operator_mode=rehearsal
+operation=identity-bootstrap
+initial_image_requested=1
+operation_uses_initial_image || fail_test "rehearsal identity bootstrap requires an active release"
+operator_mode=production
+initial_image_requested=0
+if operation_uses_initial_image; then
+  fail_test "production identity bootstrap bypassed active release authority"
+fi
+initial_image_requested=1
+operation_uses_initial_image || fail_test "initial production identity bootstrap cannot create its workspace"
+operation=model-policy-initialize
+operation_uses_initial_image || fail_test "initial policy bootstrap lost its pre-activation image path"
+operation=recovery-marker-list
+if operation_uses_initial_image; then
+  fail_test "a recovery marker operation gained pre-activation image authority"
+fi
 
 valid_secret="${temporary_root}/valid.json"
 extra_secret="${temporary_root}/extra.json"
@@ -83,8 +129,21 @@ grep -Fq 'timeout --signal=TERM --kill-after=30s 180s' "${OPERATOR_PROGRAM}" ||
   fail_test "initial image pull is not bounded"
 grep -Fq 'timeout --signal=TERM --kill-after=30s 300s' "${OPERATOR_PROGRAM}" ||
   fail_test "initial migration is not bounded"
+grep -Fq -- '--env NODE_ENV=production' "${OPERATOR_PROGRAM}" ||
+  fail_test "initial migration no longer enforces the production database URL contract"
 grep -Fq 'timeout --signal=TERM --kill-after=30s 540s' "${OPERATOR_PROGRAM}" ||
   fail_test "operator command is not bounded"
+grep -Fq -- '--env "NODE_ENV=${CAPSTONE_NODE_ENV}"' "${OPERATOR_PROGRAM}" ||
+  fail_test "operator containers ignore the validated runtime mode"
+grep -Fq -- '--env "CAPSTONE_EXPECTED_REGION=${CAPSTONE_EXPECTED_REGION}"' "${OPERATOR_PROGRAM}" ||
+  fail_test "the container entrypoint cannot verify the rehearsal region fence"
+grep -Fq '"--mode",' "${OPERATOR_ENTRYPOINT}" &&
+  grep -Fq '"simulated",' "${OPERATOR_ENTRYPOINT}" ||
+  fail_test "the rehearsal model policy is not pinned to simulated mode"
+grep -Fq 'argumentsList.push("--invitation-delivery", "disabled")' "${OPERATOR_ENTRYPOINT}" ||
+  fail_test "the rehearsal identity bootstrap can attempt email delivery"
+grep -Fq 'if [[ ${request_mode} == production ]]; then' "${REQUEST_PROGRAM}" ||
+  fail_test "the rehearsal initialization still requires privacy input"
 grep -Fq 'TimeoutStartSec=1800s' "${OPERATOR_UNIT}" ||
   fail_test "operator unit does not enclose pull, migration, command, and cleanup bounds"
 grep -Fq 'TimeoutStopSec=210s' "${OPERATOR_UNIT}" ||

@@ -21,6 +21,8 @@ readonly RETENTION_PROGRAM=/opt/capstone-chat/lib/ghcr-retention.py
 readonly MIGRATION_CLEANUP=/opt/capstone-chat/bin/cleanup-migrations.sh
 
 operation=""
+operator_mode=""
+initial_image_requested=0
 active_child_pid=""
 interrupted_status=0
 selected_revision=""
@@ -96,16 +98,37 @@ finally:
 PY
 }
 
+select_operator_mode() {
+  case "${CAPSTONE_NODE_ENV:-}" in
+    production)
+      [[ ${CAPSTONE_PUBLIC_HOST:-} == chat.capstone.com.ec ]] || fail "production host changed"
+      [[ ${CAPSTONE_PUBLIC_ORIGIN:-} == https://chat.capstone.com.ec ]] || fail "production origin changed"
+      [[ ${CAPSTONE_EMAIL_DELIVERY:-} == resend && ${CAPSTONE_MODEL_GATEWAY:-} == openrouter ]] ||
+        fail "production providers changed"
+      [[ ${CAPSTONE_EXPECTED_REGION:-} == ric1 ]] || fail "production DigitalOcean region changed"
+      operator_mode=production
+      ;;
+    test)
+      [[ ${CAPSTONE_EMAIL_DELIVERY:-} == disabled && ${CAPSTONE_MODEL_GATEWAY:-} == fake ]] ||
+        fail "managed rehearsal providers are unsafe"
+      [[ ${CAPSTONE_EXPECTED_REGION:-} == nyc3 ]] ||
+        fail "managed rehearsal must use the approved NYC3 region"
+      [[ -n ${CAPSTONE_PUBLIC_HOST:-} &&
+        ${CAPSTONE_PUBLIC_HOST} != chat.capstone.com.ec &&
+        ${CAPSTONE_PUBLIC_ORIGIN:-} == "https://${CAPSTONE_PUBLIC_HOST}" ]] ||
+        fail "managed rehearsal host and origin disagree"
+      operator_mode=rehearsal
+      ;;
+    *) fail "operator host must be production or the explicit managed test rehearsal" ;;
+  esac
+}
+
 load_host_contract() {
   require_root_regular "${HOST_ENV}" 640
   ! grep -Eq '__[A-Z0-9_]+__' "${HOST_ENV}" || fail "host contract still has a placeholder"
   # shellcheck disable=SC1091
   source "${HOST_ENV}"
-  [[ ${CAPSTONE_NODE_ENV:-} == production ]] || fail "operator commands require production mode"
-  [[ ${CAPSTONE_PUBLIC_HOST:-} == chat.capstone.com.ec ]] || fail "production host changed"
-  [[ ${CAPSTONE_PUBLIC_ORIGIN:-} == https://chat.capstone.com.ec ]] || fail "production origin changed"
-  [[ ${CAPSTONE_EMAIL_DELIVERY:-} == resend && ${CAPSTONE_MODEL_GATEWAY:-} == openrouter ]] ||
-    fail "production providers changed"
+  select_operator_mode
   [[ ${CAPSTONE_CLIENT_ADDRESS_SOURCE:-} == caddy ]] || fail "Caddy address mode is required"
   [[ ${CAPSTONE_OTEL_EXPORTER_OTLP_ENDPOINT:-} == https://otlp.nr-data.net ]] ||
     fail "New Relic OTLP endpoint changed"
@@ -389,7 +412,7 @@ initial_release_is_absent() {
 
 prepare_initial_operator_image() {
   initial_release_is_absent || {
-    fail "initial model policy is allowed only before the first active release"
+    fail "initial operator commands are allowed only before the first active release"
     return 1
   }
   local revision=$1 digest=$2
@@ -406,6 +429,11 @@ prepare_initial_operator_image() {
   run_initial_migrations "${revision}" "${digest}"
 }
 
+operation_uses_initial_image() {
+  [[ ${operation} == model-policy-initialize ||
+    (${operation} == identity-bootstrap && ${initial_image_requested} -eq 1) ]]
+}
+
 read_request() {
   require_root_regular "${REQUEST_PATH}" 600
   jq --exit-status \
@@ -413,6 +441,41 @@ read_request() {
      (.operation | type == "string") and (.input | type == "object")' \
     "${REQUEST_PATH}" >/dev/null || fail "operator request schema is invalid"
   operation=$(jq --raw-output .operation "${REQUEST_PATH}")
+  initial_image_requested=0
+  if [[ ${operation} == identity-bootstrap ]]; then
+    local has_revision has_digest
+    has_revision=$(jq --raw-output '.input | has("revision")' "${REQUEST_PATH}")
+    has_digest=$(jq --raw-output '.input | has("digest")' "${REQUEST_PATH}")
+    [[ ${has_revision} == "${has_digest}" ]] || fail "initial identity image reference is incomplete"
+    [[ ${has_revision} == false || ${has_revision} == true ]] ||
+      fail "initial identity image reference is invalid"
+    [[ ${has_revision} == false ]] || initial_image_requested=1
+    if [[ ${operator_mode} == rehearsal && ${initial_image_requested} -ne 1 ]]; then
+      fail "managed rehearsal identity bootstrap requires a verified initial image"
+    fi
+  fi
+}
+
+operation_is_allowed() {
+  case "${operator_mode}" in
+    production)
+      case "${operation}" in
+        ghcr-retention-plan | ghcr-retention-delete | identity-bootstrap | identity-approve | identity-deactivate | model-catalog-refresh | model-policy-attest | model-policy-bootstrap | model-policy-initialize | recovery-marker-create | recovery-marker-list | recovery-marker-delete | recovery-prepare)
+          return 0
+          ;;
+        *) return 1 ;;
+      esac
+      ;;
+    rehearsal)
+      case "${operation}" in
+        identity-bootstrap | model-policy-initialize | recovery-marker-create | recovery-marker-list | recovery-marker-delete | recovery-prepare)
+          return 0
+          ;;
+        *) return 1 ;;
+      esac
+      ;;
+    *) return 1 ;;
+  esac
 }
 
 cleanup_runtime_files() {
@@ -458,14 +521,26 @@ build_operator_secret() {
   case "${operation}" in
     identity-bootstrap | identity-approve | identity-deactivate)
       validate_secret_file "${CAPSTONE_RUNTIME_SECRET_PATH}" "${CAPSTONE_RUNTIME_SECRET_GID}"
-      filter='if
-        ($migration | keys) == ["DATABASE_URL"] and
-        ($runtime | keys) == ["BETTER_AUTH_SECRET", "DATABASE_URL", "OPENROUTER_API_KEY", "OTEL_EXPORTER_OTLP_HEADERS", "RESEND_API_KEY"]
-      then {
-        BETTER_AUTH_SECRET: $runtime.BETTER_AUTH_SECRET,
-        DATABASE_URL: $migration.DATABASE_URL,
-        RESEND_API_KEY: $runtime.RESEND_API_KEY
-      } else error("operator source secret schema changed") end'
+      if [[ ${operator_mode} == rehearsal ]]; then
+        [[ ${operation} == identity-bootstrap ]] ||
+          fail "managed rehearsal identity operations are limited to bootstrap"
+        filter='if
+          ($migration | keys) == ["DATABASE_URL"] and
+          ($runtime | keys) == ["BETTER_AUTH_SECRET", "DATABASE_URL", "OTEL_EXPORTER_OTLP_HEADERS"]
+        then {
+          BETTER_AUTH_SECRET: $runtime.BETTER_AUTH_SECRET,
+          DATABASE_URL: $migration.DATABASE_URL
+        } else error("rehearsal operator source secret schema changed") end'
+      else
+        filter='if
+          ($migration | keys) == ["DATABASE_URL"] and
+          ($runtime | keys) == ["BETTER_AUTH_SECRET", "DATABASE_URL", "OPENROUTER_API_KEY", "OTEL_EXPORTER_OTLP_HEADERS", "RESEND_API_KEY"]
+        then {
+          BETTER_AUTH_SECRET: $runtime.BETTER_AUTH_SECRET,
+          DATABASE_URL: $migration.DATABASE_URL,
+          RESEND_API_KEY: $runtime.RESEND_API_KEY
+        } else error("operator source secret schema changed") end'
+      fi
       ;;
     model-catalog-refresh | model-policy-bootstrap | model-policy-initialize)
       validate_secret_file "${CAPSTONE_RUNTIME_SECRET_PATH}" "${CAPSTONE_RUNTIME_SECRET_GID}"
@@ -553,7 +628,19 @@ run_container_command() {
   local revision=$1 image=$2 secret_source secret_gid secret_target
   local -a extra_mounts=()
   case "${operation}" in
-    identity-bootstrap | identity-approve | identity-deactivate | model-catalog-refresh | model-policy-attest | model-policy-bootstrap | model-policy-initialize)
+    model-policy-initialize)
+      if [[ ${operator_mode} == rehearsal ]]; then
+        secret_source=${CAPSTONE_MIGRATION_SECRET_PATH}
+        secret_gid=${CAPSTONE_MIGRATION_SECRET_GID}
+        secret_target=/run/capstone-secrets/migration.json
+      else
+        build_operator_secret
+        secret_source=${OPERATOR_SECRET_PATH}
+        secret_gid=${CAPSTONE_MIGRATION_SECRET_GID}
+        secret_target=/run/capstone-secrets/operator.json
+      fi
+      ;;
+    identity-bootstrap | identity-approve | identity-deactivate | model-catalog-refresh | model-policy-attest | model-policy-bootstrap)
       build_operator_secret
       secret_source=${OPERATOR_SECRET_PATH}
       secret_gid=${CAPSTONE_MIGRATION_SECRET_GID}
@@ -590,7 +677,8 @@ run_container_command() {
   mv -fT "${REQUEST_PATH}" "${CONTAINER_REQUEST_PATH}"
   chown "root:${secret_gid}" "${CONTAINER_REQUEST_PATH}"
   chmod 0440 "${CONTAINER_REQUEST_PATH}"
-  if [[ ${operation} == model-policy-attest || ${operation} == model-policy-bootstrap || ${operation} == model-policy-initialize ]]; then
+  if [[ ${operator_mode} == production &&
+    (${operation} == model-policy-attest || ${operation} == model-policy-bootstrap || ${operation} == model-policy-initialize) ]]; then
     [[ -f ${INPUT_PATH} && ! -L ${INPUT_PATH} && $(stat -c '%u:%a' "${INPUT_PATH}") == 0:600 ]] ||
       fail "privacy attestation input is missing or unsafe"
     chown "root:${secret_gid}" "${INPUT_PATH}"
@@ -622,7 +710,7 @@ run_container_command() {
       --mount "type=bind,src=${ENTRYPOINT_PATH},dst=/run/capstone-operator/entrypoint.mjs,readonly" \
       "${extra_mounts[@]}" \
       --env "CAPSTONE_SECRET_FILE=${secret_target}" \
-      --env NODE_ENV=production \
+      --env "NODE_ENV=${CAPSTONE_NODE_ENV}" \
       --env HOST=127.0.0.1 \
       --env PORT=3000 \
       --env "PUBLIC_ORIGIN=${CAPSTONE_PUBLIC_ORIGIN}" \
@@ -630,6 +718,7 @@ run_container_command() {
       --env "EMAIL_DELIVERY=${CAPSTONE_EMAIL_DELIVERY}" \
       --env "EMAIL_FROM=${CAPSTONE_EMAIL_FROM}" \
       --env "MODEL_GATEWAY=${CAPSTONE_MODEL_GATEWAY}" \
+      --env "CAPSTONE_EXPECTED_REGION=${CAPSTONE_EXPECTED_REGION}" \
       --env "OTEL_EXPORTER_OTLP_ENDPOINT=${CAPSTONE_OTEL_EXPORTER_OTLP_ENDPOINT}" \
       --env LOG_LEVEL=info \
       --env "DEPLOYMENT_REVISION=${revision}" \
@@ -651,25 +740,24 @@ main() {
   exec 9>"${DEPLOY_LOCK}"
   flock --exclusive --nonblock 9 || fail "deploy, recovery, or another operator command holds the lock"
   read_request
+  operation_is_allowed || fail "operator operation is not allowed by the host contract"
   trap cleanup EXIT
   trap 'interrupt_active_child 130' INT
   trap 'interrupt_active_child 143' TERM
 
-  case "${operation}" in
-    ghcr-retention-plan | ghcr-retention-delete) run_retention ;;
-    model-policy-initialize)
-      local initial_revision initial_digest initial_image
-      initial_revision=$(jq --exit-status --raw-output '.input.revision' "${REQUEST_PATH}")
-      initial_digest=$(jq --exit-status --raw-output '.input.digest' "${REQUEST_PATH}")
-      prepare_initial_operator_image "${initial_revision}" "${initial_digest}"
-      initial_image="${CAPSTONE_IMAGE_REPOSITORY}@${initial_digest}"
-      run_container_command "${initial_revision}" "${initial_image}"
-      ;;
-    *)
-      active_release
-      run_container_command "${selected_revision}" "${selected_image}"
-      ;;
-  esac
+  if [[ ${operation} == ghcr-retention-plan || ${operation} == ghcr-retention-delete ]]; then
+    run_retention
+  elif operation_uses_initial_image; then
+    local initial_revision initial_digest initial_image
+    initial_revision=$(jq --exit-status --raw-output '.input.revision' "${REQUEST_PATH}")
+    initial_digest=$(jq --exit-status --raw-output '.input.digest' "${REQUEST_PATH}")
+    prepare_initial_operator_image "${initial_revision}" "${initial_digest}"
+    initial_image="${CAPSTONE_IMAGE_REPOSITORY}@${initial_digest}"
+    run_container_command "${initial_revision}" "${initial_image}"
+  else
+    active_release
+    run_container_command "${selected_revision}" "${selected_image}"
+  fi
 }
 
 if [[ ${CAPSTONE_OPERATOR_TEST_SOURCE:-0} == 1 ]]; then

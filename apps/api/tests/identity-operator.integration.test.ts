@@ -309,6 +309,96 @@ describe.sequential("identity operator commands", () => {
     ]);
   });
 
+  it("bootstraps only a pending synthetic rehearsal approval when delivery is explicitly disabled", async () => {
+    const result = await runOperator(
+      [
+        "bootstrap",
+        "--workspace",
+        "capstone-ecuador",
+        "--name",
+        "Capstone Ecuador",
+        "--email",
+        "admin.operator@example.test",
+        "--invitation-delivery",
+        "disabled",
+      ],
+      { EMAIL_DELIVERY: "disabled" },
+    );
+
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(parseOperatorOutput(result.stdout)).toEqual({
+      command: "bootstrap",
+      invitationDelivery: "disabled",
+      repeated: false,
+      role: "admin",
+      signUpPath: "/sign-up",
+      workspace: "capstone-ecuador",
+    });
+
+    const database = createDatabase(pool);
+    expect(await database.select().from(employeeApprovals)).toEqual([
+      expect.objectContaining({
+        normalizedEmail: "admin.operator@example.test",
+        role: "admin",
+        status: "pending",
+        userId: null,
+      }),
+    ]);
+    expect(await database.select().from(user)).toEqual([]);
+    expect(await database.select().from(account)).toEqual([]);
+    expect(await database.select().from(session)).toEqual([]);
+  });
+
+  it("rejects a real administrator email before mutating the rehearsal identity", async () => {
+    const result = await runOperator(
+      [
+        "bootstrap",
+        "--workspace",
+        "capstone-ecuador",
+        "--name",
+        "Capstone Ecuador",
+        "--email",
+        "administrator@capstone.com.ec",
+        "--invitation-delivery",
+        "disabled",
+      ],
+      { EMAIL_DELIVERY: "disabled" },
+    );
+
+    expect(result.code).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(parseOperatorOutput(result.stderr)).toEqual({
+      errorName: "Error",
+      outcome: "failed",
+    });
+    const database = createDatabase(pool);
+    expect(await database.select().from(workspaces)).toEqual([]);
+    expect(await database.select().from(employeeApprovals)).toEqual([]);
+  });
+
+  it("rejects the no-delivery bootstrap fence outside disabled test delivery", async () => {
+    const result = await runOperator([
+      "bootstrap",
+      "--workspace",
+      "capstone-ecuador",
+      "--name",
+      "Capstone Ecuador",
+      "--email",
+      "admin.operator@example.test",
+      "--invitation-delivery",
+      "disabled",
+    ]);
+
+    expect(result.code).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(parseOperatorOutput(result.stderr)).toEqual({
+      errorName: "Error",
+      outcome: "failed",
+    });
+    expect(await createDatabase(pool).select().from(workspaces)).toEqual([]);
+  });
+
   it("serializes concurrent bootstrap retries without creating a credential", async () => {
     const results = await Promise.all([bootstrap(), bootstrap()]);
 

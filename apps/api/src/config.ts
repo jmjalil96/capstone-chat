@@ -28,7 +28,8 @@ export type ConfigurationKey =
   | "OTEL_EXPORTER_OTLP_HEADERS"
   | "PORT"
   | "PUBLIC_ORIGIN"
-  | "RESEND_API_KEY";
+  | "RESEND_API_KEY"
+  | "WEB_ASSETS";
 
 export class ConfigurationError extends Error {
   readonly configurationKey: ConfigurationKey;
@@ -85,6 +86,7 @@ export interface ApiConfig {
 const productionOrigin = "https://chat.capstone.com.ec";
 const productionSender = "Capstone Chat <no-reply@mail.capstone.com.ec>";
 const productionWebAssetsDirectory = fileURLToPath(new URL("../../web/dist/", import.meta.url));
+const productionWebAssetsMode = "production-build";
 
 const developmentDefaults = {
   databaseUrl: "postgresql://capstone:capstone@127.0.0.1:5432/capstone_chat",
@@ -269,7 +271,7 @@ function readDatabaseUrl(value: string, mode: RuntimeMode): string {
     if (parseProductionDatabaseUrl(value) === null) {
       throw new ConfigurationError(
         "DATABASE_URL",
-        "DATABASE_URL must use credentials, a DNS host, direct port 5432, and exactly one verify-full platform-trusted TLS setting in production",
+        "DATABASE_URL must use credentials, a DNS host, direct port 5432, and exactly one verify-full platform-trusted TLS setting in production or the managed rehearsal",
       );
     }
   }
@@ -457,6 +459,29 @@ function readModelGateway(value: string | undefined, mode: RuntimeMode): ModelGa
   return gateway;
 }
 
+function readWebAssetsDirectory(value: string | undefined, mode: RuntimeMode): string | null {
+  if (mode === "production") {
+    if (value !== undefined && value.trim() !== productionWebAssetsMode) {
+      throw new ConfigurationError(
+        "WEB_ASSETS",
+        `WEB_ASSETS must be ${productionWebAssetsMode} when configured`,
+      );
+    }
+    return productionWebAssetsDirectory;
+  }
+
+  if (value === undefined) {
+    return null;
+  }
+  if (mode !== "test" || value.trim() !== productionWebAssetsMode) {
+    throw new ConfigurationError(
+      "WEB_ASSETS",
+      `WEB_ASSETS=${productionWebAssetsMode} is permitted only for the managed test rehearsal`,
+    );
+  }
+  return productionWebAssetsDirectory;
+}
+
 function readOpenRouterApiKey(value: string | undefined, gateway: ModelGatewayMode): string | null {
   if (gateway === "fake") {
     return null;
@@ -475,14 +500,18 @@ function readDatabaseConfig(
   source: NodeJS.ProcessEnv,
   nodeEnv: RuntimeMode,
 ): Readonly<DatabaseConfig> {
-  const allowDevelopmentDefaults = nodeEnv !== "production";
+  const databaseMode =
+    nodeEnv === "test" && source.WEB_ASSETS?.trim() === productionWebAssetsMode
+      ? "production"
+      : nodeEnv;
+  const allowDevelopmentDefaults = databaseMode !== "production";
   const databaseUrl = readDatabaseUrl(
     readRequired(
       source,
       "DATABASE_URL",
       allowDevelopmentDefaults ? developmentDefaults.databaseUrl : undefined,
     ),
-    nodeEnv,
+    databaseMode,
   );
 
   return Object.freeze({ databaseUrl });
@@ -593,7 +622,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): Readonly<Ap
     publicOrigin,
     resendApiKey: resend.resendApiKey,
     trustProxy: false,
-    webAssetsDirectory: nodeEnv === "production" ? productionWebAssetsDirectory : null,
+    webAssetsDirectory: readWebAssetsDirectory(source.WEB_ASSETS, nodeEnv),
   });
 }
 

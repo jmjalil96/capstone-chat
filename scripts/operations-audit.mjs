@@ -197,7 +197,9 @@ function inspectOperationsContract() {
   const fluentBitService = readRepositoryFile("deploy/digitalocean/capstone-fluent-bit.service");
   const hostEnvironment = readRepositoryFile("deploy/digitalocean/host.env");
   const dockerfile = readRepositoryFile("apps/api/Dockerfile");
+  const apiApp = readRepositoryFile("apps/api/src/app.ts");
   const apiConfig = readRepositoryFile("apps/api/src/config.ts");
+  const identityCommand = readRepositoryFile("apps/api/src/operator/identity-command.ts");
   const productionDatabaseUrl = readRepositoryFile(
     "apps/api/src/database/production-database-url.ts",
   );
@@ -215,6 +217,11 @@ function inspectOperationsContract() {
   const migrationCall = deploy.search(/\n {2}run_migrations "\$\{revision\}" "\$\{digest\}"/u);
   const startCall = deploy.search(/\n {2}start_release "\$\{candidate_release\}"/u);
   const deploymentExitBody = deploy.split("on_exit() {", 2)[1]?.split("\n}\n", 1)[0] ?? "";
+  const runtimeContract =
+    deploy.split(`case "\${CAPSTONE_NODE_ENV:-}" in`, 2)[1]?.split("\n  esac", 1)[0] ?? "";
+  const productionRuntimeContract = runtimeContract.split("\n    test)", 1)[0] ?? "";
+  const rehearsalRuntimeContract =
+    runtimeContract.split("\n    test)", 2)[1]?.split("\n    *)", 1)[0] ?? "";
   const headerClaims = ["Forwarded", "X-Forwarded-*", "CF-Connecting-IP", "X-Capstone-Client-IP"];
   const activeProductionSources = [
     readRepositoryFile("README.md"),
@@ -373,6 +380,13 @@ function inspectOperationsContract() {
     deploymentIsSupervised:
       deploy.includes("CAPSTONE_DEPLOY_SUPERVISED") &&
       requestDeploy.includes("capstone-deploy.service"),
+    deploymentRegionModeBound:
+      productionRuntimeContract.includes("CAPSTONE_EXPECTED_REGION:-} == ric1") &&
+      !productionRuntimeContract.includes("CAPSTONE_EXPECTED_REGION:-} == nyc3") &&
+      rehearsalRuntimeContract.includes("CAPSTONE_EXPECTED_REGION:-} == nyc3") &&
+      rehearsalRuntimeContract.includes("CAPSTONE_PUBLIC_HOST} != chat.capstone.com.ec") &&
+      !rehearsalRuntimeContract.includes("CAPSTONE_EXPECTED_REGION:-} == ric1") &&
+      (deploy.match(/CAPSTONE_EXPECTED_REGION/gu)?.length ?? 0) === 2,
     deploymentRequestsAreLifecycleBound:
       requestLifecycle.includes("ActiveState") &&
       requestLifecycle.includes("Job") &&
@@ -393,11 +407,29 @@ function inspectOperationsContract() {
       /validate_migration_secret_file "\$\{secret_source\}" "\$\{secret_gid\}"/u.test(operator),
     initialPolicyBootstrap:
       requestOperator.includes("model-policy-initialize") &&
+      requestOperator.includes("rehearsal identity-bootstrap requires one full revision") &&
       operator.includes("initial_release_is_absent") &&
+      operator.includes("operation_uses_initial_image") &&
       operator.includes("validate_ci_evidence") &&
       operator.includes("pull_and_verify_initial_image") &&
       operator.includes("run_initial_migrations") &&
-      operatorEntrypoint.includes('request.operation === "model-policy-initialize"'),
+      operatorEntrypoint.includes('request.operation === "model-policy-initialize"') &&
+      provisioning.indexOf("identity-bootstrap <revision> <digest>") <
+        provisioning.indexOf("model-policy-initialize <revision> <digest>") &&
+      provisioning.indexOf("identity-bootstrap <full-revision> sha256:<digest>") <
+        provisioning.indexOf("model-policy-initialize <full-revision> sha256:<digest>"),
+    managedRehearsalBoundaries:
+      operator.includes("CAPSTONE_PUBLIC_HOST} != chat.capstone.com.ec") &&
+      requestOperator.includes("CAPSTONE_PUBLIC_HOST} != chat.capstone.com.ec") &&
+      verifyHost.includes("CAPSTONE_PUBLIC_HOST} != chat.capstone.com.ec") &&
+      verifyHostNegative.includes("managed rehearsal using the production hostname") &&
+      deploy.includes("managed rehearsal runtime secret schema is invalid") &&
+      verifyHost.includes("runtime_secret_schema_is_exact") &&
+      verifyHostNegative.includes("rehearsal runtime secret with real provider keys") &&
+      identityCommand.includes("reserved .test TLD") &&
+      apiConfig.includes("source.WEB_ASSETS?.trim() === productionWebAssetsMode") &&
+      apiApp.includes("validateReady: () => modelPolicy.assertRuntimeMode(readinessPolicyMode)") &&
+      apiApp.includes('? "simulated"'),
     dnsOnly: hasText(roadmap, /DNS-only IPv4 record/u),
     dropletCpu: hasText(roadmap, /one vCPU and 1 GiB RAM/u) ? 1 : null,
     dropletRamMiB: hasText(roadmap, /one vCPU and 1 GiB RAM/u) ? 1_024 : null,
@@ -489,6 +521,24 @@ function inspectOperationsContract() {
       verifyHostNegative.includes("unlabeled exact-name stale slot container") &&
       verifyHostNegative.includes("unlabeled initial migration container") &&
       verifyHostNegative.includes("arbitrary foreign stopped container"),
+    hostRegionMetadataBound:
+      verifyHost.includes("region_matches_host_contract") &&
+      verifyHost.includes(`[[ \${region} == "\${CAPSTONE_EXPECTED_REGION}" ]]`) &&
+      !verifyHost.includes("approved RIC1 region") &&
+      !verifyHost.includes("region_is_ric1"),
+    hostRuntimeContractBound:
+      verifyHost.includes("runtime_contract_is_exact") &&
+      verifyHost.includes("CAPSTONE_EMAIL_DELIVERY:-} == resend") &&
+      verifyHost.includes("CAPSTONE_MODEL_GATEWAY:-} == openrouter") &&
+      verifyHost.includes("CAPSTONE_EXPECTED_REGION:-} == ric1") &&
+      verifyHost.includes("CAPSTONE_EMAIL_DELIVERY:-} == disabled") &&
+      verifyHost.includes("CAPSTONE_MODEL_GATEWAY:-} == fake") &&
+      verifyHost.includes("CAPSTONE_EXPECTED_REGION:-} == nyc3") &&
+      verifyHostNegative.includes("production runtime in the rehearsal region") &&
+      verifyHostNegative.includes("managed rehearsal runtime in the production region") &&
+      verifyHostNegative.includes("production runtime with rehearsal providers") &&
+      verifyHostNegative.includes("managed rehearsal runtime with production providers") &&
+      verifyHostNegative.includes("unknown runtime environment"),
     imageOriginExact:
       dockerfile.includes(
         'org.opencontainers.image.source="https://github.com/jmjalil96/capstone-chat"',
@@ -655,6 +705,10 @@ function validateOperationsContract(contract) {
   );
   assert(contract.deploymentIsSupervised, "deployment must remain systemd-supervised");
   assert(
+    contract.deploymentRegionModeBound,
+    "production must remain in RIC1 and only the managed test rehearsal may use NYC3",
+  );
+  assert(
     contract.deploymentRequestsAreLifecycleBound,
     "request replacement must reject an activating unit or queued systemd job",
   );
@@ -697,7 +751,11 @@ function validateOperationsContract(contract) {
   );
   assert(
     contract.initialPolicyBootstrap,
-    "first-release migrations and model policy need a CI-evidenced pre-activation path",
+    "first-release identity, migrations, and model policy need an ordered CI-evidenced pre-activation path",
+  );
+  assert(
+    contract.managedRehearsalBoundaries,
+    "managed rehearsal hostname, secrets, synthetic identity, or simulated readiness drifted",
   );
   assert(
     !contract.applicationRunsMigrationsAtStartup,
@@ -717,6 +775,14 @@ function validateOperationsContract(contract) {
   assert(
     contract.hostNegativeEvidenceFailsClosed,
     "host negative-evidence probes, network allowlists, or all-state inventory drifted",
+  );
+  assert(
+    contract.hostRegionMetadataBound,
+    "host verification must compare metadata with the exact rendered region contract",
+  );
+  assert(
+    contract.hostRuntimeContractBound,
+    "host verification must independently bind providers and region to production or rehearsal mode",
   );
   assert(contract.imageOriginExact, "GHCR package or OCI source repository drifted");
   assert(contract.credentialPathsSeparated, "runtime, migration, and registry credentials crossed");
@@ -1015,9 +1081,9 @@ function validateColdRebuildEvidence(evidence) {
   assert(
     evidence.topology.cpu === 1 &&
       evidence.topology.ramMiB === 1_024 &&
-      evidence.topology.region === "ric1" &&
+      evidence.topology.region === "nyc3" &&
       evidence.topology.volumeGiB === 1,
-    "cold-rebuild topology does not match the approved candidate",
+    "cold-rebuild topology does not match the approved managed rehearsal",
   );
   assertExactKeys(evidence.integrity, coldRebuildIntegrityKeys, "cold-rebuild integrity");
   for (const key of coldRebuildIntegrityKeys) {
@@ -1127,7 +1193,7 @@ function safeColdRebuildExample() {
       rehearsalStartedAt: "2026-08-10T12:00:00.000Z",
       validationCompletedAt: "2026-08-10T13:00:00.000Z",
     },
-    topology: { cpu: 1, ramMiB: 1_024, region: "ric1", volumeGiB: 1 },
+    topology: { cpu: 1, ramMiB: 1_024, region: "nyc3", volumeGiB: 1 },
   };
 }
 
@@ -1213,6 +1279,12 @@ function runSelfTest(contract) {
       value.deploymentRunsMigrationBeforeStart = false;
     },
     (value) => {
+      value.managedRehearsalBoundaries = false;
+    },
+    (value) => {
+      value.deploymentRegionModeBound = false;
+    },
+    (value) => {
       value.applicationRunsMigrationsAtStartup = true;
     },
     (value) => {
@@ -1220,6 +1292,12 @@ function runSelfTest(contract) {
     },
     (value) => {
       value.hostSecretDirectoriesExact = false;
+    },
+    (value) => {
+      value.hostRegionMetadataBound = false;
+    },
+    (value) => {
+      value.hostRuntimeContractBound = false;
     },
     (value) => {
       value.imageOriginExact = false;
@@ -1335,6 +1413,9 @@ function runSelfTest(contract) {
     },
     (value) => {
       value.topology.ramMiB = 512;
+    },
+    (value) => {
+      value.topology.region = "ric1";
     },
     (value) => {
       value.timing.validationCompletedAt = "2026-08-10T16:06:00.000Z";

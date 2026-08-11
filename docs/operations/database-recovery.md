@@ -85,8 +85,9 @@ Ordinary blue/green deployment must never overlap two database authorities.
 
 ## Cold Droplet rebuild
 
-Droplet snapshots and backups are not used. For rehearsal or host loss, create a new approved RIC1
-Droplet and encrypted 1 GiB Volume, apply the committed secret-free host artifacts, recover only the
+Droplet snapshots and backups are not used. For the authorized rehearsal, create a new approved
+NYC3 Droplet; for production host loss, create a new approved RIC1 Droplet. Attach an encrypted
+1 GiB Volume, apply the committed secret-free host artifacts, recover only the
 required files from Bitwarden, pull the exact protected GHCR digest, reassign the reserved IPv4,
 restore its outbound route, reconnect to the untouched PlanetScale source, and reconcile the durable
 active release. Verify firewall, Caddy, TLS, secrets, telemetry, readiness, database restrictions,

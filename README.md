@@ -21,6 +21,12 @@ to approximately USD 15.73 before taxes, variable backup/network charges, tempor
 model use. The second Bitwarden recovery owner is deferred and remains a visible launch risk. The
 exact managed topology remains unaccepted until it passes the full 20-employee/40-stream gate twice.
 
+The 2026-08-11 disposable managed rehearsal uses the same USD 6 Basic size in NYC3 because that
+size was unavailable in RIC1 and ATL1 during live provisioning. This does not change the RIC1
+production candidate. NYC3 results qualify only region-independent behavior; RIC1 scheduling,
+availability, and RIC1-to-`us-east-1` latency remain open unless the production region is separately
+amended.
+
 Development and automated tests still default to the deterministic zero-cost `FakeModelGateway`.
 Real inference is an explicit `MODEL_GATEWAY=openrouter` opt-in and requires a dedicated key, a live
 validated catalog, and a fresh privacy attestation. No DigitalOcean, PlanetScale, GitHub Package,
@@ -460,10 +466,10 @@ confirmations, a nonempty or mismatched fixture database, or an invalid NDJSON l
 contains only safe identifiers, counts, resource measurements, and latency percentiles. Delete the
 disposable database after the wrapper stops. A source/`tsx` load server can still aid debugging, but
 it is not managed capacity evidence. Historical Render Standard/Starter constraints and results
-remain recorded in the superseded implementation plan only. Production qualification requires the
-separately authorized exact RIC1 one-vCPU/one-GiB whole host with the 640 MiB application
-containment and exact PS-5 database to pass the unchanged workload and 500 ms response-start gate
-twice from clean state.
+remain recorded in the superseded implementation plan only. The authorized NYC3 rehearsal requires
+the one-vCPU/one-GiB whole host with the 640 MiB application containment and exact PS-5 database to
+pass the unchanged workload and 500 ms response-start gate twice from clean state. Those runs do
+not qualify RIC1-specific scheduling, availability, or latency.
 
 GitHub Actions runs formatting/linting, repository and operations validation, type checking, clean
 migrations, unit/PostgreSQL integration tests, production builds, the bundle report, dependency
@@ -507,6 +513,7 @@ object through the process.
 | `LOG_LEVEL` | `info` | Pino log level |
 | `MODEL_GATEWAY` | `fake` | `fake` or `openrouter`; production requires `openrouter` |
 | `OPENROUTER_API_KEY` | unset | Backend-only key required when `MODEL_GATEWAY=openrouter` |
+| `WEB_ASSETS` | unset | Exact `production-build` mode for the deployed production image or managed test rehearsal; ordinary development/test leaves assets to Vite |
 | `DEPLOYMENT_REVISION` | `development` | Safe local label; production requires the full 40-character deployed Git revision |
 | `CLIENT_ADDRESS_SOURCE` | `socket` | `socket` for local/test; production requires the trusted Caddy boundary |
 | `CAPSTONE_SECRET_FILE` | unset | Absolute root-owned mode-`0440` production JSON file mounted read-only from the encrypted Volume |

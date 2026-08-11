@@ -72,8 +72,10 @@ Complete observability, cross-browser and accessibility verification, performanc
   in RIC1, one encrypted 1 GiB DigitalOcean Volume, and one PlanetScale Postgres PS-5 ARM Single
   Node cluster in AWS `us-east-1`. Launch has one active application instance and one single-node
   database with no application autoscaling, database high availability, read replica, or automatic
-  failover. The exact managed topology remains provisional until the separately authorized
-  production-shaped rehearsal passes every unchanged gate twice.
+  failover. The user approved NYC3 only for the disposable managed rehearsal on 2026-08-11 after
+  the USD 6 Basic size was unavailable in RIC1 and ATL1. Two clean NYC3 runs may qualify every
+  region-independent gate, but not RIC1 scheduling, availability, or RIC1-to-`us-east-1` latency.
+  Production remains RIC1 unless separately amended, and its region-specific evidence stays open.
 - The public origin is `https://chat.capstone.com.ec`. Its DNS-only IPv4 record targets the
   Droplet's reserved address directly; Caddy owns TLS and proxies only to the active loopback-bound
   application slot. Only 80/443 are public, and SSH is limited to the approved operator `/32`.

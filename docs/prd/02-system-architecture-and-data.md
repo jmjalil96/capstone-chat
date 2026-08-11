@@ -55,9 +55,14 @@ The database starts with 10 GB included storage, may grow once to an enforced 15
 uses backups every 12 hours retained for 84 hours. The host has no paid Droplet backup because it
 holds no authoritative application data and must be reproducible from source, immutable OCI
 images, the managed database, and the approved recovery store. The exact managed topology remains
-provisional until it passes the separately authorized production-shaped rehearsal twice. These are
-deployment choices rather than provider-specific application architecture; the OCI image,
-configuration boundary, and PostgreSQL contract remain portable.
+provisional until its accepted evidence covers every production gate. Because the USD 6 Basic size
+was unavailable in RIC1 and ATL1 during the authorized 2026-08-11 provisioning attempt, the user
+approved NYC3 only for the disposable managed rehearsal. Two clean NYC3 passes may qualify the host
+size, application, PS-5 capacity, deployment, rollback, and recovery behavior, but they do not
+qualify RIC1 scheduling, availability, or RIC1-to-`us-east-1` latency. Production remains RIC1
+unless separately amended, and its region-specific evidence remains open. These are deployment
+choices rather than provider-specific application architecture; the OCI image, configuration
+boundary, and PostgreSQL contract remain portable.
 
 ## Reconciliation
 

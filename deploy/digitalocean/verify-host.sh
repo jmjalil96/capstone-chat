@@ -169,11 +169,30 @@ volume_has_exact_size() {
   [[ ${size} == "${CAPSTONE_EXPECTED_VOLUME_BYTES}" ]]
 }
 
-region_is_ric1() {
+region_matches_host_contract() {
   local region
   region=$(curl --fail --silent --show-error --max-time 3 \
     http://169.254.169.254/metadata/v1/region) || return 1
   [[ ${region} == "${CAPSTONE_EXPECTED_REGION}" ]]
+}
+
+runtime_contract_is_exact() {
+  case "${CAPSTONE_NODE_ENV:-}" in
+    production)
+      [[ ${CAPSTONE_EMAIL_DELIVERY:-} == resend &&
+        ${CAPSTONE_MODEL_GATEWAY:-} == openrouter &&
+        ${CAPSTONE_EXPECTED_REGION:-} == ric1 ]]
+      ;;
+    test)
+      [[ ${CAPSTONE_EMAIL_DELIVERY:-} == disabled &&
+        ${CAPSTONE_MODEL_GATEWAY:-} == fake &&
+        ${CAPSTONE_EXPECTED_REGION:-} == nyc3 &&
+        -n ${CAPSTONE_PUBLIC_HOST:-} &&
+        ${CAPSTONE_PUBLIC_HOST} != chat.capstone.com.ec &&
+        ${CAPSTONE_PUBLIC_ORIGIN:-} == "https://${CAPSTONE_PUBLIC_HOST}" ]]
+      ;;
+    *) return 1 ;;
+  esac
 }
 
 outbound_source_is_reserved() {
@@ -401,6 +420,24 @@ migration_secret_schema_is_exact() {
   jq --exit-status \
     'keys == ["DATABASE_URL"] and (.DATABASE_URL | type == "string" and length > 0)' \
     "${CAPSTONE_MIGRATION_SECRET_PATH}" >/dev/null
+}
+
+runtime_secret_schema_is_exact() {
+  case "${CAPSTONE_NODE_ENV}" in
+    production)
+      jq --exit-status \
+        'keys == ["BETTER_AUTH_SECRET", "DATABASE_URL", "OPENROUTER_API_KEY", "OTEL_EXPORTER_OTLP_HEADERS", "RESEND_API_KEY"] and
+         all(.[]; type == "string" and length > 0)' \
+        "${CAPSTONE_RUNTIME_SECRET_PATH}" >/dev/null
+      ;;
+    test)
+      jq --exit-status \
+        'keys == ["BETTER_AUTH_SECRET", "DATABASE_URL", "OTEL_EXPORTER_OTLP_HEADERS"] and
+         all(.[]; type == "string" and length > 0)' \
+        "${CAPSTONE_RUNTIME_SECRET_PATH}" >/dev/null
+      ;;
+    *) return 1 ;;
+  esac
 }
 
 ufw_contract() {
@@ -675,7 +712,8 @@ main() {
   check "GHCR image repository is the approved Capstone package" image_repository_is_exact
   check "Ubuntu 24.04 LTS" bash -c '. /etc/os-release && [[ $ID == ubuntu && $VERSION_ID == 24.04 ]]'
   check "candidate compute remains one vCPU inside the 1 GiB memory class" candidate_compute_is_exact
-  check "Droplet is in the approved RIC1 region" region_is_ric1
+  check "runtime providers and region match the exact environment contract" runtime_contract_is_exact
+  check "Droplet metadata matches the expected contract region" region_matches_host_contract
   check "encrypted Volume is distinct and nodev,nosuid,noexec" mount_is_restricted_volume
   check "encrypted Volume is exactly 1 GiB" volume_has_exact_size
   check "secure Volume directories preserve exact cross-read boundaries" secure_directories_are_exact
@@ -694,6 +732,7 @@ main() {
   check "external observation sees the reserved IPv4" outbound_source_is_reserved
   check "TCP listeners are exactly SSH, HTTP/S, one loopback app, and Ubuntu DNS stubs" tcp_listener_allowlist_is_exact
   check "runtime secret is isolated" file_exact "${CAPSTONE_RUNTIME_SECRET_PATH}" root capstone-runtime-secrets 440
+  check "runtime secret matches the exact environment schema" runtime_secret_schema_is_exact
   check "migration secret is isolated" file_exact "${CAPSTONE_MIGRATION_SECRET_PATH}" root capstone-migration-secrets 440
   check "migration secret contains only its database credential" migration_secret_schema_is_exact
   check "registry credential is root-only" file_exact "${CAPSTONE_REGISTRY_CONFIG_DIR}/config.json" root root 400

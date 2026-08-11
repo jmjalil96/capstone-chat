@@ -1,10 +1,12 @@
 # Phase 8 Amendment — DigitalOcean Droplet and PlanetScale PostgreSQL Baseline
 
 Status: approved; repository implementation completed in the authorized working tree on 2026-08-10;
-candidate acceptance and external actions remain unauthorized
+the NYC3 disposable managed rehearsal was authorized on 2026-08-11; candidate acceptance and
+production actions remain unauthorized
 
-External authorization: no DigitalOcean, PlanetScale, GitHub Packages, DNS, Resend, New Relic,
-OpenRouter, paid rehearsal, inference, or recovery-resource mutation is authorized by this plan
+External authorization: only the disposable NYC3 managed rehearsal is authorized, with at most USD
+5 of actual provider usage excluding temporary card holds and taxes. Production DNS, credentials,
+data, deployment, paid inference, and production/recovery-resource mutation remain unauthorized.
 
 ## Planning record
 
@@ -22,6 +24,13 @@ monitoring split, CI-published GHCR images with explicit operator deployment, di
 the encrypted Volume, same-host blue/green activation, and two clean 20-employee/40-stream managed
 qualification runs. Repository authorization does not authorize an external account, resource,
 credential, DNS, paid rehearsal, inference, production deployment, or recovery mutation.
+
+On 2026-08-11, the live DigitalOcean control panel showed the exact USD 6 Basic size unavailable in
+RIC1 and ATL1 but available in NYC3. The user explicitly approved NYC3 for the disposable rehearsal
+only. RIC1 remains the production candidate. NYC3 evidence may qualify the shared host size,
+application behavior, PS-5 capacity, deployment, rollback, and recovery paths; it cannot be labeled
+as RIC1 scheduling, availability, or RIC1-to-`us-east-1` latency evidence. A production-region
+change requires a separate explicit decision.
 
 The repository currently starts at commit `92bee339972f6416ae7266d2a592d8fdeb98bd73` plus the
 uncommitted, user-owned Minimal Render amendment implementation and its performance evidence. The
@@ -46,9 +55,10 @@ The useful sizing evidence carried forward is narrower:
 - every prior local load run used a host PostgreSQL instance rather than a constrained PS-5
   database, so none qualifies PlanetScale capacity.
 
-The USD 6 Droplet and PS-5 are consequently **provisional production candidates**. They become the
-source-controlled production sizes only after the exact managed topology passes every unchanged
-gate in this plan twice. A price choice is not capacity evidence.
+The USD 6 Droplet and PS-5 are consequently **provisional production candidates**. They remain
+unaccepted until the NYC3 managed topology passes every applicable unchanged gate twice and the
+remaining RIC1-specific evidence is either produced or superseded by an explicit production-region
+decision. A price choice is not capacity evidence.
 
 ## Authority and amendment semantics
 
@@ -167,8 +177,10 @@ provisioning and record any material drift before acting.
   encryption at rest, and [Volumes pricing](https://docs.digitalocean.com/products/volumes/details/pricing/)
   currently makes the minimum 1 GiB volume USD 0.10/month.
 - [Regional availability](https://docs.digitalocean.com/platform/regional-availability/) lists
-  RIC1. The selected Droplet, Volume, reserved IPv4, firewall, and Monitoring features must all be
-  verified live in that region before creation.
+  RIC1. Live account availability still controls creation: on 2026-08-11 the exact Basic size was
+  unavailable in RIC1 and ATL1 and available in NYC3. The user approved NYC3 only for this
+  disposable rehearsal; all selected Droplet, Volume, reserved IPv4, firewall, and Monitoring
+  features must be verified live there before creation.
 
 ### PlanetScale Postgres
 
@@ -344,8 +356,8 @@ created from an ordinary test command.
 - Implement and verify the four named P2 production-acceptance defects before the managed rehearsal.
 - Add provider-specific audit, deploy, rollback, cold-rebuild, incident, rotation, and recovery
   evidence validators.
-- Run an exact disposable managed rehearsal and, later, the separately authorized production
-  launch checklist.
+- Run the approved disposable NYC3 managed rehearsal without representing its results as RIC1
+  regional evidence and, later, the separately authorized production launch checklist.
 
 ### Out of scope
 
@@ -381,7 +393,8 @@ before behavior changes:
   Fluent Bit application-log forwarding, and provider-native infrastructure metrics;
 - retain the same origin, single active instance, single database, no HA, launch workload,
   performance gates, three-day PITR, RPO, RTO, budget, privacy, and model decisions; and
-- label the candidate unaccepted until the exact managed rehearsal passes twice.
+- label the candidate unaccepted until the managed NYC3 rehearsal passes twice and the remaining
+  RIC1-specific production evidence is resolved explicitly.
 
 Update the current Phase 8 and Minimal Render records with a prominent pointer to this amendment.
 Keep their implementation evidence intact and label only their active provider recommendations
@@ -517,7 +530,8 @@ it must not introduce a reusable deployment library.
 
 The source-controlled host contract is:
 
-- Ubuntu 24.04 LTS in RIC1 on the live-confirmed USD 6 Basic 1 vCPU / 1 GiB size;
+- Ubuntu 24.04 LTS on the USD 6 Basic 1 vCPU / 1 GiB size, with production bound to RIC1 and only
+  the explicit non-production managed rehearsal bound to NYC3;
 - one named non-root SSH operator, key authentication only, no password login, no root SSH login,
   and MFA/recovery on the DigitalOcean account;
 - no ordinary user in the `docker` group, because Docker control is root-equivalent; deployment
@@ -646,14 +660,15 @@ real operator account and may invoke a paid provider; no deployment credential, 
 route, or authentication bypass belongs in the supervised state machine. The release remains
 unaccepted until the operator records that gate. The old digest remains protected throughout.
 
-The empty database has one narrow bootstrap path before any active release exists:
-`model-policy-initialize` accepts a full revision and digest, rejects any existing active symlink,
-validates exact CI evidence and OCI labels, pulls through the read-only encrypted-Volume registry
-credential, runs the forward migrations with the migration-only secret, and bootstraps the locked
-OpenRouter policy with that same image. It creates no release authority; the following normal deploy
-reruns forward migrations idempotently. Every operator path validates the secure Volume's distinct
-block-device identity, exact size, and mount restrictions before reading a secret, and every
-migration-secret mount revalidates the exact one-key schema.
+The empty database has one narrow ordered bootstrap path before any active release exists. First,
+`identity-bootstrap <revision> <digest>` accepts the full immutable image reference, rejects any
+existing active symlink, validates exact CI evidence and OCI labels, pulls through the read-only
+encrypted-Volume registry credential, runs forward migrations with the migration-only secret, and
+creates the workspace through the identity boundary. Then `model-policy-initialize` validates the
+same image and binds the locked OpenRouter policy to that workspace. Neither command creates release
+authority; the following normal deploy reruns forward migrations idempotently. Every operator path
+validates the secure Volume's distinct block-device identity, exact size, and mount restrictions
+before reading a secret, and every migration-secret mount revalidates the exact one-key schema.
 
 If the deploy process dies after the live Caddy switch but before the symlink commit, the old release
 remains durable authority and has not begun draining; systemd's failure action immediately runs the
@@ -946,12 +961,12 @@ Tests include silent provider intervals longer than every proxy idle threshold, 
 missing terminal events, Stop/cancel, archive/rename/delete, navigation, session revocation, reload,
 Caddy drain, backpressure, and canonical recovery.
 
-## Exact managed rehearsal before launch checklist
+## Managed NYC3 rehearsal before launch checklist
 
 Repository completion is necessary but insufficient. Before the production launch checklist starts,
 request immediate authorization for a disposable rehearsal with:
 
-- one exact USD 6 Basic 1 vCPU / 1 GiB RIC1 Droplet;
+- one exact USD 6 Basic 1 vCPU / 1 GiB NYC3 Droplet;
 - one assigned reserved IPv4, exact firewall, Monitoring/Uptime, and 1 GiB encrypted Volume;
 - one exact PS-5 ARM Single Node PostgreSQL 18.4 cluster in AWS `us-east-1`;
 - the exact accepted GHCR digest, Caddy/systemd/Fluent Bit configuration,
@@ -961,13 +976,15 @@ request immediate authorization for a disposable rehearsal with:
 - the same production-built image in the existing explicitly non-production test runtime, with the
   fake model gateway, email disabled, dedicated content-free telemetry labels/credentials, no
   production secrets/data, and no paid inference; and
-- one short-lived separate load-runner in RIC1 or another accepted non-competing source. The load
+- one short-lived separate load-runner in NYC3 or another accepted non-competing source. The load
   generator must not consume the candidate Droplet's CPU/RAM or distort the measured server.
 
 Production mode and the final origin must continue rejecting the fake gateway and disabled/fake
 email. The rehearsal qualifies the image's resource, database, proxy, deployment, and failure
 behavior; it does not claim final production configuration, Resend, OpenRouter, public DNS, or the
-exact custom-origin certificate. Those remain explicit launch-checklist gates.
+exact custom-origin certificate. It also does not qualify RIC1 scheduling, availability, or
+RIC1-to-`us-east-1` latency. Those remain explicit launch-checklist gates unless the user separately
+amends the production region.
 
 The load runner uses generated fixtures and its own temporary PlanetScale role/IP rule only if
 fixture assertions require database access. Remove the role/rule, terminate its connections, and
@@ -1140,7 +1157,9 @@ only the already documented globally ignored local file; CI's repository checkou
 ### External evidence that local tests cannot claim
 
 - Shared-vCPU scheduling and 1 GiB whole-host capacity.
-- RIC1-to-PlanetScale `us-east-1` latency and fixed-source public TLS behavior.
+- NYC3-to-PlanetScale `us-east-1` latency and fixed-source public TLS behavior for the rehearsal.
+- RIC1 scheduling, availability, and RIC1-to-PlanetScale latency remain unverified production
+  evidence unless the production region is separately amended.
 - PS-5 CPU/RAM/I/O/connection capacity and exact extension/lock/query compatibility.
 - Reserved-IP outbound persistence, Cloud Firewall, Volume encryption, Uptime/Monitoring alerts.
 - GHCR live permissions, pull/retention/cost behavior, and operator credential rotation.
@@ -1162,7 +1181,8 @@ only after:
 - the governing docs and repository implementation agree on this topology;
 - all ordinary and focused repository gates pass on one exact commit;
 - no unresolved P1/P2 remains, including the four named defects;
-- the exact disposable USD 6/PS-5 managed rehearsal passes twice;
+- the disposable NYC3 USD 6/PS-5 managed rehearsal passes twice and its evidence is not relabeled
+  as RIC1 regional evidence;
 - deploy/drain/rollback, reboot, cold rebuild, observability privacy, and aged PITR pass;
 - the live steady-state and variable cost estimate is recorded and accepted;
 - all rehearsal roles, IP rules, DNS, credentials, images, Droplets, Volumes, branches, and load
@@ -1248,8 +1268,9 @@ Repository implementation is complete only when:
 The USD 11.10 infrastructure / USD 15.10 operational-base candidate is accepted for the later
 launch checklist only when:
 
-- the exact managed topology passes the full 20-employee/40-stream gate twice at the unchanged
-  500 ms response-start objective;
+- the NYC3 managed topology passes the full 20-employee/40-stream gate twice at the unchanged
+  500 ms response-start objective, and the remaining RIC1 regional evidence is either produced or
+  superseded by an explicit production-region amendment;
 - application correctness, isolation, budget/accounting, cancellation, cleanup, memory, and pool
   gates pass without retry/waiver;
 - whole-host, support-process, blue/green overlap, and PS-5 evidence shows no exhaustion or restart;
@@ -1267,9 +1288,10 @@ launch checklist only when:
 
 The user approved this comprehensive plan and authorized repository implementation on 2026-08-10.
 That grant includes source-controlled code, tests, documentation, CI, audits, and deployment
-artifacts required by this amendment. It does not authorize commit, push,
-DigitalOcean/PlanetScale/GitHub configuration, DNS mutation, credential installation, rehearsal
-resources, paid inference, production deployment, or recovery resources.
+artifacts required by this amendment. On 2026-08-11 the user separately authorized the disposable
+NYC3 managed rehearsal, capped at USD 5 of actual provider usage excluding temporary card holds and
+taxes. It does not authorize production DNS mutation, production credential/data installation,
+paid inference, production deployment, or production recovery resources.
 
 Each later external action must be announced with its exact target, expected maximum/prorated cost,
 credential and data boundary, rollback, and cleanup path before it occurs.
@@ -1531,3 +1553,30 @@ Repository completion does not supply any of the following evidence:
 
 Those are candidate-acceptance or guided-launch gates. Their absence is not waived by local fixtures,
 historical Render results, provider documentation, or this repository-complete status.
+
+## NYC3 rehearsal authorization addendum — 2026-08-11
+
+After repository commit `91624ce616744f9018423034d24a4a6a7cffb00d` passed GitHub Actions and
+published the exact GHCR candidate, the user authorized a disposable managed rehearsal with at most
+USD 5 of actual provider usage, excluding temporary card holds and taxes. The live DigitalOcean
+control panel showed the USD 6 Basic 1 vCPU / 1 GiB size unavailable in RIC1 and ATL1 and available
+in NYC3. The user approved NYC3 for this rehearsal only.
+
+The repository therefore binds production mode to RIC1 and the explicit managed `NODE_ENV=test`
+rehearsal to NYC3. The production `host.env` remains RIC1; the operator renders NYC3 only into the
+non-production rehearsal contract. Cold-rebuild rehearsal evidence must identify NYC3. NYC3 results
+may qualify region-independent compute, application, PS-5, deployment, rollback, and recovery
+behavior, but they cannot close RIC1 scheduling, availability, or RIC1-to-`us-east-1` latency gates.
+No production-region amendment, production DNS/credential/data installation, paid inference, or
+production deployment was authorized by this exception.
+
+The follow-up implementation also makes the deployed SPA explicit with the exact
+`WEB_ASSETS=production-build` mode and adds a test-only operator allowlist for ordered synthetic
+pending identity bootstrap without delivery, simulated first-policy initialization, and isolated
+recovery. Rehearsal readiness requires simulated policy authority, the temporary host cannot equal
+the production host, runtime secrets reject provider keys, and the pending administrator must use
+the reserved `.test` TLD. It does not add credentials, a password-seeding path, or a public test
+endpoint. The exact managed
+load-server invocation that keeps the load generator off the candidate host remains a
+source-controlled review gate; host-shell provisioning and credential-free activation may proceed,
+but the capacity step must stop until that invocation lands and passes CI.

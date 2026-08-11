@@ -87,6 +87,7 @@ test("@critical-stream keeps conversation streams isolated across navigation and
   await navigateFromConversationMenu(page, "Conversación Beta");
   await expect(page).toHaveURL(`/c/${navigationSecondId}`);
   await draft.fill("Solicitud beta");
+  await expect(page.getByText(copy.conversations.draft.saved, { exact: true })).toBeVisible();
   await page.getByRole("button", { name: copy.conversations.generation.actions.send }).click();
   await expect(
     page.getByRole("button", { name: copy.conversations.generation.actions.stop }),

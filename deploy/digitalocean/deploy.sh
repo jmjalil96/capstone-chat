@@ -191,10 +191,14 @@ load_host_contract() {
       [[ ${CAPSTONE_PUBLIC_HOST:-} == chat.capstone.com.ec ]] || fail "production host must use the approved public hostname"
       [[ ${CAPSTONE_EMAIL_DELIVERY:-} == resend && ${CAPSTONE_MODEL_GATEWAY:-} == openrouter ]] ||
         fail "production providers changed"
+      [[ ${CAPSTONE_EXPECTED_REGION:-} == ric1 ]] || fail "production DigitalOcean region changed"
       ;;
     test)
       [[ ${CAPSTONE_EMAIL_DELIVERY:-} == disabled && ${CAPSTONE_MODEL_GATEWAY:-} == fake ]] ||
         fail "managed rehearsal providers are unsafe"
+      [[ ${CAPSTONE_EXPECTED_REGION:-} == nyc3 ]] || fail "managed rehearsal must use the approved NYC3 region"
+      [[ -n ${CAPSTONE_PUBLIC_HOST:-} && ${CAPSTONE_PUBLIC_HOST} != chat.capstone.com.ec ]] ||
+        fail "managed rehearsal requires a non-production hostname"
       ;;
     *) fail "host runtime must be production or the explicit managed test rehearsal" ;;
   esac
@@ -217,7 +221,6 @@ load_host_contract() {
         fail "host IPv4 contract is invalid"
     done
   done
-  [[ ${CAPSTONE_EXPECTED_REGION:-} == ric1 ]] || fail "DigitalOcean region changed"
   [[ ${CAPSTONE_EXPECTED_VOLUME_BYTES:-} == 1073741824 ]] || fail "encrypted Volume size changed"
   [[ ${CAPSTONE_IMAGE_REPOSITORY:-} =~ ^ghcr\.io/[a-z0-9][a-z0-9._-]*/capstone-chat$ ]] ||
     fail "GHCR repository is invalid"
@@ -290,6 +293,32 @@ validate_secret_file() {
   [[ $(stat -c '%a' "${path}") == 440 ]] || fail "secret file must be mode 0440"
 }
 
+validate_runtime_secret_file() {
+  local path=$1 expected_gid=$2
+  validate_secret_file "${path}" "${expected_gid}" || return 1
+  case "${CAPSTONE_NODE_ENV}" in
+    production)
+      jq --exit-status \
+        'keys == ["BETTER_AUTH_SECRET", "DATABASE_URL", "OPENROUTER_API_KEY", "OTEL_EXPORTER_OTLP_HEADERS", "RESEND_API_KEY"] and
+         all(.[]; type == "string" and length > 0)' \
+        "${path}" >/dev/null || {
+        fail "production runtime secret schema is invalid"
+        return 1
+      }
+      ;;
+    test)
+      jq --exit-status \
+        'keys == ["BETTER_AUTH_SECRET", "DATABASE_URL", "OTEL_EXPORTER_OTLP_HEADERS"] and
+         all(.[]; type == "string" and length > 0)' \
+        "${path}" >/dev/null || {
+        fail "managed rehearsal runtime secret schema is invalid"
+        return 1
+      }
+      ;;
+    *) fail "runtime secret validation requires an approved environment" ;;
+  esac
+}
+
 validate_migration_secret_file() {
   local path=$1 expected_gid=$2
   validate_secret_file "${path}" "${expected_gid}" || return 1
@@ -332,7 +361,8 @@ validate_external_outbound_source() {
 }
 
 validate_runtime_prerequisites() {
-  validate_secret_file "${CAPSTONE_RUNTIME_SECRET_PATH}" "${CAPSTONE_RUNTIME_SECRET_GID}" || return 1
+  validate_runtime_secret_file "${CAPSTONE_RUNTIME_SECRET_PATH}" "${CAPSTONE_RUNTIME_SECRET_GID}" ||
+    return 1
   validate_outbound_route || return 1
 }
 

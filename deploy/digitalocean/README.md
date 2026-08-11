@@ -46,8 +46,10 @@ The encrypted Volume contains only:
 ```
 
 `runtime.json` is mounted into the application only as `/run/capstone-secrets/runtime.json` and
-selected through `CAPSTONE_SECRET_FILE`. It contains exactly `BETTER_AUTH_SECRET`, `DATABASE_URL`,
-`OPENROUTER_API_KEY`, `OTEL_EXPORTER_OTLP_HEADERS`, and `RESEND_API_KEY`; the telemetry value is the
+selected through `CAPSTONE_SECRET_FILE`. In production it contains exactly `BETTER_AUTH_SECRET`,
+`DATABASE_URL`, `OPENROUTER_API_KEY`, `OTEL_EXPORTER_OTLP_HEADERS`, and `RESEND_API_KEY`. In the
+managed rehearsal it instead contains exactly `BETTER_AUTH_SECRET`, `DATABASE_URL`, and
+`OTEL_EXPORTER_OTLP_HEADERS`; Resend and OpenRouter keys are rejected. The telemetry value is the
 single `api-key=…` header and never the non-secret endpoint. `migration.json` contains only
 `DATABASE_URL`, is mounted only into the short-lived migration container, and uses the same loader
 interface. The application container is never given the migration, registry, Caddy, or Fluent Bit
@@ -59,7 +61,8 @@ paths. The reviewed host contract supplies the non-secret New Relic endpoint
 1. Render `cloud-init.yaml` exactly once with the operator's public SSH key and exact public IPv4
    `/32`. Reject the result if any `__PLACEHOLDER__` remains. Record its SHA-256; the rendered copy
    is provisioning evidence, not a repository file.
-2. Create the Ubuntu 24.04 LTS RIC1 Droplet with public IPv6 disabled, attach the reserved IPv4,
+2. Create the Ubuntu 24.04 LTS Droplet in RIC1 for production or NYC3 only for the explicitly
+   authorized disposable managed rehearsal, with public IPv6 disabled. Attach the reserved IPv4,
    apply the matching DigitalOcean Cloud Firewall, and attach the 1 GiB encrypted Volume named
    `capstone-secure`. Cloud-init configures only baseline Ubuntu packages; it intentionally does not
    install a moving Docker, Caddy, or Fluent Bit version.
@@ -94,8 +97,12 @@ paths. The reviewed host contract supplies the non-secret New Relic endpoint
    services to unattended upgrades.
 5. Replace every remaining `host.env` placeholder with the accepted reserved IPv4, operator `/32`,
    lowercase GHCR owner, and reviewed versions. Production keeps all other committed values,
-   including `CAPSTONE_OTEL_EXPORTER_OTLP_ENDPOINT=https://otlp.nr-data.net`, exact. The managed
-   rehearsal may change only its documented non-production host/origin/provider values.
+   including `CAPSTONE_EXPECTED_REGION=ric1` and
+   `CAPSTONE_OTEL_EXPORTER_OTLP_ENDPOINT=https://otlp.nr-data.net`, exact. The managed rehearsal must
+   use `CAPSTONE_NODE_ENV=test`, email disabled, the fake model gateway, its documented temporary
+   host/origin, and `CAPSTONE_EXPECTED_REGION=nyc3`; the installed application unit supplies the
+   exact `WEB_ASSETS=production-build` switch in both deployed modes. It may change no other
+   production contract.
 
 An assigned reserved IPv4 does not automatically become the Droplet's outbound source. From the
 DigitalOcean recovery console, follow the provider's Ubuntu 20.04+ reserved-outbound procedure:
@@ -277,10 +284,12 @@ field cannot reach New Relic even if an application log accidentally includes th
 ## Supervised operator commands
 
 Administrative and recovery commands use the active release's exact immutable image, never host
-`pnpm`, an unpacked checkout, or a mutable tag. The sole pre-activation exception is
-`model-policy-initialize`: only while no active symlink exists, it validates and pulls the requested
-full revision/digest against exact CI evidence, runs forward migrations with the migration-only
-secret, and bootstraps policy with that same image. Invoke only the interactive request helper; it
+`pnpm`, an unpacked checkout, or a mutable tag. Before the first active release, an initial
+`identity-bootstrap <revision> <digest>` creates the workspace with the same CI-verified immutable
+image; `model-policy-initialize` can then bind policy to it. Both reject an existing active symlink,
+validate and pull the exact image, and run forward migrations with the migration-only secret.
+After activation, identity bootstrap without an image reference retains the recovery path through
+the active release. Invoke only the interactive request helper; it
 collects private values through `/dev/tty`, writes one root-only request under `/run`, and starts the
 bounded `capstone-operator.service` oneshot:
 
@@ -297,9 +306,27 @@ sudo /opt/capstone-chat/bin/request-operator.sh recovery-marker-list
 sudo /opt/capstone-chat/bin/request-operator.sh recovery-marker-delete
 ```
 
-The initialization command is the only supported first-database path: it is retry-safe, rejects an
-active release, mutable target, unverified digest, or extra migration-secret key, and creates no
-release authority. A normal deploy reruns the same forward migrations idempotently before startup.
+On the exact NYC3 managed `NODE_ENV=test` rehearsal, the same request boundary allows only
+`model-policy-initialize`, `identity-bootstrap`, recovery marker CRUD, and `recovery-prepare`.
+The required first-database order is:
+
+```sh
+sudo /opt/capstone-chat/bin/request-operator.sh identity-bootstrap <40-character-revision> sha256:<64-hex-digest>
+sudo /opt/capstone-chat/bin/request-operator.sh model-policy-initialize <40-character-revision> sha256:<64-hex-digest>
+```
+
+Identity bootstrap uses the rehearsal runtime's generated authentication secret, requires a
+reserved `.test` administrator address, creates only a synthetic pending approval, and explicitly
+suppresses invitation delivery. It creates no password, user, account, or session. Policy
+initialization then uses the migration credential and simulated policy; it accepts no OpenRouter key
+or privacy attestation. Approval/deactivation, real catalog/policy operations, GHCR retention
+mutation, and unknown operations fail before a container starts. Production retains the full list
+above and remains bound to RIC1, Resend, and OpenRouter.
+
+The ordered identity-and-policy initialization is the only supported first-database path. Both
+commands are retry-safe, reject an active release, mutable target, unverified digest, or extra
+migration-secret key, and create no release authority. A normal deploy reruns the same forward
+migrations idempotently before startup and readiness verifies the expected policy mode.
 The helper maps each operation to the compiled `apps/api/dist/entrypoint.js` allowlist. Production
 model bootstrap fixes OpenRouter mode, USD 100, 4,096/8,192/16,384 output limits, concurrency two,
 and the 20% reservation margin; it performs catalog metadata access but no generation. Identity and

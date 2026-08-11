@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApplication } from "../src/app.js";
 import { loadConfig } from "../src/config.js";
 import type { DatabasePool } from "../src/database/pool.js";
+import type { ModelPolicyService } from "../src/model-policy/service.js";
 import { createKnownApplicationAssetValidator } from "../src/static-application.js";
 
 const temporaryDirectories: string[] = [];
@@ -39,6 +40,35 @@ function createPool(): DatabasePool {
 }
 
 describe("production static application", () => {
+  it("requires simulated policy authority for the managed rehearsal build", async () => {
+    const root = await createWebFixture();
+    const config = Object.freeze({
+      ...loadConfig({ NODE_ENV: "test" }),
+      webAssetsDirectory: root,
+    });
+    const assertRuntimeMode = vi
+      .fn<ModelPolicyService["assertRuntimeMode"]>()
+      .mockRejectedValueOnce(new Error("policy missing"))
+      .mockResolvedValue(undefined);
+    const application = createApplication(config, {
+      modelPolicy: { assertRuntimeMode } as unknown as ModelPolicyService,
+      pool: createPool(),
+    });
+
+    await expect(application.lifecycle.initialize()).resolves.toEqual({
+      database: "unknown",
+      status: "unavailable",
+    });
+    await expect(application.lifecycle.initialize()).resolves.toEqual({
+      database: "up",
+      status: "ready",
+    });
+    expect(assertRuntimeMode).toHaveBeenNthCalledWith(1, "simulated");
+    expect(assertRuntimeMode).toHaveBeenNthCalledWith(2, "simulated");
+
+    await application.shutdown();
+  });
+
   it("serves emitted assets and limits the SPA fallback to browser navigation", async () => {
     const root = await createWebFixture();
     const config = Object.freeze({

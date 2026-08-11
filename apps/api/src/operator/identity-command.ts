@@ -18,9 +18,17 @@ import {
   type WorkspaceRole,
 } from "../identity/service.js";
 import { createBudgetService } from "../model-policy/budget-service.js";
-import { parseOperatorArguments, requiredOperatorArgument } from "./arguments.js";
+import {
+  parseOperatorArguments,
+  rejectUnknownOperatorArguments,
+  requiredOperatorArgument,
+} from "./arguments.js";
 
 type Command = "approve" | "bootstrap" | "deactivate";
+
+const bootstrapArguments = new Set(["--email", "--invitation-delivery", "--name", "--workspace"]);
+const approvalArguments = new Set(["--email", "--role", "--workspace"]);
+const deactivationArguments = new Set(["--email", "--workspace"]);
 
 function deliveryFailureMetadata(error: unknown): Readonly<Record<string, unknown>> {
   return Object.freeze({
@@ -55,6 +63,18 @@ function role(argumentsMap: ReadonlyMap<string, string>): WorkspaceRole {
   return value;
 }
 
+function syntheticRehearsalEmail(value: string): string {
+  const separator = value.lastIndexOf("@");
+  const domain = value
+    .slice(separator + 1)
+    .trim()
+    .toLowerCase();
+  if (separator <= 0 || domain.length <= ".test".length || !domain.endsWith(".test")) {
+    throw new Error("The managed rehearsal administrator email must use the reserved .test TLD");
+  }
+  return value;
+}
+
 async function sendInvitation(
   sender: ReturnType<typeof createEmailSender>,
   publicOrigin: string,
@@ -71,7 +91,25 @@ async function run(): Promise<void> {
   }
 
   const argumentsMap = parseOperatorArguments(process.argv.slice(3));
+  rejectUnknownOperatorArguments(
+    argumentsMap,
+    command === "bootstrap"
+      ? bootstrapArguments
+      : command === "approve"
+        ? approvalArguments
+        : deactivationArguments,
+  );
   const config = loadIdentityOperatorConfig();
+  const invitationDelivery = argumentsMap.get("--invitation-delivery");
+  const invitationDisabled = invitationDelivery === "disabled";
+  if (
+    invitationDelivery !== undefined &&
+    (!invitationDisabled || config.nodeEnv !== "test" || config.emailDelivery !== "disabled")
+  ) {
+    throw new Error(
+      "--invitation-delivery disabled is permitted only for the managed test rehearsal",
+    );
+  }
   const pool = createDatabasePool(config.databaseUrl);
   const database = createDatabase(pool);
   const identity = createIdentityService(database);
@@ -82,22 +120,25 @@ async function run(): Promise<void> {
 
   try {
     if (command === "bootstrap") {
+      const adminEmail = requiredOperatorArgument(argumentsMap, "--email");
       const result = await identity.bootstrap({
-        adminEmail: requiredOperatorArgument(argumentsMap, "--email"),
+        adminEmail: invitationDisabled ? syntheticRehearsalEmail(adminEmail) : adminEmail,
         displayName: requiredOperatorArgument(argumentsMap, "--name"),
         workspaceIdentity: workspaceIdentity(argumentsMap),
       });
 
-      try {
-        await sendInvitation(emailSender, config.publicOrigin, result.normalizedEmail);
-      } catch (error: unknown) {
-        process.stderr.write(`${JSON.stringify(deliveryFailureMetadata(error))}\n`);
-        process.exitCode = 1;
-        return;
+      if (!invitationDisabled) {
+        try {
+          await sendInvitation(emailSender, config.publicOrigin, result.normalizedEmail);
+        } catch (error: unknown) {
+          process.stderr.write(`${JSON.stringify(deliveryFailureMetadata(error))}\n`);
+          process.exitCode = 1;
+          return;
+        }
       }
 
       process.stdout.write(
-        `${JSON.stringify({ command, repeated: result.repeated, role: result.role, signUpPath: "/sign-up", workspace: result.workspaceIdentity })}\n`,
+        `${JSON.stringify({ command, ...(invitationDisabled ? { invitationDelivery: "disabled" } : {}), repeated: result.repeated, role: result.role, signUpPath: "/sign-up", workspace: result.workspaceIdentity })}\n`,
       );
       return;
     }

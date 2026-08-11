@@ -29,3 +29,10 @@ external acceptance gates are recorded in
 [the DigitalOcean and PlanetScale amendment](../implementation/08-digitalocean-planetscale-amendment-plan.md).
 The earlier [minimal Render amendment](../implementation/08-production-baseline-amendment-plan.md)
 remains historical sizing and verification evidence; it is not an active operator path.
+
+On 2026-08-11, the user approved NYC3 only for the disposable managed rehearsal after the live
+DigitalOcean control panel showed the USD 6 Basic size unavailable in RIC1 and ATL1 but available
+in NYC3. This exception does not amend the locked RIC1 production candidate. NYC3 evidence may
+qualify the shared host size, application, PS-5 capacity, deployment, rollback, and recovery paths;
+it cannot be represented as RIC1 scheduling, availability, or RIC1-to-`us-east-1` latency evidence.
+A production-region change remains a separate explicit decision.

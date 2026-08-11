@@ -5,6 +5,14 @@ const requestPath = "/run/capstone-operator/request.json";
 const inputPath = "/run/capstone-operator/input.json";
 const recoveryApplicationPath = "/run/capstone-secrets/recovery-application.json";
 const apiEntrypointPath = "/app/apps/api/dist/entrypoint.js";
+const rehearsalOperations = new Set([
+  "identity-bootstrap",
+  "model-policy-initialize",
+  "recovery-marker-create",
+  "recovery-marker-list",
+  "recovery-marker-delete",
+  "recovery-prepare",
+]);
 
 function fail() {
   throw new Error("Operator request is invalid");
@@ -31,6 +39,34 @@ function boundedString(value, maximum) {
     fail();
   }
   return value;
+}
+
+function validateInitialImageReference(input) {
+  const revision = boundedString(input.revision, 40);
+  const digest = boundedString(input.digest, 71);
+  if (!/^[0-9a-f]{40}$/u.test(revision) || !/^sha256:[0-9a-f]{64}$/u.test(digest)) {
+    fail();
+  }
+}
+
+function operatorMode() {
+  if (
+    process.env.NODE_ENV === "production" &&
+    process.env.EMAIL_DELIVERY === "resend" &&
+    process.env.MODEL_GATEWAY === "openrouter" &&
+    process.env.CAPSTONE_EXPECTED_REGION === "ric1"
+  ) {
+    return "production";
+  }
+  if (
+    process.env.NODE_ENV === "test" &&
+    process.env.EMAIL_DELIVERY === "disabled" &&
+    process.env.MODEL_GATEWAY === "fake" &&
+    process.env.CAPSTONE_EXPECTED_REGION === "nyc3"
+  ) {
+    return "rehearsal";
+  }
+  fail();
 }
 
 function readRequest() {
@@ -70,10 +106,22 @@ function readRequest() {
   }
 }
 
-function identityArguments(operation, input) {
+function identityArguments(operation, input, mode) {
   if (operation === "identity-bootstrap") {
-    exactKeys(input, ["email", "name", "workspace"]);
-    return [
+    const initialImageRequested = input.revision !== undefined || input.digest !== undefined;
+    if (mode === "rehearsal" && !initialImageRequested) {
+      fail();
+    }
+    exactKeys(
+      input,
+      initialImageRequested
+        ? ["digest", "email", "name", "revision", "workspace"]
+        : ["email", "name", "workspace"],
+    );
+    if (initialImageRequested) {
+      validateInitialImageReference(input);
+    }
+    const argumentsList = [
       "bootstrap",
       "--workspace",
       boundedString(input.workspace, 63),
@@ -82,6 +130,10 @@ function identityArguments(operation, input) {
       "--email",
       boundedString(input.email, 254),
     ];
+    if (mode === "rehearsal") {
+      argumentsList.push("--invitation-delivery", "disabled");
+    }
+    return argumentsList;
   }
   if (operation === "identity-approve") {
     exactKeys(input, ["email", "role", "workspace"]);
@@ -109,7 +161,7 @@ function identityArguments(operation, input) {
   ];
 }
 
-function modelArguments(operation, input) {
+function modelArguments(operation, input, mode) {
   if (operation === "model-catalog-refresh") {
     exactKeys(input, []);
     return ["refresh"];
@@ -119,13 +171,33 @@ function modelArguments(operation, input) {
     operation === "model-policy-initialize" ? ["digest", "revision", "workspace"] : ["workspace"],
   );
   if (operation === "model-policy-initialize") {
-    const revision = boundedString(input.revision, 40);
-    const digest = boundedString(input.digest, 71);
-    if (!/^[0-9a-f]{40}$/u.test(revision) || !/^sha256:[0-9a-f]{64}$/u.test(digest)) {
-      fail();
-    }
+    validateInitialImageReference(input);
   }
   const workspace = boundedString(input.workspace, 63);
+  if (mode === "rehearsal") {
+    if (operation !== "model-policy-initialize") {
+      fail();
+    }
+    return [
+      "bootstrap",
+      "--mode",
+      "simulated",
+      "--workspace",
+      workspace,
+      "--monthly-budget-usd",
+      "100",
+      "--fast-max-output",
+      "4096",
+      "--balanced-max-output",
+      "8192",
+      "--pro-max-output",
+      "16384",
+      "--employee-generation-limit",
+      "2",
+      "--reservation-margin-bps",
+      "2000",
+    ];
+  }
   if (operation === "model-policy-attest") {
     return ["attest", "--workspace", workspace, "--privacy-attestation", inputPath];
   }
@@ -170,6 +242,10 @@ function recoveryMarkerArguments(operation, input) {
 }
 
 const request = readRequest();
+const mode = operatorMode();
+if (mode === "rehearsal" && !rehearsalOperations.has(request.operation)) {
+  fail();
+}
 let target;
 let commandArguments;
 
@@ -179,7 +255,7 @@ if (
   request.operation === "identity-deactivate"
 ) {
   target = "identity";
-  commandArguments = identityArguments(request.operation, request.input);
+  commandArguments = identityArguments(request.operation, request.input, mode);
 } else if (
   request.operation === "model-catalog-refresh" ||
   request.operation === "model-policy-attest" ||
@@ -187,7 +263,7 @@ if (
   request.operation === "model-policy-initialize"
 ) {
   target = "model";
-  commandArguments = modelArguments(request.operation, request.input);
+  commandArguments = modelArguments(request.operation, request.input, mode);
 } else if (
   request.operation === "recovery-marker-create" ||
   request.operation === "recovery-marker-list" ||
