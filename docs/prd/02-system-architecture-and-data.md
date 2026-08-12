@@ -59,11 +59,11 @@ The database starts with 10 GB included storage, may grow once to an enforced 15
 uses backups every 12 hours retained for 84 hours. App Platform's filesystem is ephemeral and
 contains no authoritative application data. Recovery uses source-controlled non-secret App
 contracts, exact immutable OCI digests, Bitwarden source credentials, managed PostgreSQL recovery,
-and provider ownership. The App Platform/Cloudflare plaintext-processing terms remain a launch
-privacy gate. Controlled App recreation must meet the four-hour RTO; accidental deletion while a
-custom domain remains attached is an explicit unresolved acceptance blocker until DigitalOcean
-provides a verified sub-four-hour release path or the owner separately amends that failure mode's
-RTO.
+and provider ownership. The owner accepted the App Platform/Cloudflare plaintext-processing
+boundary and its documented residual logging/access uncertainty on August 12, 2026. Controlled App
+recreation must meet the four-hour RTO. As an explicit exception approved the same day, accidental
+App deletion while a custom domain remains attached is best-effort with a maximum 24-hour domain-
+binding recovery objective; that exception does not weaken any controlled recovery target.
 
 ## Reconciliation
 

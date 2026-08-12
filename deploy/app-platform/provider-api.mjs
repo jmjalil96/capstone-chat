@@ -22,6 +22,29 @@ function appPath(appId, suffix = "") {
   return `/v2/apps/${encodeURIComponent(appId)}${suffix}`;
 }
 
+function listPage(result, key, label, observedCount, expectedTotal) {
+  const values = result?.[key];
+  const total = result?.meta?.total;
+  assert(
+    Number.isSafeInteger(total) &&
+      total >= 0 &&
+      (expectedTotal === undefined || total === expectedTotal),
+    `${label} is invalid`,
+  );
+  if (values === undefined) {
+    // DigitalOcean omits an empty collection key while retaining the authoritative total.
+    assert(observedCount === total, `${label} is invalid`);
+    return { total, values: [] };
+  }
+  assert(Array.isArray(values), `${label} is invalid`);
+  const nextCount = observedCount + values.length;
+  assert(
+    nextCount <= total && (values.length === 100 || nextCount === total),
+    `${label} is invalid`,
+  );
+  return { total, values };
+}
+
 export function createDigitalOceanClient({ fetchImplementation = fetch, token }) {
   assert(typeof token === "string" && token.length >= 32, "DigitalOcean token is missing");
 
@@ -152,22 +175,32 @@ export function createDigitalOceanClient({ fetchImplementation = fetch, token })
 
     async listApps() {
       const apps = [];
+      let total;
       for (let page = 1; page <= MAXIMUM_PAGES; page += 1) {
         const result = await request(`/v2/apps?page=${page}&per_page=100`);
-        assert(Array.isArray(result?.apps), "DigitalOcean App list is invalid");
-        apps.push(...result.apps);
-        if (result.apps.length < 100) return apps;
+        const current = listPage(result, "apps", "DigitalOcean App list", apps.length, total);
+        total = current.total;
+        apps.push(...current.values);
+        if (apps.length === total) return apps;
       }
       fail("DigitalOcean App inventory exceeded its reviewed bound");
     },
 
     async listDeployments(appId) {
       const deployments = [];
+      let total;
       for (let page = 1; page <= MAXIMUM_PAGES; page += 1) {
         const result = await request(appPath(appId, `/deployments?page=${page}&per_page=100`));
-        assert(Array.isArray(result?.deployments), "DigitalOcean deployment list is invalid");
-        deployments.push(...result.deployments);
-        if (result.deployments.length < 100) {
+        const current = listPage(
+          result,
+          "deployments",
+          "DigitalOcean deployment list",
+          deployments.length,
+          total,
+        );
+        total = current.total;
+        deployments.push(...current.values);
+        if (deployments.length === total) {
           return deployments;
         }
       }

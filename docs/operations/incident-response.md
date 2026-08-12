@@ -56,7 +56,8 @@
   restrictions to restore connectivity.
 - **Domain or managed-edge failure:** preserve the App/domain binding. For planned replacement,
   detach and verify release before delete. If accidental deletion leaves a binding, escalate to
-  DigitalOcean support and record the four-hour-RTO gap honestly.
+  DigitalOcean support, invoke the approved best-effort maximum 24-hour exception, and record the
+  controlled four-hour-RTO miss separately.
 - **Database-authority incident:** maintenance, zero active work, revoke old write authority,
   restore/verify in isolation, then use the explicit cutover procedure. Native rollback cannot
   restore database state.

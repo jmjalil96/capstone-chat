@@ -1,13 +1,38 @@
 # Phase 8 Amendment — DigitalOcean App Platform and PlanetScale PostgreSQL Baseline
 
 Status: amendment approved and repository implementation authorized on 2026-08-11; repository
-implementation is complete and independently reviewed; managed rehearsal, candidate acceptance,
-and every external production action remain unauthorized
+implementation is complete and independently reviewed; the bounded disposable managed rehearsal
+was authorized on 2026-08-12 and is in progress; candidate acceptance and every external
+production action remain unauthorized
 
-External authorization: none. Repository implementation did not authorize DigitalOcean App
-Platform or PlanetScale resource creation, credential installation, DNS mutation, a managed
-rehearsal, paid inference, production data, recovery branches, deletion of the existing disposable
-Droplet resources, a commit, or a push.
+External authorization: one temporary `ric` App Platform App with Dedicated Egress, one temporary
+PlanetScale PS-5 database in `us-east`, `rehearsal.chat.capstone.com.ec`, fake model behavior,
+disabled email, synthetic `.test` identities, content-free telemetry, and an external load
+generator, with at most USD 20 of provider usage, a maximum ten-day lifetime, and mandatory
+cleanup. Production DNS/data/identity, Resend, paid OpenRouter inference, candidate acceptance,
+production provisioning, and destructive cleanup remain unauthorized. The first bootstrap attempt
+against revision `c67600b4b577d56f9c826ce335eee2b3d4e2df0d` failed before App creation because
+DigitalOcean omitted the empty `apps` collection from a valid zero-total response; no App or other
+provider resource was created. A corrected revision/digest requires renewed exact-artifact
+authority before retry.
+
+### Provider and authorization record — 2026-08-12
+
+- The owner accepted the current USD 44 operational baseline before taxes, variable overage,
+  temporary rehearsal resources, and separately capped model use. The live DigitalOcean account
+  exposed `ric`, `apps-s-1vcpu-1gb-fixed` at USD 10/month, and
+  `apps-s-1vcpu-0.5gb` at USD 5/month. PlanetScale `us-east` and PS-5 remain live creation gates.
+- The owner accepted DigitalOcean App Platform and its Cloudflare-backed edge as content-bearing
+  processors, including the documented residual uncertainty around internal edge-log retention and
+  employee access. This is not end-to-end encryption to the container.
+- The owner retained the four-hour controlled-recovery RTO and approved a best-effort maximum
+  24-hour exception only for accidental App deletion while its custom domain remains attached.
+- The owner reported that the abandoned Droplet project contained no remaining resource. The
+  scoped DigitalOcean provisioning token can create/read/update Apps and read regions, sizes, and
+  actions, but cannot delete an App or access its console. A distinct seven-day GitHub credential
+  grants only `read:packages` for the private GHCR pull.
+- The bounded managed rehearsal authorization permits at most USD 20 of provider usage for ten
+  days and requires cleanup. Production authority remains unchanged.
 
 ## Planning record
 
@@ -60,7 +85,7 @@ If approved, this amendment supersedes only the following active Phase 8 choices
 | Cloud Firewall, UFW, and SSH operator boundary | No public SSH or host firewall; App Platform exposes only the managed HTTP service |
 | Host Docker container with read-only rootfs, dropped capabilities, `no-new-privileges`, PID limit, and systemd confinement | App Platform-managed gVisor sandbox with no host controls exposed, non-root UID 1000, and an ephemeral writable filesystem that carries no authoritative state |
 | Caddy terminates TLS and proxies to a loopback slot | App Platform/Cloudflare terminates public TLS and forwards to one container on `0.0.0.0:3000` |
-| Capstone-controlled Caddy is the only content-bearing TLS edge | DigitalOcean App Platform and its Cloudflare-backed edge become approved content-bearing processors for prompts, responses, cookies, and identity links, subject to a separate terms/privacy gate |
+| Capstone-controlled Caddy is the only content-bearing TLS edge | DigitalOcean App Platform and its Cloudflare-backed edge become approved content-bearing processors for prompts, responses, cookies, and identity links under the owner's August 12, 2026 privacy-boundary acceptance |
 | Caddy overwrites `X-Capstone-Client-IP` | App Platform supplies `do-connecting-ip`; Fastify validates that exact header in a provider-specific mode |
 | Root-owned secret files on an encrypted Volume | Component-scoped App Platform encrypted `SECRET` environment variables; Bitwarden remains the recoverable source |
 | Vendor-neutral deployment contract | Portable OCI/application/PostgreSQL boundaries plus one intentionally provider-specific App Platform operations adapter and runtime ingress/secret mode |
@@ -101,12 +126,12 @@ sandbox substitution is part of plan approval, not evidence that the controls ar
 
 The managed edge is also a material privacy-boundary change. TLS terminates before the request
 reaches Fastify, so DigitalOcean and its Cloudflare-backed edge can technically process plaintext
-application content and authentication material. Plan approval must explicitly accept those
-processors conditionally; launch remains blocked until the owner reviews the current DPA,
-subprocessor list, processing and support regions, edge/request logging and retention, employee
-access, deletion, breach-notification, and incident terms. If those terms cannot satisfy the locked
-content-privacy posture, reject App Platform rather than claiming end-to-end encryption to the
-container.
+application content and authentication material. On August 12, 2026, the owner accepted those
+processors after reviewing the current public DPA, subprocessor list, processing and support
+regions, edge/request logging and retention, employee access, deletion, breach-notification, and
+incident terms. That acceptance explicitly includes the residual uncertainty that public material
+does not quantify every internal edge-log retention and employee-access detail. Material term
+changes require re-review; never claim end-to-end encryption to the container.
 
 Every other product, privacy, data, model, email, budget, capacity, latency, and recovery decision
 remains locked. In particular, this amendment does not change:
@@ -1036,8 +1061,9 @@ Acceptance verifies:
 The domain is not attached to an App that is about to be deleted. Planned replacement detaches the
 custom domain and verifies provider release before deleting the old App. Accidental deletion while
 the domain remains attached can make DigitalOcean retain the binding for up to 24 hours, which is
-outside the locked four-hour RTO; section 13 treats that as an explicit unresolved candidate risk,
-not as a successful recovery claim.
+outside the controlled four-hour RTO. On August 12, 2026, the owner approved a best-effort maximum
+24-hour exception for only that accidental-deletion failure mode; it is recorded separately from
+controlled recovery evidence.
 
 ### 10. Preserve the PlanetScale network and role boundary
 
@@ -1193,11 +1219,10 @@ delete the old App. The recovery rehearsal must prove that controlled sequence i
 
 That proof does not cover accidental App deletion while the domain is still attached. DigitalOcean
 documents that the binding can persist for up to 24 hours, so the current provider contract cannot
-honestly guarantee the locked four-hour RTO for that failure mode. Production acceptance remains
-blocked until either (a) DigitalOcean supplies and the rehearsal verifies a supported release path
-within four hours, or (b) the owner explicitly amends RTO for accidental App deletion while keeping
-the four-hour objective for every controlled recovery. The restricted steady deploy token and
-short-lived delete authority materially reduce the probability but do not erase this contract gap.
+honestly guarantee the controlled four-hour RTO for that failure mode. The owner approved a
+best-effort maximum 24-hour exception on August 12, 2026 while retaining the four-hour objective
+for every controlled recovery. The restricted steady deploy token and short-lived delete authority
+materially reduce the probability; any actual exception remains separately reported.
 
 The PITR rehearsal still restores into an isolated PlanetScale branch, applies extensions and
 settings explicitly, uses separate roles, verifies every migration and integrity query, and leaves
@@ -1615,8 +1640,8 @@ acceptance, production still requires a guided, separately authorized checklist 
 10. Ecuador broadband latency and current Chrome, Edge, Firefox, Safari, iOS Safari, and Android
     Chrome checks;
 11. keyboard, VoiceOver/screen-reader, zoom, reduced-motion, and responsive acceptance;
-12. aged PITR and controlled cold App recreation evidence within RPO/RTO, plus an explicit
-    resolution of the accidental-deletion domain-binding RTO gap;
+12. aged PITR and controlled cold App recreation evidence within RPO/RTO, with accidental domain-
+    binding deletion measured separately against the approved maximum 24-hour exception;
 13. final secret/content sampling and incident/rotation/on-call review;
 14. explicit sign-off on one-instance, single-node, one-Bitwarden-owner risks; and
 15. final no-P1/P2 review before candidate acceptance.
@@ -1637,7 +1662,7 @@ No resource changes automatically when a gate fails.
 | Dedicated Egress cannot be preserved safely | Fail closed; never remove PlanetScale restrictions silently | New decision required |
 | Cloudflare/DigitalOcean processing terms fail the privacy review | Reject App Platform; do not claim container-terminated TLS | New provider decision required |
 | DNSSEC is enabled and must remain enabled | Reject the App Platform domain attachment or explicitly select a different edge; never silently disable DNSSEC | New decision required |
-| Accidental App deletion cannot release the domain inside four hours | Obtain a supported provider recovery path or explicitly amend that failure mode's RTO | New decision required |
+| Accidental App deletion cannot release the domain inside four hours | Use the approved best-effort maximum 24-hour exception only for this failure mode; preserve four hours for controlled recovery | Approved 2026-08-12 |
 | App Platform cannot meet migration/drain/rollback contract | Return to provider selection with evidence | New decision required |
 
 The 512 MiB service is not an automatic downgrade. Autoscaling and a second instance are not
@@ -1672,7 +1697,7 @@ fresh evidence.
 | Normal deploy is used to select an old checked commit | Require current protected `main` HEAD and strict active-release ancestry; reserve prior artifacts for the compatibility-checked rollback entrypoint |
 | Concurrent full-spec writers overwrite fresh secrets or egress/domain state | Serialize every writer in one non-cancelling Actions group, use one mutation helper, double-check the full live fingerprint immediately before PUT, verify after PUT, and prohibit control-panel spec edits |
 | Planned App replacement loses egress pair/domain state | Preserve the App ID when possible; otherwise detach and verify domain release before delete, allocate a new pair, and rehearse controlled transfer within RTO |
-| Accidental deletion leaves the domain bound for up to 24 hours | Keep delete authority short-lived and resolve the documented four-hour-RTO incompatibility before production acceptance |
+| Accidental deletion leaves the domain bound for up to 24 hours | Keep delete authority short-lived, invoke the approved maximum 24-hour exception only for this failure mode, and report it separately from controlled recovery |
 | App spec/provider state drifts through control-panel edits | Read-only live-contract audit before every deploy and scheduled/manual review |
 | Provider maintenance restarts the same image | Distinguish restart from release using exact digest/revision and alert/evidence metadata |
 | RIC managed scheduling differs from local evidence | Two managed load passes and Ecuador latency gate; no historical relabeling |
@@ -1730,8 +1755,8 @@ The App Platform/PlanetScale candidate is accepted only when:
 - New Relic and native provider telemetry deliver content-free evidence and alerts without becoming
   readiness-critical;
 - the aged PITR and controlled detach-before-delete App recreation satisfy RPO/RTO, and the
-  accidental-deletion domain-binding gap has either a verified provider solution or an explicit
-  approved RTO amendment;
+  accidental-deletion domain-binding behavior is evaluated against the approved maximum 24-hour
+  exception without relabeling it as a controlled four-hour recovery;
 - production Resend, authorized OpenRouter smoke, Ecuador/browser/device/accessibility, secret
   rotation, and incident procedures pass;
 - temporary resources and credentials are cleaned up; and

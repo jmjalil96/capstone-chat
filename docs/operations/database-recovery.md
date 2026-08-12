@@ -34,9 +34,9 @@ fields. It does not create or claim a provider restore.
 4. Confirm exact current/previous GHCR digests, migration compatibility, Bitwarden emergency
    retrieval, protected recovery pins, DNS/provider ownership, and one separately authorized
    recovery environment can be recreated inside the four-hour controlled-recovery RTO.
-5. Record the unresolved provider contract: accidental App deletion while its domain remains
-   attached may retain the binding for up to 24 hours. Production acceptance requires either a
-   verified release path inside four hours or an explicit RTO amendment for that failure mode.
+5. Record the provider exception approved on August 12, 2026: accidental App deletion while its
+   domain remains attached is best-effort with a maximum 24-hour domain-binding recovery objective.
+   This does not amend the four-hour controlled-recovery RTO.
 
 ## Isolated PITR rehearsal or incident restore
 
@@ -105,6 +105,6 @@ Preserve the App ID when possible. If a new App is required:
 6. Prove old credentials/deployments cannot write, measure end-to-end RTO, accept evidence, then
    remove disposable branch/App/domain/egress/roles only under explicit cleanup authorization.
 
-If accidental deletion leaves the domain bound beyond four hours, do not falsify RTO evidence.
-Escalate to DigitalOcean support and the explicit acceptance decision described above while
-preserving database and credential authority.
+If accidental deletion leaves the domain bound beyond four hours, classify it under the approved
+24-hour exception rather than falsifying controlled-RTO evidence. Escalate to DigitalOcean support
+while preserving database and credential authority. Exceeding 24 hours remains an RTO failure.

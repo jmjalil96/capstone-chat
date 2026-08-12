@@ -53,6 +53,80 @@ async function execUrl(value) {
 }
 
 {
+  const client = createDigitalOceanClient({
+    fetchImplementation: async () =>
+      new Response(JSON.stringify({ meta: { total: 0 } }), { status: 200 }),
+    token: "fixture-digitalocean-token-value-long-enough",
+  });
+  assert.deepEqual(await client.listApps(), []);
+  assert.deepEqual(await client.listDeployments(appId), []);
+}
+
+for (const value of [
+  {},
+  { meta: { total: 1 } },
+  { apps: [], meta: { total: 1 } },
+  { apps: null, meta: { total: 0 } },
+]) {
+  const client = createDigitalOceanClient({
+    fetchImplementation: async () => new Response(JSON.stringify(value), { status: 200 }),
+    token: "fixture-digitalocean-token-value-long-enough",
+  });
+  await assert.rejects(client.listApps(), /App list is invalid/u);
+}
+
+{
+  const client = createDigitalOceanClient({
+    fetchImplementation: async () =>
+      new Response(JSON.stringify({ deployments: null, meta: { total: 0 } }), { status: 200 }),
+    token: "fixture-digitalocean-token-value-long-enough",
+  });
+  await assert.rejects(client.listDeployments(appId), /deployment list is invalid/u);
+}
+
+{
+  const client = createDigitalOceanClient({
+    fetchImplementation: async () =>
+      new Response(JSON.stringify({ meta: { total: 0 } }), { status: 200 }),
+    token: "fixture-digitalocean-token-value-long-enough",
+  });
+  await assert.rejects(client.listInstances(appId), /instance list is invalid/u);
+}
+
+{
+  const pages = [
+    {
+      apps: Array.from({ length: 100 }, (_, index) => ({ id: `app-${index}` })),
+      meta: { total: 150 },
+    },
+    {
+      apps: Array.from({ length: 50 }, (_, index) => ({ id: `app-${index + 100}` })),
+      meta: { total: 150 },
+    },
+  ];
+  const client = createDigitalOceanClient({
+    fetchImplementation: async () => new Response(JSON.stringify(pages.shift()), { status: 200 }),
+    token: "fixture-digitalocean-token-value-long-enough",
+  });
+  assert.equal((await client.listApps()).length, 150);
+}
+
+{
+  const pages = [
+    {
+      apps: Array.from({ length: 100 }, (_, index) => ({ id: `app-${index}` })),
+      meta: { total: 101 },
+    },
+    { apps: [{ id: "app-100" }], meta: { total: 102 } },
+  ];
+  const client = createDigitalOceanClient({
+    fetchImplementation: async () => new Response(JSON.stringify(pages.shift()), { status: 200 }),
+    token: "fixture-digitalocean-token-value-long-enough",
+  });
+  await assert.rejects(client.listApps(), /App list is invalid/u);
+}
+
+{
   let cancelled = false;
   const body = new ReadableStream({
     cancel() {

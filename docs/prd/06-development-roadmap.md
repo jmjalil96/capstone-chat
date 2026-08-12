@@ -93,9 +93,9 @@ Complete observability, cross-browser and accessibility verification, performanc
 - PlanetScale backups run every 12 hours and are retained for 84 hours, preserving at least three
   continuously accessible days of point-in-time recovery. Production retains an RPO of at most 15
   minutes and an RTO of at most four hours. An isolated database restore and a source-controlled
-  controlled cold App recreation are required before launch. Accidental App deletion while the
-  custom domain remains attached is not accepted under the four-hour RTO until a provider release
-  path is verified or that failure mode is explicitly amended.
+  controlled cold App recreation are required before launch. The owner-approved exception for
+  accidental App deletion while the custom domain remains attached is best-effort with a maximum
+  24-hour domain-binding recovery objective; every controlled recovery retains the four-hour RTO.
 - Resend Free sends transactional mail through direct HTTPS calls from Fastify. The verified sending
   domain is `mail.capstone.com.ec`, and the sender is
   `Capstone Chat <no-reply@mail.capstone.com.ec>`. Templates provide Spanish HTML and plain text.

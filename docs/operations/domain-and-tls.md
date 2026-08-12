@@ -3,8 +3,11 @@
 The application origin remains exactly `https://chat.capstone.com.ec`; transactional mail uses
 `mail.capstone.com.ec`. DigitalOcean App Platform and its Cloudflare-backed edge terminate public
 TLS and can process plaintext prompts, responses, cookies, and identity links. Domain attachment is
-blocked until the owner accepts the current DPA, subprocessors, processing/support regions,
-request/edge logging and retention, employee access, deletion, breach, and incident terms.
+permitted under the owner's August 12, 2026 acceptance of the current DPA, subprocessors,
+processing/support regions, request/edge logging and retention, employee access, deletion, breach,
+and incident terms. The owner explicitly accepted that public documentation does not fully quantify
+every internal edge-log retention and employee-access detail. Recheck material contract changes
+before production launch; never describe this boundary as end-to-end encryption to the container.
 
 DNS, domain, certificate, edge, or provider changes require immediate action-specific
 authorization. Record hostnames, record types, status, and UTC time only—never account IDs,
@@ -59,8 +62,9 @@ Preserve the current App ID when possible. Before a controlled replacement or de
 maintenance, detach `chat.capstone.com.ec`, and verify DigitalOcean has released the binding. Attach
 it to the already verified replacement and complete smoke before deleting the old App. Deleting an
 App while its domain remains attached can retain the binding for up to 24 hours; this exceeds the
-four-hour RTO and remains a production-acceptance blocker until a provider-supported release path
-is proven or the owner explicitly amends that failure mode's RTO.
+four-hour controlled-recovery RTO. The owner approved a best-effort, maximum 24-hour exception for
+that accidental-deletion failure mode on August 12, 2026. Controlled replacement and every other
+recovery retain the four-hour target.
 
 Delete authority is short-lived, separate from deploy/console/provisioning authority, and granted
 only after domain release. A failed domain operation restores the last approved App spec and DNS
