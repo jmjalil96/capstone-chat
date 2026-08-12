@@ -1,24 +1,29 @@
 # Capstone Chat operations
 
-These runbooks operate the approved provisional Phase 8 topology: one USD 6 DigitalOcean Basic
-shared-CPU Droplet with one vCPU and 1 GiB RAM in RIC1, one encrypted 1 GiB Volume, and one USD 5
-PlanetScale Postgres PS-5 ARM Single Node cluster in AWS `us-east-1`. Caddy exposes one origin;
-exactly one application slot is active for new traffic. PostgreSQL uses a fixed-source public route
-restricted to the Droplet `/32` and protected by `verify-full` TLS.
+These runbooks describe the one active provisional Phase 8 path: one DigitalOcean App Platform
+dynamic service in managed region `ric`, one `PRE_DEPLOY` migration job, Dedicated Egress, and one
+PlanetScale Postgres PS-5 ARM Single Node cluster in AWS `us-east-1`. App Platform owns ingress,
+managed TLS, readiness-gated rolling replacement, and the Cloudflare-backed edge. PlanetScale
+accepts direct `verify-full` port-5432 connections only from both exclusive egress IPv4 `/32`s and
+the exact role being used.
 
-The explicitly authorized disposable managed rehearsal substitutes NYC3 for RIC1 because the exact
-USD 6 Basic size was unavailable in RIC1 and ATL1 on 2026-08-11. Production remains RIC1. Rehearsal
-evidence must be labeled NYC3 and cannot close RIC1 scheduling, availability, or latency gates.
+The service candidate is `apps-s-1vcpu-1gb-fixed`, one instance, with no autoscaling or scale to
+zero. The migration job is `apps-s-1vcpu-0.5gb` and exists only as a deployment phase. App Platform
+and PlanetScale remain unaccepted until every managed network, privacy, load, stream, deployment,
+and recovery gate passes. Earlier Render and raw-Droplet plans remain historical evidence only;
+their commands are not an operator fallback.
 
-Run commands from the repository root at the exact deployed revision, or through the audited host
-entry point identified by the DigitalOcean deployment artifacts. Replace angle-bracket placeholders
-locally. Never paste credentials, employee content, provider payloads, raw URLs, or token-bearing
-identity links into an issue, task, shell argument, log, screenshot, or committed evidence file.
+Run repository commands from the exact reviewed revision. Run provider mutations only through the
+source-controlled App Platform workflow or its named, separately authorized operator entry point.
+Never paste credentials, employee content, provider payloads, secret-bearing App specs, raw URLs,
+or identity-action links into a task, shell argument, log, screenshot, CI artifact, or evidence
+file.
 
-Repository implementation and the disposable NYC3 managed rehearsal are authorized, with actual
-provider usage capped at USD 5 excluding temporary card holds and taxes. Production DNS,
-credentials/data, deployment, paid inference, and production PITR actions remain separately gated.
-A runbook describes the procedure; it does not grant permission beyond that narrow rehearsal.
+Repository implementation does not authorize a managed rehearsal or production action. Creating or
+deleting an App, egress pair, database branch, role, domain, Uptime check, credential, backup, or
+other paid resource requires a fresh grant naming target, maximum spend, lifetime, data class, and
+cleanup scope. Production DNS, credentials/data, deployment, email, paid inference, and PITR
+cutover remain separately gated.
 
 ## Ownership and recovery
 
@@ -29,20 +34,23 @@ deferred. Treat that as a visible single-person launch risk and never claim two-
 an independent second company account has tested access.
 
 DigitalOcean, PlanetScale, GitHub, DNS, New Relic, Resend, OpenRouter, Bitwarden, and the
-administrator mailbox must use company-controlled ownership and MFA where supported. Keep a
-content-free UTC change record outside the repository for every external mutation. The operator
-must be able to recover Bitwarden and rebuild a fresh encrypted Volume within the four-hour RTO.
+administrator mailbox must use company-controlled ownership and MFA where supported. Keep Capstone
+in a dedicated DigitalOcean team containing no unrelated App because the steady deploy token is
+team-scoped. Keep a content-free UTC change record outside the repository for every external
+mutation. The operator must be able to recover Bitwarden, exact GHCR digests, the non-secret App
+contract, and PlanetScale recovery material within the four-hour controlled-recovery RTO.
 
 ## Routine inspection
 
 Inspect the following before and after each deploy, daily during launch week, and weekly thereafter:
 
-- DigitalOcean CPU/load, RAM, disk, network, restarts, firewall, reserved-IP routing, TLS/readiness,
-  security-update state, and Volume attachment;
+- App Platform deployment, pre-deploy job, domain, readiness, CPU, memory, restart, request,
+  latency, egress-pair, and encrypted-variable contract, plus the independent Uptime check;
 - PlanetScale CPU/RAM, connections, locks, I/O, storage, WAL, backup schedule, oldest selectable
   PITR point, Query Insights, roles, and database-wide IP restrictions;
 - New Relic application readiness/5xx/latency, response-start, generation outcomes, budgets,
-  reconciliation, pool waiting, Resend categories, and Fluent Bit/OTLP delivery; and
+  reconciliation, pool waiting, Resend categories, OTLP delivery, and bounded direct-log-mirror
+  delivery/drop counts; and
 - GHCR current/previous protected digests, CI result, Bitwarden seat count, live cost estimates,
   and provider billing alerts.
 
@@ -61,9 +69,9 @@ source-controlled sizing decision, not an automatic resize, new service, or rela
 - [Employee access](./employee-access.md)
 - [Domain and TLS](./domain-and-tls.md)
 
-The provider-specific host files and their installation/verification contract live in
-`deploy/digitalocean/`. Historical Render plans remain evidence only and are not operator
-instructions.
+The active provider contract and mutation tools live in `deploy/app-platform/`. The digest-free
+contracts contain no credential, encrypted provider value, or release placeholder. Historical
+Render and Droplet records remain in `docs/implementation/` and Git history only.
 
 ## Evidence rules
 
@@ -74,6 +82,7 @@ prompts, responses, summaries, searches, titles, drafts, provider bodies, raw mo
 identity-action URLs.
 
 Stop if a step would change the locked privacy, security, cost, retention, model, availability, or
-recovery policy. Do not improvise a second service, queue, cache, worker, public application port,
-open database rule, proxy/CDN, alternate provider, automatic resize, or secret on the Droplet's
-unencrypted root disk.
+recovery policy. Do not improvise a second steady service, queue, cache, worker, open database rule,
+VPC, Volume, alternate edge/provider, automatic resize, native rollback, or unreviewed control-panel
+App-spec edit. App Platform's managed Cloudflare edge is an accepted conditional processor only
+after the separate DPA/subprocessor/region/log-retention/access/deletion/breach gate succeeds.

@@ -89,6 +89,20 @@ describe("applySecurityHeaders", () => {
     expect(captured.get("strict-transport-security")).not.toContain("includeSubDomains");
     expect(captured.get("strict-transport-security")).not.toContain("preload");
   });
+
+  it("adds the same HSTS policy for the managed HTTPS rehearsal", () => {
+    const captured = new Map<string, string>();
+    const reply = {
+      header: vi.fn((name: string, value: string) => {
+        captured.set(name, value);
+        return reply;
+      }),
+    } as unknown as FastifyReply;
+
+    applySecurityHeaders(reply, "test", "managed-rehearsal");
+
+    expect(captured.get("strict-transport-security")).toBe("max-age=31536000");
+  });
 });
 
 describe("enforceCapstoneMutationBoundary", () => {

@@ -32,13 +32,26 @@ describe("load diagnostics", () => {
     const pool = new ObservablePool();
     const streams = new ActiveStreamRegistry();
     applications.push(application);
-    registerLoadDiagnostics(application, pool, streams);
+    const secret = "diagnostics-secret-with-at-least-32-characters";
+    const headers = { authorization: `Bearer ${secret}` };
+    registerLoadDiagnostics(application, pool, streams, secret);
+
+    await expect(
+      application.inject({ method: "GET", url: "/__load/metrics" }),
+    ).resolves.toMatchObject({ statusCode: 404 });
+    await expect(
+      application.inject({
+        headers: { authorization: "Bearer wrong-secret-with-at-least-32-characters" },
+        method: "GET",
+        url: "/__load/metrics",
+      }),
+    ).resolves.toMatchObject({ statusCode: 404 });
 
     const lease = streams.register("generation-one");
 
     pool.waitingCount = 4;
     await new Promise<void>((resolve) => setTimeout(resolve, 70));
-    const measured = await application.inject({ method: "GET", url: "/__load/metrics" });
+    const measured = await application.inject({ headers, method: "GET", url: "/__load/metrics" });
     expect(measured.statusCode).toBe(200);
     expect(measured.headers["cache-control"]).toBe("no-store");
     expect(measured.json()).toMatchObject({
@@ -54,7 +67,11 @@ describe("load diagnostics", () => {
 
     lease.release();
     pool.waitingCount = 0;
-    const reset = await application.inject({ method: "POST", url: "/__load/metrics/reset" });
+    const reset = await application.inject({
+      headers,
+      method: "POST",
+      url: "/__load/metrics/reset",
+    });
     expect(reset.statusCode).toBe(200);
     expect(reset.json()).toMatchObject({
       pool: { peakWaiting: 0, waiting: 0 },
@@ -63,6 +80,7 @@ describe("load diagnostics", () => {
 
     const challenge = await application.inject({
       method: "POST",
+      headers,
       payload: { first: 123, second: -456 },
       url: "/__load/database-challenge",
     });
@@ -72,6 +90,7 @@ describe("load diagnostics", () => {
     pool.challengeAcquired = true;
     const mismatch = await application.inject({
       method: "POST",
+      headers,
       payload: { first: 123, second: -456 },
       url: "/__load/database-challenge",
     });
@@ -80,6 +99,7 @@ describe("load diagnostics", () => {
 
     const invalidChallenge = await application.inject({
       method: "POST",
+      headers,
       payload: { first: "123", second: 456 },
       url: "/__load/database-challenge",
     });

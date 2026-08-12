@@ -93,6 +93,7 @@ describe("content-free application telemetry", () => {
     });
     call.settle({ outcome: "failed", providerDurationMs: 999 });
     telemetry.recordClientError("render", "chat");
+    telemetry.recordLogMirrorDrop("overflow", 3);
     telemetry.recordEmailDelivery({
       category: "rate_limit",
       durationMs: 50,
@@ -149,6 +150,7 @@ describe("content-free application telemetry", () => {
         telemetryMetrics.emailDeliveries.name,
         telemetryMetrics.httpDuration.name,
         telemetryMetrics.httpRequests.name,
+        telemetryMetrics.logMirrorDrops.name,
         telemetryMetrics.providerFirstToken.name,
         telemetryMetrics.tokens.name,
       ]),

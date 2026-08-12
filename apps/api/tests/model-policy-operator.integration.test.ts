@@ -1,7 +1,4 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { Pool } from "pg";
@@ -107,8 +104,7 @@ describe.sequential("model-policy operator commands", () => {
   let container: StartedPostgreSqlContainer;
   let databaseUrl: string;
   let pool: Pool;
-  let privacyAttestationPath: string;
-  let temporaryDirectory: string;
+  let privacyAttestationDocument = "";
 
   beforeAll(async () => {
     container = await new PostgreSqlContainer("postgres:18.4-alpine")
@@ -119,8 +115,6 @@ describe.sequential("model-policy operator commands", () => {
     databaseUrl = container.getConnectionUri();
     await migrateDatabase(databaseUrl);
     pool = new Pool({ connectionString: databaseUrl });
-    temporaryDirectory = await mkdtemp(join(tmpdir(), "capstone-model-policy-operator-"));
-    privacyAttestationPath = join(temporaryDirectory, "privacy-attestation.json");
     await writePrivacyAttestation(new Date(Date.now() - 1_000));
   });
 
@@ -136,7 +130,6 @@ describe.sequential("model-policy operator commands", () => {
   afterAll(async () => {
     await pool.end();
     await container.stop();
-    await rm(temporaryDirectory, { force: true, recursive: true });
   });
 
   function runOperator(argumentsList: readonly string[]): Promise<OperatorResult> {
@@ -162,6 +155,15 @@ describe.sequential("model-policy operator commands", () => {
       child.stderr.on("data", (chunk: string) => {
         stderr += chunk;
       });
+      if (
+        argumentsList.some(
+          (value, index) => value === "-" && argumentsList[index - 1] === "--privacy-attestation",
+        )
+      ) {
+        child.stdin.end(privacyAttestationDocument);
+      } else {
+        child.stdin.end();
+      }
       child.once("error", reject);
       child.once("close", (code, signal) => {
         if (signal !== null) {
@@ -174,17 +176,13 @@ describe.sequential("model-policy operator commands", () => {
   }
 
   async function writePrivacyAttestation(verifiedAt: Date): Promise<void> {
-    await writeFile(
-      privacyAttestationPath,
-      JSON.stringify({
-        attestationVersion: "openrouter-privacy-v1",
-        broadcastEnabled: false,
-        dataDiscountLoggingEnabled: false,
-        inputOutputLoggingEnabled: false,
-        verifiedAt: verifiedAt.toISOString(),
-      }),
-      "utf8",
-    );
+    privacyAttestationDocument = JSON.stringify({
+      attestationVersion: "openrouter-privacy-v1",
+      broadcastEnabled: false,
+      dataDiscountLoggingEnabled: false,
+      inputOutputLoggingEnabled: false,
+      verifiedAt: verifiedAt.toISOString(),
+    });
   }
 
   async function seedRealPolicy(verifiedAt: Date): Promise<void> {
@@ -310,7 +308,7 @@ describe.sequential("model-policy operator commands", () => {
       "--workspace",
       "capstone-ecuador",
       "--privacy-attestation",
-      privacyAttestationPath,
+      "-",
     ] as const;
 
     const renewed = await runOperator(argumentsList);
@@ -337,6 +335,25 @@ describe.sequential("model-policy operator commands", () => {
     ]);
   });
 
+  it("rejects privacy documents from files instead of bounded standard input", async () => {
+    const result = await runOperator([
+      "attest",
+      "--workspace",
+      "capstone-ecuador",
+      "--privacy-attestation",
+      "/tmp/privacy-attestation.json",
+    ]);
+
+    expect(result.code).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(parseOperatorOutput(result.stderr)).toEqual({
+      errorName: "Error",
+      outcome: "failed",
+    });
+    expectNoProviderAccess(result);
+    expect((await readPolicyState()).privacyAttestations).toEqual([]);
+  });
+
   it("rejects privacy renewal for unbootstrapped and simulated policies", async () => {
     await writePrivacyAttestation(new Date(Date.now() - 1_000));
     const argumentsList = [
@@ -344,7 +361,7 @@ describe.sequential("model-policy operator commands", () => {
       "--workspace",
       "capstone-ecuador",
       "--privacy-attestation",
-      privacyAttestationPath,
+      "-",
     ] as const;
 
     const unbootstrapped = await runOperator(argumentsList);
@@ -372,7 +389,7 @@ describe.sequential("model-policy operator commands", () => {
       "--workspace",
       "capstone-ecuador",
       "--privacy-attestation",
-      privacyAttestationPath,
+      "-",
     ] as const;
 
     await writePrivacyAttestation(new Date(initialVerifiedAt.getTime() - 1));
@@ -437,7 +454,7 @@ describe.sequential("model-policy operator commands", () => {
       "--reservation-margin-bps",
       "2000",
       "--privacy-attestation",
-      privacyAttestationPath,
+      "-",
     ]);
 
     expect(result.code).toBe(1);

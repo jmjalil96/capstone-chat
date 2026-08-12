@@ -330,6 +330,7 @@ export class OpenRouterCatalogClient {
           authorization: `Bearer ${this.#apiKey}`,
         },
         method: "GET",
+        redirect: "error",
         signal: AbortSignal.any([signal, timeoutController.signal]),
       });
       if (notFoundIsNull && response.status === 404) {

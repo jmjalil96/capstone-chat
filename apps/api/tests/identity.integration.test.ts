@@ -958,6 +958,44 @@ describe.sequential("identity integration", () => {
     expect(productionCookies).not.toEqual([]);
     expect(productionCookies.every((cookie) => /;\s*Secure/iu.test(cookie))).toBe(true);
     expect(productionCookies.some((cookie) => /Max-Age=604800/iu.test(cookie))).toBe(true);
+
+    await app.shutdown();
+    application = undefined;
+    const rehearsalOrigin = "https://rehearsal.chat.capstone.com.ec";
+    app = createApplication(
+      {
+        ...loadConfig({
+          BETTER_AUTH_SECRET: "capstone-chat-test-secret-with-more-than-thirty-two-characters",
+          DATABASE_URL: databaseUrl,
+          EMAIL_DELIVERY: "disabled",
+          LOG_LEVEL: "silent",
+          MODEL_GATEWAY: "openrouter",
+          NODE_ENV: "test",
+          OPENROUTER_API_KEY: "test-key-not-used-by-the-injected-gateway",
+          PUBLIC_ORIGIN: rehearsalOrigin,
+        }),
+        deploymentProfile: "managed-rehearsal",
+        openRouterApiKey: null,
+        publicOrigin: rehearsalOrigin,
+      },
+      {
+        emailSender: new FakeEmailSender(),
+        logMirror: null,
+        modelGateway: inertProductionGateway,
+      },
+    );
+    application = app;
+    const rehearsalSignIn = await app.server.inject({
+      headers: { "content-type": "application/json", origin: rehearsalOrigin },
+      method: "POST",
+      payload: { email: adminEmail, password: originalPassword },
+      url: "/api/auth/sign-in/email",
+    });
+    expect(rehearsalSignIn.statusCode).toBe(200);
+    expect(rehearsalSignIn.headers["strict-transport-security"]).toBe("max-age=31536000");
+    const rehearsalCookies = setCookies(rehearsalSignIn);
+    expect(rehearsalCookies).not.toEqual([]);
+    expect(rehearsalCookies.every((cookie) => /;\s*Secure/iu.test(cookie))).toBe(true);
   });
 
   it("slides remembered database sessions and forwards the refreshed cookie", async () => {

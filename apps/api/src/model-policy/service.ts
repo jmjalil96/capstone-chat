@@ -478,149 +478,154 @@ export function createModelPolicyService(
     }
   }
 
-  async function bootstrap(input: ModelPolicyBootstrapInput): Promise<ModelPolicyBootstrapResult> {
+  async function bootstrapInTransaction(
+    transaction: AppTransaction,
+    input: ModelPolicyBootstrapInput,
+  ): Promise<ModelPolicyBootstrapResult> {
     const bootstrapAt = now();
     validateBootstrap(input, bootstrapAt);
-    return database.transaction(async (transaction) => {
-      const workspaceRows = await transaction
-        .select({ id: workspaces.id })
-        .from(workspaces)
-        .where(eq(workspaces.identity, input.workspaceIdentity))
-        .limit(1)
-        .for("update");
-      const workspace = workspaceRows[0];
-      if (workspace === undefined) {
-        throw new ModelPolicyNotFoundError();
-      }
+    const workspaceRows = await transaction
+      .select({ id: workspaces.id })
+      .from(workspaces)
+      .where(eq(workspaces.identity, input.workspaceIdentity))
+      .limit(1)
+      .for("update");
+    const workspace = workspaceRows[0];
+    if (workspace === undefined) {
+      throw new ModelPolicyNotFoundError();
+    }
 
-      const existingCostRows = await transaction
+    const existingCostRows = await transaction
+      .select()
+      .from(workspaceCostPolicies)
+      .where(eq(workspaceCostPolicies.workspaceId, workspace.id))
+      .limit(1)
+      .for("update");
+    const existingCostPolicy = existingCostRows[0];
+    if (existingCostPolicy !== undefined) {
+      await assertRepeatMatches(transaction, workspace.id, existingCostPolicy, input);
+      return { repeated: true, workspaceId: workspace.id };
+    }
+
+    const catalogIds = new Map<ModelTier, string>();
+    for (const tier of modelTiers) {
+      const snapshot = input.catalog[tier];
+      const existingCatalogRows = await transaction
         .select()
-        .from(workspaceCostPolicies)
-        .where(eq(workspaceCostPolicies.workspaceId, workspace.id))
+        .from(modelCatalog)
+        .where(eq(modelCatalog.openRouterModelId, snapshot.modelId))
         .limit(1)
         .for("update");
-      const existingCostPolicy = existingCostRows[0];
-      if (existingCostPolicy !== undefined) {
-        await assertRepeatMatches(transaction, workspace.id, existingCostPolicy, input);
-        return { repeated: true, workspaceId: workspace.id };
+      const existingCatalog = existingCatalogRows[0];
+      if (existingCatalog !== undefined) {
+        const comparable: ExistingPolicyRow = {
+          catalogApproved: true,
+          catalogAvailable: existingCatalog.available,
+          catalogContextLength: existingCatalog.contextLength,
+          catalogMaximumOutputTokens: existingCatalog.maximumOutputTokens,
+          catalogSource: existingCatalog.metadataSource as "openrouter" | "simulated",
+          completionPricePerToken: existingCatalog.completionPricePerToken,
+          enabled: true,
+          maximumOutputTokens: input.maximumOutputTokens[tier],
+          modelId: existingCatalog.openRouterModelId,
+          promptPricePerToken: existingCatalog.promptPricePerToken,
+          requestPriceUsd: existingCatalog.requestPriceUsd,
+          tier,
+        };
+        if (!catalogMatches(comparable, snapshot)) {
+          throw new ModelPolicyConflictError(
+            `Catalog model ${snapshot.modelId} already has different validated metadata`,
+          );
+        }
+        catalogIds.set(tier, existingCatalog.id);
+        continue;
       }
 
-      const catalogIds = new Map<ModelTier, string>();
-      for (const tier of modelTiers) {
-        const snapshot = input.catalog[tier];
-        const existingCatalogRows = await transaction
-          .select()
-          .from(modelCatalog)
-          .where(eq(modelCatalog.openRouterModelId, snapshot.modelId))
-          .limit(1)
-          .for("update");
-        const existingCatalog = existingCatalogRows[0];
-        if (existingCatalog !== undefined) {
-          const comparable: ExistingPolicyRow = {
-            catalogApproved: true,
-            catalogAvailable: existingCatalog.available,
-            catalogContextLength: existingCatalog.contextLength,
-            catalogMaximumOutputTokens: existingCatalog.maximumOutputTokens,
-            catalogSource: existingCatalog.metadataSource as "openrouter" | "simulated",
-            completionPricePerToken: existingCatalog.completionPricePerToken,
-            enabled: true,
-            maximumOutputTokens: input.maximumOutputTokens[tier],
-            modelId: existingCatalog.openRouterModelId,
-            promptPricePerToken: existingCatalog.promptPricePerToken,
-            requestPriceUsd: existingCatalog.requestPriceUsd,
-            tier,
-          };
-          if (!catalogMatches(comparable, snapshot)) {
-            throw new ModelPolicyConflictError(
-              `Catalog model ${snapshot.modelId} already has different validated metadata`,
-            );
-          }
-          catalogIds.set(tier, existingCatalog.id);
-          continue;
-        }
-
-        const inserted = await transaction
-          .insert(modelCatalog)
-          .values({
-            available: snapshot.available,
-            canonicalSlug: snapshot.canonicalSlug,
-            completionPricePerToken: snapshot.completionPricePerToken,
-            contextLength: snapshot.contextLength,
-            displayName: snapshot.displayName,
-            inputModalities: snapshot.inputModalities,
-            maximumOutputTokens: snapshot.maximumOutputTokens,
-            metadataSource: snapshot.metadataSource,
-            openRouterModelId: snapshot.modelId,
-            outputModalities: snapshot.outputModalities,
-            promptPricePerToken: snapshot.promptPricePerToken,
-            requestPriceUsd: snapshot.requestPriceUsd,
-            supportedParameters: snapshot.supportedParameters,
-            createdAt: bootstrapAt,
-            updatedAt: bootstrapAt,
-            validatedAt: snapshot.validatedAt,
-          })
-          .returning({ id: modelCatalog.id });
-        const catalog = inserted[0];
-        if (catalog === undefined) {
-          throw new Error("Catalog insert did not return a row");
-        }
-        catalogIds.set(tier, catalog.id);
-      }
-
-      const approvedCatalogIds = new Set<string>();
-      for (const tier of modelTiers) {
-        const modelCatalogId = catalogIds.get(tier);
-        if (modelCatalogId === undefined) {
-          throw new Error("Catalog mapping disappeared during bootstrap");
-        }
-        approvedCatalogIds.add(modelCatalogId);
-      }
-      await transaction.insert(workspaceCatalogApprovals).values(
-        [...approvedCatalogIds].map((modelCatalogId) => ({
+      const inserted = await transaction
+        .insert(modelCatalog)
+        .values({
+          available: snapshot.available,
+          canonicalSlug: snapshot.canonicalSlug,
+          completionPricePerToken: snapshot.completionPricePerToken,
+          contextLength: snapshot.contextLength,
+          displayName: snapshot.displayName,
+          inputModalities: snapshot.inputModalities,
+          maximumOutputTokens: snapshot.maximumOutputTokens,
+          metadataSource: snapshot.metadataSource,
+          openRouterModelId: snapshot.modelId,
+          outputModalities: snapshot.outputModalities,
+          promptPricePerToken: snapshot.promptPricePerToken,
+          requestPriceUsd: snapshot.requestPriceUsd,
+          supportedParameters: snapshot.supportedParameters,
           createdAt: bootstrapAt,
-          modelCatalogId,
-          workspaceId: workspace.id,
-        })),
-      );
+          updatedAt: bootstrapAt,
+          validatedAt: snapshot.validatedAt,
+        })
+        .returning({ id: modelCatalog.id });
+      const catalog = inserted[0];
+      if (catalog === undefined) {
+        throw new Error("Catalog insert did not return a row");
+      }
+      catalogIds.set(tier, catalog.id);
+    }
 
-      await transaction.insert(workspaceCostPolicies).values({
-        defaultTier: "balanced",
-        employeeActiveGenerationLimit: input.employeeActiveGenerationLimit,
-        monthlyBudgetUsd: canonicalUsd(input.monthlyBudgetUsd),
-        reservationMarginBasisPoints: input.reservationMarginBasisPoints,
+    const approvedCatalogIds = new Set<string>();
+    for (const tier of modelTiers) {
+      const modelCatalogId = catalogIds.get(tier);
+      if (modelCatalogId === undefined) {
+        throw new Error("Catalog mapping disappeared during bootstrap");
+      }
+      approvedCatalogIds.add(modelCatalogId);
+    }
+    await transaction.insert(workspaceCatalogApprovals).values(
+      [...approvedCatalogIds].map((modelCatalogId) => ({
+        createdAt: bootstrapAt,
+        modelCatalogId,
+        workspaceId: workspace.id,
+      })),
+    );
+
+    await transaction.insert(workspaceCostPolicies).values({
+      defaultTier: "balanced",
+      employeeActiveGenerationLimit: input.employeeActiveGenerationLimit,
+      monthlyBudgetUsd: canonicalUsd(input.monthlyBudgetUsd),
+      reservationMarginBasisPoints: input.reservationMarginBasisPoints,
+      createdAt: bootstrapAt,
+      updatedAt: bootstrapAt,
+      workspaceId: workspace.id,
+    });
+
+    for (const tier of modelTiers) {
+      const modelCatalogId = catalogIds.get(tier);
+      if (modelCatalogId === undefined) {
+        throw new Error("Catalog mapping disappeared during bootstrap");
+      }
+      await transaction.insert(workspaceModelPolicies).values({
+        enabled: true,
+        maximumOutputTokens: input.maximumOutputTokens[tier],
+        modelCatalogId,
+        tier,
         createdAt: bootstrapAt,
         updatedAt: bootstrapAt,
         workspaceId: workspace.id,
       });
+    }
 
-      for (const tier of modelTiers) {
-        const modelCatalogId = catalogIds.get(tier);
-        if (modelCatalogId === undefined) {
-          throw new Error("Catalog mapping disappeared during bootstrap");
-        }
-        await transaction.insert(workspaceModelPolicies).values({
-          enabled: true,
-          maximumOutputTokens: input.maximumOutputTokens[tier],
-          modelCatalogId,
-          tier,
-          createdAt: bootstrapAt,
-          updatedAt: bootstrapAt,
-          workspaceId: workspace.id,
-        });
-      }
+    if (input.privacyAttestation !== null) {
+      await transaction.insert(openRouterPrivacyAttestations).values({
+        attestationVersion: input.privacyAttestation.attestationVersion,
+        createdAt: bootstrapAt,
+        updatedAt: bootstrapAt,
+        verifiedAt: input.privacyAttestation.verifiedAt,
+        workspaceId: workspace.id,
+      });
+    }
 
-      if (input.privacyAttestation !== null) {
-        await transaction.insert(openRouterPrivacyAttestations).values({
-          attestationVersion: input.privacyAttestation.attestationVersion,
-          createdAt: bootstrapAt,
-          updatedAt: bootstrapAt,
-          verifiedAt: input.privacyAttestation.verifiedAt,
-          workspaceId: workspace.id,
-        });
-      }
+    return { repeated: false, workspaceId: workspace.id };
+  }
 
-      return { repeated: false, workspaceId: workspace.id };
-    });
+  async function bootstrap(input: ModelPolicyBootstrapInput): Promise<ModelPolicyBootstrapResult> {
+    return database.transaction((transaction) => bootstrapInTransaction(transaction, input));
   }
 
   async function attestPrivacy(
@@ -1023,6 +1028,7 @@ export function createModelPolicyService(
     assertRuntimeMode,
     attestPrivacy,
     bootstrap,
+    bootstrapInTransaction,
     claimCatalogRefresh,
     completeCatalogRefresh,
     getPreferredTier,

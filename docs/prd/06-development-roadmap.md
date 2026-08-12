@@ -68,46 +68,54 @@ Complete observability, cross-browser and accessibility verification, performanc
 
 **Locked for Milestone 8**
 
-- The production candidate is one DigitalOcean Basic shared-CPU Droplet with one vCPU and 1 GiB RAM
-  in RIC1, one encrypted 1 GiB DigitalOcean Volume, and one PlanetScale Postgres PS-5 ARM Single
-  Node cluster in AWS `us-east-1`. Launch has one active application instance and one single-node
-  database with no application autoscaling, database high availability, read replica, or automatic
-  failover. The user approved NYC3 only for the disposable managed rehearsal on 2026-08-11 after
-  the USD 6 Basic size was unavailable in RIC1 and ATL1. Two clean NYC3 runs may qualify every
-  region-independent gate, but not RIC1 scheduling, availability, or RIC1-to-`us-east-1` latency.
-  Production remains RIC1 unless separately amended, and its region-specific evidence stays open.
-- The public origin is `https://chat.capstone.com.ec`. Its DNS-only IPv4 record targets the
-  Droplet's reserved address directly; Caddy owns TLS and proxies only to the active loopback-bound
-  application slot. Only 80/443 are public, and SSH is limited to the approved operator `/32`.
-- PlanetScale accepts new connections only from the verified Droplet `/32`. Production uses direct
-  port 5432, `verify-full` TLS, a least-privilege application role, a separate migration role, and a
-  recovery-only provider credential. The database starts at 10 GB with a hard 15 GB storage
-  ceiling.
-- GitHub Actions remains the authoritative gate. It publishes an immutable, exact-revision GHCR
-  image only after checks pass. A named operator explicitly runs the audited migration and
-  blue/green deployment path; migrations never run during API startup. The immediately previous
-  compatible digest remains available for rollback.
+- The production candidate is one DigitalOcean App Platform `apps-s-1vcpu-1gb-fixed` dynamic
+  service with one instance in the managed `ric` region, paid Dedicated Egress, and one PlanetScale
+  Postgres PS-5 ARM Single Node cluster in AWS `us-east-1`. One 512 MiB `PRE_DEPLOY` migration job
+  uses the exact service image. Launch has no autoscaling, scale-to-zero, second service, worker,
+  application high availability, database high availability, read replica, or automatic failover.
+  Two managed rehearsal passes must qualify scheduling, capacity, edge streaming, deployment,
+  rollback, egress, database, and Ecuador latency before acceptance.
+- The public origin remains `https://chat.capstone.com.ec`. Hostinger publishes a DNS-only CNAME to
+  the provider-displayed `.ondigitalocean.app` target. App Platform's Cloudflare-backed edge owns
+  managed TLS, the custom domain is primary, and the starter domain redirects with HTTPS 308 while
+  preserving path and query. The edge's plaintext-processing privacy terms, authoritative DNSSEC
+  and CAA state, TLS, and streaming behavior are explicit launch gates.
+- PlanetScale accepts new connections only from both exclusive App Platform Dedicated Egress IPv4
+  `/32`s. Production uses direct port 5432, `verify-full` TLS, a least-privilege application role,
+  a separate migration role, and a recovery-only provider credential. The database starts at 10 GB
+  with a hard 15 GB storage ceiling.
+- GitHub Actions remains the authoritative gate. It publishes an immutable exact-revision GHCR
+  image only after checks pass. A protected named-operator workflow validates the current live App
+  contract, preserves encrypted values and Dedicated Egress, and runs the exact-image pre-deploy
+  migration before readiness-gated replacement. Rollback is a reviewed forward deployment of the
+  immediately previous compatible digest through the current specification; native provider
+  rollback is prohibited in production.
 - PlanetScale backups run every 12 hours and are retained for 84 hours, preserving at least three
   continuously accessible days of point-in-time recovery. Production retains an RPO of at most 15
   minutes and an RTO of at most four hours. An isolated database restore and a source-controlled
-  cold Droplet rebuild are required before launch; no paid Droplet backup is used.
+  controlled cold App recreation are required before launch. Accidental App deletion while the
+  custom domain remains attached is not accepted under the four-hour RTO until a provider release
+  path is verified or that failure mode is explicitly amended.
 - Resend Free sends transactional mail through direct HTTPS calls from Fastify. The verified sending
   domain is `mail.capstone.com.ec`, and the sender is
   `Capstone Chat <no-reply@mail.capstone.com.ec>`. Templates provide Spanish HTML and plain text.
   V1 adds no Resend SDK, email queue, worker, webhook, inbound mail, or marketing mail.
 - New Relic Free is the single external application/log telemetry destination. Fastify exports
-  vendor-neutral OTLP traces and application metrics; one bounded Fluent Bit host process forwards
-  content-free application JSON logs. DigitalOcean Monitoring owns host infrastructure signals and
+  vendor-neutral OTLP traces and application metrics; one bounded in-process HTTPS mirror forwards
+  an explicit content-free Pino field allowlist. App Platform Insights/alerts own native component
+  signals, one DigitalOcean Uptime check owns independent public readiness/TLS/latency, and
   PlanetScale's protected dashboard owns database signals. V1 adds no proprietary backend or
   browser agent, infrastructure collector, second telemetry backend, or employee content export.
 - Production secret source copies live in the Capstone Bitwarden Teams organization. Runtime copies
-  are narrowly permissioned read-only files on the encrypted Volume. The initial one-owner setup
-  has MFA and a sealed offline recovery kit; adding a second recovery owner is deferred and remains
-  a visible launch risk.
-- The approved starting operational baseline is USD 15.10/month: USD 11.10 infrastructure plus one
-  USD 4 Bitwarden Teams owner, before taxes, variable backup/network charges, temporary resources,
-  and model use. At the 15 GB database ceiling it is approximately USD 15.73/month. No resource
-  tier or storage ceiling changes without an explicit decision.
+  are component-scoped App Platform encrypted environment variables; migration, service,
+  initialization, registry, and recovery authority remain distinct. The initial one-owner setup has
+  MFA and a sealed offline recovery kit; adding a second recovery owner is deferred and remains a
+  visible launch risk.
+- The approved starting infrastructure baseline is USD 40–41/month: USD 10 for the application
+  service, up to USD 25 for Dedicated Egress, USD 5 for PlanetScale, and USD 0–1 for the independent
+  Uptime check. Including one USD 4 Bitwarden Teams owner makes the operational baseline USD 44–45
+  before taxes, variable network/storage charges, temporary resources, and model use. No resource
+  tier, egress mode, or storage ceiling changes without an explicit decision.
 - Production maps Fast to `deepseek/deepseek-v4-flash-0731`, Balanced to
   `deepseek/deepseek-v4-pro`, and Pro to `moonshotai/kimi-k3`.
 - The monthly workspace ceiling is USD 100. Fast, Balanced, and Pro output ceilings are 4,096,

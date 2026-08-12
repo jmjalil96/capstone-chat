@@ -1,11 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
 import { loadDatabaseConfig, loadOpenRouterOperatorConfig } from "../config.js";
 import { createDatabase } from "../database/database.js";
 import { createDatabasePool } from "../database/pool.js";
 import {
   buildSimulatedCatalogSnapshot,
-  type CatalogModelSnapshot,
   initialTierModels,
   type ModelTier,
   modelTiers,
@@ -21,6 +19,8 @@ import {
   requiredOperatorArgument,
 } from "./arguments.js";
 import { parsePrivacyAttestationDocument } from "./model-policy-input.js";
+import { loadApprovedOpenRouterCatalog } from "./openrouter-bootstrap-catalog.js";
+import { readBoundedStdinDocument } from "./stdin-document.js";
 
 type Command = "attest" | "bootstrap" | "refresh";
 
@@ -54,9 +54,11 @@ function integerArgument(
   return value;
 }
 
-async function jsonDocument(filePath: string): Promise<unknown> {
-  const contents = await readFile(filePath, "utf8");
-  return JSON.parse(contents) as unknown;
+async function jsonDocument(source: string): Promise<unknown> {
+  if (source !== "-") {
+    throw new Error("--privacy-attestation must be read from standard input with -");
+  }
+  return JSON.parse(await readBoundedStdinDocument()) as unknown;
 }
 
 function outputLimits(
@@ -67,26 +69,6 @@ function outputLimits(
     fast: integerArgument(argumentsMap, "--fast-max-output", 1, 2_147_483_647),
     pro: integerArgument(argumentsMap, "--pro-max-output", 1, 2_147_483_647),
   });
-}
-
-async function loadRealCatalog(): Promise<Readonly<Record<ModelTier, CatalogModelSnapshot>>> {
-  const client = new OpenRouterCatalogClient({
-    apiKey: loadOpenRouterOperatorConfig().apiKey,
-  });
-  const snapshots = await client.loadSnapshots(
-    modelTiers.map((tier) => initialTierModels[tier]),
-    new AbortController().signal,
-  );
-  const byModel = new Map(snapshots.map((snapshot) => [snapshot.modelId, snapshot]));
-  const catalog = {} as Record<ModelTier, CatalogModelSnapshot>;
-  for (const tier of modelTiers) {
-    const snapshot = byModel.get(initialTierModels[tier]);
-    if (snapshot === undefined) {
-      throw new Error(`The approved ${tier} model has no eligible OpenRouter route`);
-    }
-    catalog[tier] = snapshot;
-  }
-  return Object.freeze(catalog);
 }
 
 async function run(): Promise<void> {
@@ -162,7 +144,7 @@ async function run(): Promise<void> {
                 ]),
               ) as Record<ModelTier, ReturnType<typeof buildSimulatedCatalogSnapshot>>,
             )
-          : await loadRealCatalog();
+          : await loadApprovedOpenRouterCatalog(loadOpenRouterOperatorConfig().apiKey);
       const result = await service.bootstrap({
         catalog,
         employeeActiveGenerationLimit,

@@ -4,6 +4,15 @@ import type { ClientAddressSource } from "../config.js";
 import { ApplicationError } from "../errors.js";
 
 const capturedAddresses = new WeakMap<FastifyRequest, string | null>();
+const healthRoutes = new Set(["/api/health/live", "/api/health/ready"]);
+
+function invalidClientAddress(): ApplicationError {
+  return new ApplicationError(
+    400,
+    "BAD_REQUEST",
+    "No se pudo validar el origen de red de la solicitud.",
+  );
+}
 
 function normalizedEdgeAddress(value: string | string[] | undefined): string | null {
   if (typeof value !== "string" || value.includes(",")) {
@@ -19,8 +28,40 @@ function normalizedEdgeAddress(value: string | string[] | undefined): string | n
     return null;
   }
 
-  const hostname = new URL(`http://[${address}]/`).hostname;
-  return hostname.slice(1, -1).toLowerCase();
+  try {
+    const hostname = new URL(`http://[${address}]/`).hostname;
+    return hostname.slice(1, -1).toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+function normalizedAppPlatformAddress(value: string | string[] | undefined): string | null {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value !== value.trim() ||
+    /\s/u.test(value) ||
+    value.includes(",")
+  ) {
+    return null;
+  }
+  return normalizedEdgeAddress(value);
+}
+
+function stripForwardingHeaders(request: FastifyRequest): void {
+  for (const header of Object.keys(request.headers)) {
+    if (
+      header === "cf-connecting-ip" ||
+      header === "do-connecting-ip" ||
+      header === "forwarded" ||
+      header === "x-capstone-client-ip" ||
+      header === "x-real-ip" ||
+      header.startsWith("x-forwarded-")
+    ) {
+      delete request.headers[header];
+    }
+  }
 }
 
 export function captureTrustedClientAddress(
@@ -28,17 +69,24 @@ export function captureTrustedClientAddress(
   source: ClientAddressSource,
 ): void {
   const caddyAddress = request.headers["x-capstone-client-ip"];
-  for (const header of [
-    "cf-connecting-ip",
-    "forwarded",
-    "x-capstone-client-ip",
-    "x-forwarded-for",
-    "x-forwarded-host",
-    "x-forwarded-port",
-    "x-forwarded-proto",
-    "x-real-ip",
-  ]) {
-    delete request.headers[header];
+  const appPlatformAddress = request.headers["do-connecting-ip"];
+  stripForwardingHeaders(request);
+
+  if (source === "digitalocean-app-platform") {
+    if (appPlatformAddress === undefined) {
+      capturedAddresses.set(request, null);
+      if (healthRoutes.has(request.url)) {
+        return;
+      }
+      throw invalidClientAddress();
+    }
+
+    const address = normalizedAppPlatformAddress(appPlatformAddress);
+    capturedAddresses.set(request, address);
+    if (address === null) {
+      throw invalidClientAddress();
+    }
+    return;
   }
 
   const socketAddress = normalizedEdgeAddress(request.raw.socket.remoteAddress);
@@ -61,11 +109,7 @@ export function resolveTrustedClientAddress(
     return uncapturedSocketAddress;
   }
   if (address === undefined || address === null) {
-    throw new ApplicationError(
-      400,
-      "BAD_REQUEST",
-      "No se pudo validar el origen de red de la solicitud.",
-    );
+    throw invalidClientAddress();
   }
   return address;
 }

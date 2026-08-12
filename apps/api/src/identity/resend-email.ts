@@ -264,6 +264,7 @@ export class ResendEmailSender extends LifecycleEmailSender {
           "user-agent": resendUserAgent,
         },
         method: "POST",
+        redirect: "error",
         signal,
       });
       providerStatus = response.status;

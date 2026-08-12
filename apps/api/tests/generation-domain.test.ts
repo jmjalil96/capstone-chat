@@ -54,13 +54,15 @@ describe("Phase 4 generation configuration", () => {
     const production = Object.freeze({
       ...loadConfig({
         BETTER_AUTH_SECRET: "production-auth-secret-longer-than-thirty-two-characters",
-        CLIENT_ADDRESS_SOURCE: "caddy",
+        CAPSTONE_SECRET_SOURCE: "platform-environment",
+        CLIENT_ADDRESS_SOURCE: "digitalocean-app-platform",
         DATABASE_URL:
           "postgresql://capstone:capstone@example.invalid:5432/capstone?sslmode=verify-full",
         DEPLOYMENT_REVISION: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        DEPLOYMENT_TARGET: "digitalocean-app-platform",
         EMAIL_DELIVERY: "resend",
         EMAIL_FROM: "Capstone Chat <no-reply@mail.capstone.com.ec>",
-        HOST: "127.0.0.1",
+        HOST: "0.0.0.0",
         MODEL_GATEWAY: "openrouter",
         NODE_ENV: "production",
         OPENROUTER_API_KEY: "test-openrouter-key-never-sent",

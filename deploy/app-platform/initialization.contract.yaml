@@ -1,0 +1,59 @@
+schema: 1
+mode: initialization
+name: capstone-chat-production
+region: ric
+image:
+  registry_type: GHCR
+  registry: jmjalil96
+  repository: capstone-chat
+egress:
+  type: DEDICATED_IP
+edge:
+  disable_edge_cache: true
+  disable_email_obfuscation: true
+  enhanced_threat_control_enabled: false
+domain:
+  domain: chat.capstone.com.ec
+  type: PRIMARY
+  minimum_tls_version: "1.2"
+service:
+  name: capstone-chat
+  instance_size_slug: apps-s-1vcpu-1gb-fixed
+  instance_count: 1
+  http_port: 3000
+  run_command: node apps/api/dist/entrypoint.js egress-bootstrap
+  readiness_path: /api/health/ready
+  liveness_path: /api/health/live
+  drain_seconds: 110
+  grace_period_seconds: 300
+  environment:
+    general:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: "3000"
+      DEPLOYMENT_TARGET: digitalocean-app-platform
+      CAPSTONE_SECRET_SOURCE: platform-environment
+      CLIENT_ADDRESS_SOURCE: digitalocean-app-platform
+    secret_keys: []
+job:
+  name: capstone-initialize
+  kind: PRE_DEPLOY
+  instance_size_slug: apps-s-1vcpu-0.5gb
+  instance_count: 1
+  run_command: node apps/api/dist/entrypoint.js initialize
+  grace_period_seconds: 300
+  environment:
+    general:
+      NODE_ENV: production
+      DEPLOYMENT_TARGET: digitalocean-app-platform
+      CAPSTONE_SECRET_SOURCE: platform-environment
+      MODEL_GATEWAY: openrouter
+      CAPSTONE_INITIALIZATION_SCHEMA_VERSION: "1"
+    secret_keys:
+      - CAPSTONE_BOOTSTRAP_MIGRATION_DATABASE_URL
+      - CAPSTONE_BOOTSTRAP_DATABASE_URL
+      - OPENROUTER_API_KEY
+      - CAPSTONE_INITIALIZATION_DOCUMENT
+alerts:
+  app:
+    - DEPLOYMENT_FAILED

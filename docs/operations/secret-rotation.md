@@ -1,57 +1,103 @@
 # Secret rotation
 
-Bitwarden Teams in the Capstone organization is the recoverable source. Runtime copies live only in
-narrowly permissioned files beneath the encrypted Volume at `/srv/capstone-secure`; the application
-and migration containers receive only their respective read-only files under
-`/run/capstone-secrets`. Rotate one credential at a time, record only owner/version and UTC outcome,
-and verify the affected boundary before removing the old value.
+Bitwarden Teams in the Capstone organization is the recoverable source. App Platform stores runtime
+copies only as component-scoped encrypted `SECRET` environment variables; private-GHCR credentials
+live separately in each image source's encrypted `registry_credentials`. Provider-encrypted
+`EV[...]` values are not source copies and never belong in Git, evidence, or a task.
 
-Never expose values in shell arguments, history, environment dumps, Docker inspection, screenshots,
-logs, telemetry, cloud-init, unit files, the unencrypted root disk, or evidence. Install a new file
-through the root-owned audited path using create-write-`fsync`-rename semantics; reject symlinks,
-wrong owner/mode, unexpected keys, or cross-readable directories. Confirm host and unit core dumps
-remain disabled. Installing or replacing encrypted-Volume secret files requires an explicitly
-authorized, time-bounded DigitalOcean recovery-console root session; public root SSH remains
-disabled, and the ordinary operator never receives broad sudo.
+Release, maintenance, and domain workflows serialize through the protected
+`capstone-chat-production-app-spec` group. Secret and registry rotation uses the same shared
+fingerprint helper only from an operator-local checkout proven equal to protected `main`, after
+the workflows are frozen and the current active deployment ID is supplied as the reviewed base.
+Disable shell tracing,
+write fetched sensitive specs only to a mode-0600 file in a fresh temporary directory, clean every
+exit path, and never place them in output, cache, artifact, or repository. The DigitalOcean control
+panel is read-only for App configuration after acceptance.
 
-## Order and impact
+Rotate one boundary at a time unless a provider requires overlap. Because a secret update triggers
+a rolling deployment, account for old/new container overlap, verify the replacement becomes ready,
+force new database connections after role/IP changes, and revoke the prior value only after new
+authority is proven.
 
-- **Better Auth secret:** schedule a maintenance window. Replacing it invalidates signed session
-  cookies and cursor signatures. Install the new runtime file, activate one release, verify auth,
-  then remove the old value from the Volume and Bitwarden only after recovery evidence is current.
-- **Application database role:** create the least-privilege replacement in PlanetScale, retain the
-  database-wide Droplet `/32`, install the runtime file atomically, activate and verify readiness,
-  pool/session timeouts, reads/writes, and denial of DDL/admin work, then terminate old backends and
-  revoke the old role.
-- **Migration database role:** rotate separately from runtime. Install only in the migration file,
-  run a safe metadata/migration preflight, prove the application cannot read it, then revoke the old
-  role. Never put it in the long-running container.
-- **PlanetScale default near-superuser role:** keep only in Bitwarden. Rotate through the provider,
-  verify database-wide `/32` restriction and recovery access, and do not install it on the Droplet
-  unless a documented provider-only recovery task is separately authorized.
-- **OpenRouter key:** create a dedicated replacement with the approved workspace/privacy settings,
-  install the runtime file, activate, refresh metadata, run only the separately authorized minimal
-  smoke, then revoke the old key.
-- **Resend key:** create a send-only key restricted to `mail.capstone.com.ec`, install it, activate,
-  send one controlled template, then revoke the old key. Reconfirm tracking is disabled.
-- **New Relic credentials:** rotate Fastify's OTLP key and Fluent Bit's Log API key independently in
-  their separate Volume directories. Verify traces/application metrics or logs and alerts before
-  revoking the corresponding old key. DigitalOcean/PlanetScale metrics use neither credential.
-- **GHCR pull credential:** rotate the dedicated deployment identity's classic PAT with only
-  `read:packages`, update its isolated Docker configuration on the Volume, pull a protected digest,
-  then revoke the old PAT. Record MFA/SSO and the deferred second recovery owner.
-- **Caddy ACME account material:** normally let Caddy renew from its isolated encrypted state. For
-  compromise, enter maintenance if required, replace/reissue through the audited Caddy service,
-  verify the public chain and renewal, then remove superseded material.
-- **SSH key:** add the replacement public key while the current key still works, confirm the named
-  non-root operator can enter from the approved `/32` and only the audited sudo boundary, then
-  remove the old key. No password/root SSH and no docker-group membership.
-- **DigitalOcean, PlanetScale, GitHub, DNS, New Relic, Resend, OpenRouter, or Bitwarden account:**
-  recover company ownership first, enable/test MFA and offline recovery, rotate sessions/tokens in
-  the provider, then update Bitwarden. The one-owner Bitwarden posture remains a launch risk until a
-  second independent owner is deliberately added and tested.
+For runtime or registry rotation, mint a short-lived DigitalOcean token with the steady update/read
+scopes and do not install it in GitHub. Place the replacement from Bitwarden in one owner-only
+mode-0600 JSON file, set `CAPSTONE_CONFIGURATION_BASE_DEPLOYMENT_ID` to the freshly reviewed active
+deployment ID and `CAPSTONE_TOOL_REVISION` to protected `main`, then invoke
+`deploy/app-platform/configure.mjs rotate-runtime-secrets` or `rotate-registry` locally. A retry
+with the old base is rejected after provider activation, preventing a blind second rotation.
+Delete the protected input on every exit, validate the exact live contract, unfreeze workflows,
+and revoke the token. GitHub must never store the rotation JSON; Bitwarden and App Platform remain
+the only recoverable/runtime copies.
 
-If compromise is suspected, revoke first when safe, terminate affected sessions/connections, enable
-maintenance for a database-authority or write-integrity risk, and follow
-[incident response](./incident-response.md). After every rotation, scan the root disk, container
-metadata, logs, evidence, and process arguments for the retired value before closing the change.
+## Component scope
+
+The service receives only:
+
+```text
+BETTER_AUTH_SECRET
+DATABASE_URL
+OPENROUTER_API_KEY
+OTEL_EXPORTER_OTLP_HEADERS
+RESEND_API_KEY
+```
+
+The steady `PRE_DEPLOY` job receives only its distinct migration `DATABASE_URL`. A recovery role is
+absent. During empty-database first provisioning only, the temporary initialization job receives
+two distinct revocable bootstrap database URLs, one short-lived catalog key, and the encrypted
+bounded initialization document. It receives no final role, Better Auth, Resend, or New Relic
+credential. Those variables/job are removed and the temporary roles/key revoked before the final
+service activates.
+
+The live-contract audit rejects missing, extra, wrongly scoped, plaintext, App-level, or build-time
+secrets. It also rejects retained initialization configuration. Never use native rollback: it can
+restore stale encrypted values and a pre-egress spec.
+
+## Rotation order and impact
+
+- **Better Auth:** schedule maintenance because rotation invalidates signed cookies and cursors.
+  Update only the service component, deploy/readiness-check the current digest, verify auth, then
+  revoke the old source value after recovery evidence is current.
+- **Application database role:** create a least-privilege replacement, restrict it to both existing
+  Dedicated Egress `/32`s, update only service `DATABASE_URL`, deploy, force pool reconnection, and
+  prove DML plus DDL/admin denial before terminating old sessions and revoking the old role.
+- **Migration database role:** rotate separately, restrict both `/32`s, update only the pre-deploy
+  job, run a safe migration metadata check, prove the service cannot read/use it, then revoke old
+  authority.
+- **PlanetScale default near-superuser/recovery role:** keep only in Bitwarden or a separately
+  authorized isolated recovery environment. It is never installed in the normal App spec or
+  service console.
+- **OpenRouter:** create the dedicated replacement with approved privacy settings, update only the
+  service, deploy, refresh catalog, and run only a separately authorized minimal paid smoke before
+  revoking the old key.
+- **Resend:** create a send-only key restricted to `mail.capstone.com.ec`, update only the service,
+  deploy, send one controlled template, reconfirm tracking disabled, then revoke old key.
+- **New Relic:** replace the service's license-bearing OTLP header through the encrypted-variable
+  path, then verify OTLP traces/metrics and the bounded direct Log API mirror before revoking the old
+  value. DigitalOcean and PlanetScale native metrics use neither credential.
+- **GHCR pull credential:** rotate the read-only package credential in every image-bearing block in
+  one protected spec update. Submit plaintext only through the protected first-field/rotation input,
+  place it only in `image.registry_credentials`, pull the exact digest into a fresh replacement,
+  fetch/verify each new encrypted representation, then revoke the prior GitHub credential. Never
+  substitute plaintext during an ordinary deployment.
+- **GitHub GHCR-delete credential:** rotate independently in the protected GitHub environment. It
+  is not the App pull credential and is never installed in DigitalOcean.
+- **Steady DigitalOcean deploy token:** its scopes remain exactly `app:update`, `app:read`,
+  `regions:read`, `sizes:read`, and `actions:read`; the protected App ID and dedicated-team boundary
+  must still match. Freeze writers, replace the token in GitHub, run read-only live audit, then
+  revoke the old token.
+- **Provisioning, console, or teardown token:** mint only for the separately authorized operation
+  with its exact scopes; never install it in GitHub. Revoke immediately. Delete authority is not
+  created until the domain is detached and release verified.
+- **Domain/TLS:** App Platform owns certificate material. Revalidate DNSSEC/CAA, managed certificate,
+  primary/default-domain behavior, and account access; there is no Caddy ACME secret to rotate.
+- **DigitalOcean, PlanetScale, GitHub, DNS, New Relic, Resend, OpenRouter, Bitwarden, or mailbox
+  account:** recover company ownership first, test MFA/offline recovery, revoke provider sessions/
+  tokens, update Bitwarden, and reconcile every live consumer. The one-owner Bitwarden posture
+  remains a launch risk until a second independent owner is approved and tested.
+
+Never expose values in command arguments, shell history, console transcripts, environment dumps,
+screenshots, build/deploy/runtime/crash logs, telemetry, provider payloads, process metadata, or
+evidence. If compromise is suspected, revoke first when safe, terminate affected sessions and
+connections, enable maintenance for write-authority risk, and follow `incident-response.md`. Close
+only after the retired value is absent from App configuration, GitHub, Bitwarden superseded items,
+logs/evidence, and all active database/provider sessions.

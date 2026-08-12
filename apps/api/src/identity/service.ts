@@ -35,6 +35,11 @@ export interface BootstrapResult extends ApprovalResult {
   readonly workspaceIdentity: string;
 }
 
+export interface InitialInvitationTarget {
+  readonly normalizedEmail: string;
+  readonly workspaceId: string;
+}
+
 export type ActivationResult = "activated" | "already-active" | "blocked" | "missing";
 
 export class IdentityConflictError extends Error {
@@ -45,6 +50,44 @@ export class IdentityConflictError extends Error {
 }
 
 export function createIdentityService(database: AppDatabase) {
+  async function initialInvitationTarget(input: {
+    readonly adminEmail: string;
+    readonly workspaceIdentity: string;
+  }): Promise<InitialInvitationTarget> {
+    const normalizedEmail = normalizeApprovalEmail(input.adminEmail);
+    const rows = await database
+      .select({
+        normalizedEmail: employeeApprovals.normalizedEmail,
+        role: employeeApprovals.role,
+        status: employeeApprovals.status,
+        workspaceId: employeeApprovals.workspaceId,
+      })
+      .from(employeeApprovals)
+      .innerJoin(workspaces, eq(workspaces.id, employeeApprovals.workspaceId))
+      .where(
+        and(
+          eq(workspaces.identity, input.workspaceIdentity),
+          eq(employeeApprovals.normalizedEmail, normalizedEmail),
+        ),
+      )
+      .limit(2);
+    const target = rows[0];
+    if (
+      target === undefined ||
+      rows.length !== 1 ||
+      target.role !== "admin" ||
+      target.status !== "pending"
+    ) {
+      throw new IdentityConflictError(
+        "The canonical pending administrator approval is unavailable",
+      );
+    }
+    return Object.freeze({
+      normalizedEmail: target.normalizedEmail,
+      workspaceId: target.workspaceId,
+    });
+  }
+
   async function findPendingApproval(email: string): Promise<boolean> {
     const normalizedEmail = normalizeEmail(email);
     const rows = await database
@@ -433,6 +476,7 @@ export function createIdentityService(database: AppDatabase) {
     canSignIn,
     findActiveMemberships,
     findPendingApproval,
+    initialInvitationTarget,
     linkRegisteredUser,
     prepareSignIn,
   });

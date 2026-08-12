@@ -1,9 +1,46 @@
 import type { ClientErrorKind, ClientErrorRoute, GenerationModelTier } from "@capstone/protocol";
 
-export type TelemetryEnvironment = "development" | "production" | "test";
+export type TelemetryEnvironment = "development" | "managed-rehearsal" | "production" | "test";
 export type TelemetryPurpose = "chat" | "compaction";
 export type TelemetryContextMode = "compacted" | "fallback" | "full";
 export type TelemetryOutcome = "cancelled" | "completed" | "failed" | "incomplete" | "rejected";
+export type LogMirrorDropReason = "delivery" | "invalid" | "overflow" | "oversize" | "shutdown";
+
+export const telemetrySafeHttpRoutes = new Set([
+  "/",
+  "/*",
+  "/api/admin/employees",
+  "/api/admin/employees/:approvalId/deactivate",
+  "/api/admin/employees/:approvalId/invitation",
+  "/api/admin/employees/:approvalId/sessions/revoke",
+  "/api/admin/employees/:approvalId/soft-budget",
+  "/api/admin/model-catalog",
+  "/api/admin/model-catalog/refresh",
+  "/api/admin/model-policy",
+  "/api/admin/usage",
+  "/api/auth/*",
+  "/api/client-errors",
+  "/api/conversations",
+  "/api/conversations/:conversationId",
+  "/api/conversations/:conversationId/alternative-contexts",
+  "/api/conversations/:conversationId/archive",
+  "/api/conversations/:conversationId/draft",
+  "/api/conversations/:conversationId/preferred-tier",
+  "/api/conversations/:conversationId/responses",
+  "/api/conversations/:conversationId/responses/:generationId/cancel",
+  "/api/conversations/:conversationId/response-states",
+  "/api/conversations/:conversationId/selection",
+  "/api/conversations/:conversationId/title",
+  "/api/conversations/:conversationId/unarchive",
+  "/api/conversations/:conversationId/undo",
+  "/api/conversations/search",
+  "/api/dev/mailbox",
+  "/api/drafts/new",
+  "/api/health/live",
+  "/api/health/ready",
+  "/api/model-tiers",
+  "/api/session",
+]);
 
 export const telemetryTuning = Object.freeze({
   exporterConcurrency: 1,
@@ -128,6 +165,11 @@ export const telemetryMetrics = Object.freeze({
   httpRequests: {
     attributes: ["http.request.method", "http.route", "capstone.status_family", "capstone.outcome"],
     name: "capstone.http.server.requests",
+    unit: "1",
+  },
+  logMirrorDrops: {
+    attributes: ["capstone.log_mirror.reason"],
+    name: "capstone.observability.log_mirror_drops",
     unit: "1",
   },
   providerDuration: {
@@ -269,6 +311,7 @@ export interface ApplicationTelemetry {
     durationMs: number,
   ): void;
   recordHttpRequest(input: HttpTelemetryInput): void;
+  recordLogMirrorDrop(reason: LogMirrorDropReason, count: number): void;
   recordReconciliation(input: {
     readonly claimed: number;
     readonly errors: number;

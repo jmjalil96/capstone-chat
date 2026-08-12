@@ -115,17 +115,18 @@ describe("graceful shutdown", () => {
 
   it("fits every bounded shutdown phase inside the production platform delay", () => {
     expect(applicationShutdownBudget).toEqual({
-      applicationMaximumMilliseconds: 287_000,
+      applicationMaximumMilliseconds: 294_000,
       databasePoolShutdownMaximumMilliseconds: 2_000,
       emailShutdownMaximumMilliseconds: 2_000,
       finalResourceMaximumMilliseconds: 2_000,
       forcedStreamCleanupMilliseconds: 30_000,
       httpAndMaintenanceMaximumMilliseconds: 275_000,
+      logMirrorShutdownMaximumMilliseconds: 6_000,
       ordinaryDrainMilliseconds: 5_000,
       platformDelayMilliseconds: 300_000,
-      platformHeadroomMilliseconds: 13_000,
+      platformHeadroomMilliseconds: 6_000,
       streamDrainMilliseconds: 240_000,
-      telemetryShutdownMaximumMilliseconds: 10_000,
+      telemetryShutdownMaximumMilliseconds: 11_000,
       workFenceMaximumMilliseconds: 275_000,
     });
     expect(applicationShutdownBudget.applicationMaximumMilliseconds).toBeLessThan(
@@ -138,6 +139,7 @@ describe("graceful shutdown", () => {
     const closeEmail = vi.fn(never);
     const endPool = vi.fn(never);
     const stopMaintenance = vi.fn(never);
+    const shutdownLogMirror = vi.fn(never);
     const shutdownTelemetry = vi.fn(never);
     const application = createApplication(loadConfig({ NODE_ENV: "test" }), {
       emailSender: {
@@ -149,6 +151,12 @@ describe("graceful shutdown", () => {
         runOnce: vi.fn(async () => ({ catalogRefresh: null, reconciliation: null })),
         start: vi.fn(),
         stop: stopMaintenance,
+      },
+      logMirror: {
+        forceFlush: vi.fn(async () => undefined),
+        shutdown: shutdownLogMirror,
+        stats: () => ({ droppedRecords: 0, queuedBytes: 0, queuedRecords: 0 }),
+        write: vi.fn(),
       },
       pool: {
         end: endPool,
@@ -171,6 +179,12 @@ describe("graceful shutdown", () => {
       expect(shutdownTelemetry).not.toHaveBeenCalled();
 
       await vi.advanceTimersByTimeAsync(applicationShutdownBudget.finalResourceMaximumMilliseconds);
+      expect(shutdownLogMirror).toHaveBeenCalledOnce();
+      expect(shutdownTelemetry).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(
+        applicationShutdownBudget.logMirrorShutdownMaximumMilliseconds,
+      );
       expect(shutdownTelemetry).toHaveBeenCalledOnce();
 
       await vi.advanceTimersByTimeAsync(

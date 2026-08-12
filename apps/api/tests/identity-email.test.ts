@@ -172,7 +172,7 @@ describe("ResendEmailSender", () => {
     expect(transport).toHaveBeenCalledOnce();
     const [input, init] = transport.mock.calls[0] ?? [];
     expect(input).toBe("https://api.resend.com/emails");
-    expect(init).toMatchObject({ method: "POST" });
+    expect(init).toMatchObject({ method: "POST", redirect: "error" });
     expect(init?.signal).toBeInstanceOf(AbortSignal);
     const headers = new Headers(init?.headers);
     expect(headers.get("accept")).toBe("application/json");

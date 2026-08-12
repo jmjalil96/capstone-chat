@@ -1,0 +1,36 @@
+schema: 1
+mode: egress
+name: capstone-chat-production
+region: ric
+image:
+  registry_type: GHCR
+  registry: jmjalil96
+  repository: capstone-chat
+egress:
+  type: DEDICATED_IP
+edge:
+  disable_edge_cache: true
+  disable_email_obfuscation: true
+  enhanced_threat_control_enabled: false
+service:
+  name: capstone-chat
+  instance_size_slug: apps-s-1vcpu-1gb-fixed
+  instance_count: 1
+  http_port: 3000
+  run_command: node apps/api/dist/entrypoint.js egress-bootstrap
+  readiness_path: /api/health/ready
+  liveness_path: /api/health/live
+  drain_seconds: 110
+  grace_period_seconds: 300
+  environment:
+    general:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: "3000"
+      DEPLOYMENT_TARGET: digitalocean-app-platform
+      CAPSTONE_SECRET_SOURCE: platform-environment
+      CLIENT_ADDRESS_SOURCE: digitalocean-app-platform
+    secret_keys: []
+alerts:
+  app:
+    - DEPLOYMENT_FAILED

@@ -1,7 +1,7 @@
 # Capstone Chat v1 PRD
 
 Status: locked decision baseline  
-Last updated: 2026-08-10
+Last updated: 2026-08-11
 
 This directory records only the Capstone Chat decisions explicitly approved during product discovery. It is the baseline for continued design and implementation.
 
@@ -21,18 +21,18 @@ This directory records only the Capstone Chat decisions explicitly approved duri
 - Details that do not appear in these documents have not been approved by implication.
 - Later decisions may amend this baseline, but should do so explicitly.
 
-The production-sizing and operations decisions approved on 2026-08-10 replace the active Render
-candidate with one DigitalOcean Droplet and one PlanetScale Postgres cluster. They amend only the
-Phase 8 hosting, network, secret custody, deployment, backup, observability-routing, recovery, and
-associated operating-cost choices. Their authorized repository implementation and remaining
-external acceptance gates are recorded in
-[the DigitalOcean and PlanetScale amendment](../implementation/08-digitalocean-planetscale-amendment-plan.md).
-The earlier [minimal Render amendment](../implementation/08-production-baseline-amendment-plan.md)
-remains historical sizing and verification evidence; it is not an active operator path.
+The production-hosting decisions approved on 2026-08-11 replace the active raw-Droplet path with
+one DigitalOcean App Platform dynamic service in managed region `ric`, Dedicated Egress, and the
+already selected PlanetScale Postgres PS-5 Single Node cluster in AWS `us-east-1`. They amend the
+Phase 8 hosting, managed edge/privacy boundary, trusted client-address source, secret delivery,
+deployment, observability routing, recovery procedure, and associated operating cost while leaving
+the product, workload, latency, budget, data, and backup contracts locked. The source-controlled
+design and the external gates that still block acceptance are recorded in
+[the App Platform and PlanetScale amendment](../implementation/08-digitalocean-app-platform-planetscale-amendment-plan.md).
 
-On 2026-08-11, the user approved NYC3 only for the disposable managed rehearsal after the live
-DigitalOcean control panel showed the USD 6 Basic size unavailable in RIC1 and ATL1 but available
-in NYC3. This exception does not amend the locked RIC1 production candidate. NYC3 evidence may
-qualify the shared host size, application, PS-5 capacity, deployment, rollback, and recovery paths;
-it cannot be represented as RIC1 scheduling, availability, or RIC1-to-`us-east-1` latency evidence.
-A production-region change remains a separate explicit decision.
+The earlier
+[DigitalOcean Droplet and PlanetScale amendment](../implementation/08-digitalocean-planetscale-amendment-plan.md),
+its NYC3 disposable-rehearsal record, and the
+[minimal Render amendment](../implementation/08-production-baseline-amendment-plan.md) remain
+historical evidence. They are not active deployment or recovery instructions and their results are
+not App Platform capacity, edge, region, egress, or recovery evidence.

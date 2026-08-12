@@ -41,13 +41,17 @@ export interface AuthenticationEvents {
 }
 
 export function createAuthentication(input: {
-  config: Pick<ApiConfig, "authSecret" | "nodeEnv" | "publicOrigin">;
+  config: Pick<ApiConfig, "authSecret" | "nodeEnv" | "publicOrigin"> & {
+    readonly deploymentProfile?: ApiConfig["deploymentProfile"];
+  };
   database: AppDatabase;
   emailSender: EmailSender;
   events: AuthenticationEvents;
   identity: IdentityService;
 }) {
   const { config, database, emailSender, events, identity } = input;
+  const secureCookies =
+    config.nodeEnv === "production" || config.deploymentProfile === "managed-rehearsal";
   const auth = betterAuth({
     advanced: {
       crossSubDomainCookies: { enabled: false },
@@ -55,14 +59,14 @@ export function createAuthentication(input: {
         httpOnly: true,
         path: "/",
         sameSite: "lax",
-        secure: config.nodeEnv === "production",
+        secure: secureCookies,
       },
       disableCSRFCheck: false,
       disableOriginCheck: false,
       ipAddress: {
         ipAddressHeaders: ["x-capstone-client-ip"],
       },
-      useSecureCookies: config.nodeEnv === "production",
+      useSecureCookies: secureCookies,
     },
     basePath: "/api/auth",
     baseURL: config.publicOrigin,

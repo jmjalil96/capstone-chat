@@ -38,31 +38,32 @@ The initial system does not introduce microservices, Redis, or a separate queue.
 - Readiness rejects new traffic while a replica is starting, unhealthy, or draining.
 - During deployment, a replica stops accepting new requests and drains active streams for a configured period.
 - Streams remaining after the drain period are cancelled and retained as incomplete.
-- Production credentials are loaded from narrowly permissioned, read-only files on an encrypted
-  attached Volume; recoverable source copies remain in the approved company-controlled password
-  manager and never in the image, repository, process arguments, or unencrypted host disk.
-- The deployment contract remains vendor-neutral.
+- Production credentials are delivered as component-scoped DigitalOcean App Platform encrypted
+  environment variables; recoverable source copies remain in the approved company-controlled
+  password manager and never enter the image, repository, process arguments, or application logs.
+- The OCI artifact, application contracts, and PostgreSQL boundary remain portable. The production
+  ingress, secret, deployment, and operations adapter is intentionally specific to DigitalOcean
+  App Platform under the approved Phase 8 amendment.
 
-The approved production launch candidate is one USD 6 DigitalOcean Basic shared-CPU Droplet with
-one vCPU and 1 GiB RAM in RIC1, plus one USD 5 PlanetScale Postgres PS-5 ARM Single Node cluster in
-AWS `us-east-1`. Caddy serves the one public origin and proxies to exactly one active loopback-bound
-application slot. PlanetScale is reached over the public Internet only from the Droplet's fixed
-reserved IPv4 `/32`, with direct PostgreSQL `verify-full` TLS and separate application, migration,
-and recovery credentials. Launch uses one active application instance, one single-node database,
-no automatic failover, no database high availability, and no read replica.
+The approved production launch candidate is one DigitalOcean App Platform
+`apps-s-1vcpu-1gb-fixed` dynamic service with one instance in the managed `ric` region, one 512 MiB
+`PRE_DEPLOY` migration job using the same immutable image digest, paid Dedicated Egress, and one
+USD 5 PlanetScale Postgres PS-5 ARM Single Node cluster in AWS `us-east-1`. App Platform's
+Cloudflare-backed edge serves the one public origin and terminates TLS. PlanetScale accepts direct
+PostgreSQL `verify-full` connections only from both exclusive Dedicated Egress IPv4 `/32`s, with
+separate application, migration, and recovery credentials. Launch has no autoscaling,
+scale-to-zero, second service, worker, application high availability, database high availability,
+read replica, or automatic failover.
 
 The database starts with 10 GB included storage, may grow once to an enforced 15 GB ceiling, and
-uses backups every 12 hours retained for 84 hours. The host has no paid Droplet backup because it
-holds no authoritative application data and must be reproducible from source, immutable OCI
-images, the managed database, and the approved recovery store. The exact managed topology remains
-provisional until its accepted evidence covers every production gate. Because the USD 6 Basic size
-was unavailable in RIC1 and ATL1 during the authorized 2026-08-11 provisioning attempt, the user
-approved NYC3 only for the disposable managed rehearsal. Two clean NYC3 passes may qualify the host
-size, application, PS-5 capacity, deployment, rollback, and recovery behavior, but they do not
-qualify RIC1 scheduling, availability, or RIC1-to-`us-east-1` latency. Production remains RIC1
-unless separately amended, and its region-specific evidence remains open. These are deployment
-choices rather than provider-specific application architecture; the OCI image, configuration
-boundary, and PostgreSQL contract remain portable.
+uses backups every 12 hours retained for 84 hours. App Platform's filesystem is ephemeral and
+contains no authoritative application data. Recovery uses source-controlled non-secret App
+contracts, exact immutable OCI digests, Bitwarden source credentials, managed PostgreSQL recovery,
+and provider ownership. The App Platform/Cloudflare plaintext-processing terms remain a launch
+privacy gate. Controlled App recreation must meet the four-hour RTO; accidental deletion while a
+custom domain remains attached is an explicit unresolved acceptance blocker until DigitalOcean
+provides a verified sub-four-hour release path or the owner separately amends that failure mode's
+RTO.
 
 ## Reconciliation
 
@@ -132,8 +133,9 @@ Shared executable TypeScript is limited to transport contracts. The brand packag
 - CI does not receive an OpenRouter key and never calls real models.
 - Dependency caching may improve CI speed, but generated build output is not committed.
 - GitHub Actions remains the authoritative validation gate for production deployment. It publishes
-  an immutable GHCR image only after the approved checks pass; a named operator explicitly deploys
-  that exact digest to the Droplet after verifying the matching commit and green result.
+  an immutable GHCR image only after the approved checks pass; a protected named-operator workflow
+  deploys that exact digest through the current validated App Platform specification after
+  verifying the matching protected-main commit and green result.
 - A task orchestrator is added only if measured build time or dependency ordering requires it.
 
 ## Local development
@@ -455,14 +457,15 @@ Message content is stored as typed JSON blocks. V1 supports a text block whose c
 
 - Fastify/Pino emits structured JSON logs.
 - New Relic Free is the single external v1 application/log telemetry destination.
-- Fastify sends application traces and metrics directly by OTLP. One bounded, unprivileged Fluent
-  Bit host process forwards only content-free Capstone application JSON logs through New Relic's
-  HTTPS Log API; it has bounded memory/retries, no disk buffer, and may drop telemetry rather than
-  blocking the product.
-- DigitalOcean Monitoring owns Droplet CPU, memory, disk, network, restart, and availability
-  signals. PlanetScale's protected dashboard owns database performance, storage, connections,
-  backups, WAL, and Query Insights. V1 does not copy those provider-native signals into New Relic
-  with an infrastructure agent, collector, sidecar, scraper, or second backend.
+- Fastify sends application traces and metrics directly by OTLP. One bounded in-process adapter
+  mirrors an explicit content-free Pino field allowlist to New Relic's HTTPS Log API; it has bounded
+  memory, time, retries, and shutdown, no disk buffer, and drops telemetry rather than blocking the
+  product.
+- DigitalOcean App Platform Insights and alerts own deployment, domain, job, CPU, memory, restart,
+  request, and latency signals. One DigitalOcean Uptime check independently owns public
+  readiness/TLS/latency. PlanetScale's protected dashboard owns database performance, storage,
+  connections, backups, WAL, and Query Insights. V1 does not copy those provider-native signals
+  into New Relic with an infrastructure agent, collector, sidecar, scraper, or second backend.
 - Fastify emits backend traces and application metrics through vendor-neutral OpenTelemetry OTLP.
 - V1 does not use OpenTelemetry browser instrumentation.
 - A sanitized frontend-error endpoint captures UI failures without conversation content.

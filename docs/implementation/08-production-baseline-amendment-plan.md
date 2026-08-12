@@ -4,10 +4,10 @@ Status: repository implementation completed and locally verified on 2026-08-09; 
 acceptance pending
 
 Superseded production recommendation: the user-approved
-[DigitalOcean and PlanetScale amendment](./08-digitalocean-planetscale-amendment-plan.md) replaced
-this Render candidate on 2026-08-10. The Render Standard, Starter, Hobby, private-network,
+[DigitalOcean App Platform and PlanetScale amendment](./08-digitalocean-app-platform-planetscale-amendment-plan.md)
+is now the active production design. The Render Standard, Starter, Hobby, private-network,
 Blueprint, and local load results below remain historical evidence exactly as recorded; they are
-not DigitalOcean/PlanetScale evidence and no longer direct an operator to provision Render.
+not App Platform/PlanetScale evidence and no longer direct an operator to provision Render.
 
 Operator notice: do not execute the Render provisioning, Blueprint, deploy, DNS, log-stream, or
 recovery steps below. Follow the current operations index and active DigitalOcean/PlanetScale

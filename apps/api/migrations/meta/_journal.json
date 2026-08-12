@@ -50,6 +50,13 @@
       "when": 1786294883632,
       "tag": "0006_conversation_generation_lookup",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1786493595627,
+      "tag": "0007_sloppy_northstar",
+      "breakpoints": true
     }
   ]
 }

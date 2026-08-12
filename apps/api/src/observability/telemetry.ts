@@ -28,6 +28,7 @@ import {
   type DatabasePoolSnapshot,
   type EmailDeliveryTelemetry,
   type HttpTelemetryInput,
+  type LogMirrorDropReason,
   type ModelCallSettlement,
   type ModelCallStart,
   type ModelCallTelemetry,
@@ -36,6 +37,7 @@ import {
   type TelemetryOutcome,
   type TelemetryPurpose,
   telemetryMetrics,
+  telemetrySafeHttpRoutes,
   telemetryTuning,
 } from "./telemetry-contract.js";
 
@@ -57,41 +59,6 @@ export interface TelemetryExporterOverrides {
   readonly traces: SpanExporter;
 }
 
-const safeHttpRoutes = new Set([
-  "/",
-  "/*",
-  "/api/admin/employees",
-  "/api/admin/employees/:approvalId/deactivate",
-  "/api/admin/employees/:approvalId/invitation",
-  "/api/admin/employees/:approvalId/sessions/revoke",
-  "/api/admin/employees/:approvalId/soft-budget",
-  "/api/admin/model-catalog",
-  "/api/admin/model-catalog/refresh",
-  "/api/admin/model-policy",
-  "/api/admin/usage",
-  "/api/auth/*",
-  "/api/client-errors",
-  "/api/conversations",
-  "/api/conversations/:conversationId",
-  "/api/conversations/:conversationId/alternative-contexts",
-  "/api/conversations/:conversationId/archive",
-  "/api/conversations/:conversationId/draft",
-  "/api/conversations/:conversationId/preferred-tier",
-  "/api/conversations/:conversationId/responses",
-  "/api/conversations/:conversationId/responses/:generationId/cancel",
-  "/api/conversations/:conversationId/response-states",
-  "/api/conversations/:conversationId/selection",
-  "/api/conversations/:conversationId/title",
-  "/api/conversations/:conversationId/unarchive",
-  "/api/conversations/:conversationId/undo",
-  "/api/conversations/search",
-  "/api/dev/mailbox",
-  "/api/drafts/new",
-  "/api/health/live",
-  "/api/health/ready",
-  "/api/model-tiers",
-  "/api/session",
-]);
 const healthRoutes = new Set(["/api/health/live", "/api/health/ready"]);
 const safeMethods = new Set(["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]);
 const safeIdentifierPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
@@ -214,7 +181,17 @@ function httpMethod(method: string): string {
 }
 
 function httpRoute(route: string | undefined): string {
-  return route !== undefined && safeHttpRoutes.has(route) ? route : "unmatched";
+  return route !== undefined && telemetrySafeHttpRoutes.has(route) ? route : "unmatched";
+}
+
+function safeLogMirrorDropReason(reason: LogMirrorDropReason): LogMirrorDropReason {
+  return reason === "delivery" ||
+    reason === "invalid" ||
+    reason === "overflow" ||
+    reason === "oversize" ||
+    reason === "shutdown"
+    ? reason
+    : "invalid";
 }
 
 function statusCode(value: number): number {
@@ -265,6 +242,7 @@ function noOpTelemetry(): ApplicationTelemetry {
     recordEmailDelivery() {},
     recordGeneration() {},
     recordHttpRequest() {},
+    recordLogMirrorDrop() {},
     recordReconciliation() {},
     recordReservationSettlement() {},
     recordResponseStarted() {},
@@ -394,6 +372,10 @@ export function createApplicationTelemetry(
     httpRequests: meter.createCounter(
       telemetryMetrics.httpRequests.name,
       telemetryMetrics.httpRequests,
+    ),
+    logMirrorDrops: meter.createCounter(
+      telemetryMetrics.logMirrorDrops.name,
+      telemetryMetrics.logMirrorDrops,
     ),
     reconciliationClaims: meter.createCounter(
       telemetryMetrics.reconciliationClaims.name,
@@ -663,6 +645,14 @@ export function createApplicationTelemetry(
       });
       span.setStatus({ code: code >= 400 ? SpanStatusCode.ERROR : SpanStatusCode.OK });
       span.end(endedAt);
+    },
+    recordLogMirrorDrop(reason, count): void {
+      const bounded = boundedCount(count);
+      if (!closed && bounded !== undefined && bounded > 0) {
+        counters.logMirrorDrops.add(bounded, {
+          "capstone.log_mirror.reason": safeLogMirrorDropReason(reason),
+        });
+      }
     },
     recordReconciliation(input): void {
       if (closed) {

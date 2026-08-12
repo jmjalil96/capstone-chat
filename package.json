@@ -25,9 +25,11 @@
     "identity:approve": "pnpm --filter @capstone/api identity:approve",
     "identity:bootstrap": "pnpm --filter @capstone/api identity:bootstrap",
     "identity:deactivate": "pnpm --filter @capstone/api identity:deactivate",
+    "identity:invite-initial": "pnpm --filter @capstone/api identity:invite-initial",
     "model-catalog:refresh": "pnpm --filter @capstone/api model-catalog:refresh",
     "model-policy:attest": "pnpm --filter @capstone/api model-policy:attest",
     "model-policy:bootstrap": "pnpm --filter @capstone/api model-policy:bootstrap",
+    "production:initialize": "pnpm --filter @capstone/api production:initialize",
     "recovery:prepare": "pnpm --filter @capstone/api recovery:prepare",
     "report:bundle": "node scripts/bundle-report.mjs",
     "smoke:container": "node scripts/container-smoke.mjs"

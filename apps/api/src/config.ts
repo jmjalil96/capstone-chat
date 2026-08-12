@@ -1,5 +1,8 @@
 import { fileURLToPath } from "node:url";
-import { parseProductionDatabaseUrl } from "./database/production-database-url.js";
+import {
+  assertProductionDatabaseCredentialBoundary,
+  parseProductionDatabaseUrl,
+} from "./database/production-database-url.js";
 import { hasLoadedSecretEnvironment } from "./secret-environment.js";
 
 const runtimeModes = ["development", "test", "production"] as const;
@@ -9,27 +12,45 @@ export type RuntimeMode = (typeof runtimeModes)[number];
 export type LogLevel = (typeof logLevels)[number];
 export type EmailDelivery = "disabled" | "fake" | "resend";
 export type ModelGatewayMode = "fake" | "openrouter";
-export type ClientAddressSource = "caddy" | "socket";
+export type ClientAddressSource = "caddy" | "digitalocean-app-platform" | "socket";
+export type DeploymentTarget = "digitalocean-app-platform";
+export type DeploymentProfile = "managed-rehearsal";
+export type SecretSource = "platform-environment";
 
-export type ConfigurationKey =
-  | "BETTER_AUTH_SECRET"
-  | "CAPSTONE_SECRET_FILE"
-  | "CLIENT_ADDRESS_SOURCE"
-  | "DATABASE_URL"
-  | "DEPLOYMENT_REVISION"
-  | "EMAIL_DELIVERY"
-  | "EMAIL_FROM"
-  | "HOST"
-  | "LOG_LEVEL"
-  | "MODEL_GATEWAY"
-  | "NODE_ENV"
-  | "OPENROUTER_API_KEY"
-  | "OTEL_EXPORTER_OTLP_ENDPOINT"
-  | "OTEL_EXPORTER_OTLP_HEADERS"
-  | "PORT"
-  | "PUBLIC_ORIGIN"
-  | "RESEND_API_KEY"
-  | "WEB_ASSETS";
+const configurationKeys = [
+  "BETTER_AUTH_SECRET",
+  "CAPSTONE_BOOTSTRAP_DATABASE_URL",
+  "CAPSTONE_BOOTSTRAP_MIGRATION_DATABASE_URL",
+  "CAPSTONE_DEPLOYMENT_PROFILE",
+  "CAPSTONE_INITIALIZATION_DOCUMENT",
+  "CAPSTONE_INITIALIZATION_SCHEMA_VERSION",
+  "CAPSTONE_LOAD_DIAGNOSTICS_SECRET",
+  "CAPSTONE_SECRET_FILE",
+  "CAPSTONE_SECRET_SOURCE",
+  "CLIENT_ADDRESS_SOURCE",
+  "DATABASE_URL",
+  "DEPLOYMENT_TARGET",
+  "DEPLOYMENT_REVISION",
+  "EMAIL_DELIVERY",
+  "EMAIL_FROM",
+  "HOST",
+  "LOG_LEVEL",
+  "MODEL_GATEWAY",
+  "NODE_ENV",
+  "OPENROUTER_API_KEY",
+  "OTEL_EXPORTER_OTLP_ENDPOINT",
+  "OTEL_EXPORTER_OTLP_HEADERS",
+  "PORT",
+  "PUBLIC_ORIGIN",
+  "RESEND_API_KEY",
+  "WEB_ASSETS",
+] as const;
+const configurationKeySet = new Set<string>(configurationKeys);
+export type ConfigurationKey = (typeof configurationKeys)[number];
+
+export function isConfigurationKey(value: unknown): value is ConfigurationKey {
+  return typeof value === "string" && configurationKeySet.has(value);
+}
 
 export class ConfigurationError extends Error {
   readonly configurationKey: ConfigurationKey;
@@ -62,15 +83,53 @@ export interface RecoveryPreparationOperatorConfig extends DatabaseConfig {
   readonly migrationSecretFilePath: string;
 }
 
+export interface EgressBootstrapConfig {
+  readonly clientAddressSource: "digitalocean-app-platform";
+  readonly deploymentRevision: string;
+  readonly deploymentTarget: DeploymentTarget;
+  readonly host: "0.0.0.0";
+  readonly nodeEnv: "production";
+  readonly port: 3000;
+  readonly secretSource: SecretSource;
+}
+
+export interface ManagedRehearsalInitializationConfig {
+  readonly applicationDatabaseUrl: string;
+  readonly deploymentProfile: "managed-rehearsal";
+  readonly deploymentRevision: string;
+  readonly deploymentTarget: DeploymentTarget;
+  readonly initializationDocument: string;
+  readonly initializationSchemaVersion: 1;
+  readonly migrationDatabaseUrl: string;
+  readonly nodeEnv: "test";
+  readonly secretSource: SecretSource;
+}
+
+export interface InitializationOperatorConfig {
+  readonly applicationDatabaseUrl: string;
+  readonly deploymentRevision: string;
+  readonly deploymentTarget: DeploymentTarget;
+  readonly initializationDocument: string;
+  readonly initializationSchemaVersion: 1;
+  readonly migrationDatabaseUrl: string;
+  readonly modelGateway: "openrouter";
+  readonly nodeEnv: "production";
+  readonly openRouterApiKey: string;
+  readonly secretSource: SecretSource;
+}
+
 export interface ApiConfig {
   readonly authSecret: string;
   readonly clientAddressSource: ClientAddressSource;
   readonly databaseUrl: string;
+  readonly deploymentProfile: DeploymentProfile | null;
   readonly deploymentRevision: string;
+  readonly deploymentTarget: DeploymentTarget | null;
   readonly emailDelivery: EmailDelivery;
   readonly emailFrom: string | null;
   readonly host: string;
   readonly logLevel: LogLevel;
+  readonly loadDiagnosticsSecret: string | null;
   readonly modelGateway: ModelGatewayMode;
   readonly nodeEnv: RuntimeMode;
   readonly openRouterApiKey: string | null;
@@ -79,14 +138,20 @@ export interface ApiConfig {
   readonly port: number;
   readonly publicOrigin: string;
   readonly resendApiKey: string | null;
+  readonly secretSource: SecretSource | null;
   readonly trustProxy: false;
   readonly webAssetsDirectory: string | null;
 }
 
 const productionOrigin = "https://chat.capstone.com.ec";
+export const managedRehearsalOrigin = "https://rehearsal.chat.capstone.com.ec";
 const productionSender = "Capstone Chat <no-reply@mail.capstone.com.ec>";
 const productionWebAssetsDirectory = fileURLToPath(new URL("../../web/dist/", import.meta.url));
 const productionWebAssetsMode = "production-build";
+const appPlatformDeploymentTarget = "digitalocean-app-platform";
+const managedRehearsalDeploymentProfile = "managed-rehearsal";
+const platformEnvironmentSecretSource = "platform-environment";
+const initializationDocumentMaximumBytes = 32 * 1_024;
 
 const developmentDefaults = {
   databaseUrl: "postgresql://capstone:capstone@127.0.0.1:5432/capstone_chat",
@@ -110,20 +175,116 @@ function readRuntimeMode(value: string | undefined): RuntimeMode {
   return mode;
 }
 
-function requireProductionSecretFile(source: NodeJS.ProcessEnv, mode: RuntimeMode): void {
-  // Explicit source objects are the configuration seam used by tests. Executable production
-  // entry points read process.env only after environment.ts authenticates and loads the file.
+function requireOfflineRecoverySecretFile(source: NodeJS.ProcessEnv, mode: RuntimeMode): void {
   if (mode === "production" && source === process.env && !hasLoadedSecretEnvironment(source)) {
     throw new ConfigurationError(
       "CAPSTONE_SECRET_FILE",
-      "CAPSTONE_SECRET_FILE must be the exclusive source of production credentials",
+      "CAPSTONE_SECRET_FILE must be the authenticated offline recovery credential source",
     );
   }
 }
 
+function readDeploymentTarget(
+  value: string | undefined,
+  mode: RuntimeMode,
+  deploymentProfile: DeploymentProfile | null = null,
+): DeploymentTarget | null {
+  const target = value?.trim();
+  if (target === undefined || target.length === 0) {
+    if (mode === "production" || deploymentProfile !== null) {
+      throw new ConfigurationError(
+        "DEPLOYMENT_TARGET",
+        "DEPLOYMENT_TARGET is required in production",
+      );
+    }
+    return null;
+  }
+  if (target !== appPlatformDeploymentTarget) {
+    throw new ConfigurationError(
+      "DEPLOYMENT_TARGET",
+      `DEPLOYMENT_TARGET must be ${appPlatformDeploymentTarget}`,
+    );
+  }
+  return target;
+}
+
+function readSecretSource(
+  value: string | undefined,
+  mode: RuntimeMode,
+  deploymentProfile: DeploymentProfile | null = null,
+): SecretSource | null {
+  const source = value?.trim();
+  if (source === undefined || source.length === 0) {
+    if (mode === "production" || deploymentProfile !== null) {
+      throw new ConfigurationError(
+        "CAPSTONE_SECRET_SOURCE",
+        "CAPSTONE_SECRET_SOURCE is required in production",
+      );
+    }
+    return null;
+  }
+  if (source !== platformEnvironmentSecretSource) {
+    throw new ConfigurationError(
+      "CAPSTONE_SECRET_SOURCE",
+      `CAPSTONE_SECRET_SOURCE must be ${platformEnvironmentSecretSource}`,
+    );
+  }
+  return source;
+}
+
+function readDeploymentProfile(
+  value: string | undefined,
+  mode: RuntimeMode,
+): DeploymentProfile | null {
+  const profile = value?.trim();
+  if (profile === undefined || profile.length === 0) {
+    return null;
+  }
+  if (profile !== managedRehearsalDeploymentProfile) {
+    throw new ConfigurationError(
+      "CAPSTONE_DEPLOYMENT_PROFILE",
+      `CAPSTONE_DEPLOYMENT_PROFILE must be ${managedRehearsalDeploymentProfile}`,
+    );
+  }
+  if (mode !== "test") {
+    throw new ConfigurationError(
+      "CAPSTONE_DEPLOYMENT_PROFILE",
+      "CAPSTONE_DEPLOYMENT_PROFILE=managed-rehearsal is permitted only in test mode",
+    );
+  }
+  return profile;
+}
+
+function readProductionPlatformAuthority(
+  source: NodeJS.ProcessEnv,
+  mode: RuntimeMode,
+  deploymentProfile: DeploymentProfile | null = null,
+): Readonly<{
+  deploymentTarget: DeploymentTarget | null;
+  secretSource: SecretSource | null;
+}> {
+  const deploymentTarget = readDeploymentTarget(source.DEPLOYMENT_TARGET, mode, deploymentProfile);
+  const secretSource = readSecretSource(source.CAPSTONE_SECRET_SOURCE, mode, deploymentProfile);
+  if (
+    (mode === "production" || deploymentProfile !== null) &&
+    source.CAPSTONE_SECRET_FILE !== undefined
+  ) {
+    throw new ConfigurationError(
+      "CAPSTONE_SECRET_FILE",
+      "CAPSTONE_SECRET_FILE is prohibited for the production application and migration job",
+    );
+  }
+  return Object.freeze({ deploymentTarget, secretSource });
+}
+
 function readRequired(
   source: NodeJS.ProcessEnv,
-  key: "BETTER_AUTH_SECRET" | "DATABASE_URL" | "PUBLIC_ORIGIN",
+  key:
+    | "BETTER_AUTH_SECRET"
+    | "CAPSTONE_BOOTSTRAP_DATABASE_URL"
+    | "CAPSTONE_BOOTSTRAP_MIGRATION_DATABASE_URL"
+    | "DATABASE_URL"
+    | "PUBLIC_ORIGIN",
   fallback: string | undefined,
 ): string {
   const value = source[key]?.trim() || fallback;
@@ -206,8 +367,8 @@ function readHost(value: string | undefined, mode: RuntimeMode): string {
   if (host === undefined || host.length === 0 || /\s/u.test(host)) {
     throw new ConfigurationError("HOST", "HOST must be a non-empty hostname or IP address");
   }
-  if (mode === "production" && host !== "127.0.0.1") {
-    throw new ConfigurationError("HOST", "HOST must be 127.0.0.1 in production");
+  if (mode === "production" && host !== "0.0.0.0") {
+    throw new ConfigurationError("HOST", "HOST must be 0.0.0.0 in production");
   }
 
   return host;
@@ -218,22 +379,22 @@ function readClientAddressSource(
   mode: RuntimeMode,
 ): ClientAddressSource {
   const source = value?.trim() || (mode === "production" ? undefined : "socket");
-  if (source !== "caddy" && source !== "socket") {
+  if (source !== "caddy" && source !== "digitalocean-app-platform" && source !== "socket") {
     throw new ConfigurationError(
       "CLIENT_ADDRESS_SOURCE",
-      "CLIENT_ADDRESS_SOURCE must be caddy or socket",
+      "CLIENT_ADDRESS_SOURCE must be caddy, digitalocean-app-platform, or socket",
     );
   }
-  if (mode === "production" && source !== "caddy") {
+  if (mode === "production" && source !== "digitalocean-app-platform") {
     throw new ConfigurationError(
       "CLIENT_ADDRESS_SOURCE",
-      "CLIENT_ADDRESS_SOURCE must be caddy in production",
+      "CLIENT_ADDRESS_SOURCE must be digitalocean-app-platform in production",
     );
   }
   return source;
 }
 
-function readPort(value: string | undefined): number {
+function readPort(value: string | undefined, mode: RuntimeMode): number {
   if (value === undefined || value.trim() === "") {
     return developmentDefaults.port;
   }
@@ -246,6 +407,9 @@ function readPort(value: string | undefined): number {
 
   if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
     throw new ConfigurationError("PORT", "PORT must be an integer from 1 to 65535");
+  }
+  if (mode === "production" && port !== 3_000) {
+    throw new ConfigurationError("PORT", "PORT must be 3000 in production");
   }
 
   return port;
@@ -407,10 +571,13 @@ function readOtlpConfig(
       "OTEL_EXPORTER_OTLP_ENDPOINT must be an HTTPS origin",
     );
   }
-  if (!/^otlp(?:\.[a-z0-9-]+)?\.nr-data\.net$/u.test(endpoint.hostname)) {
+  if (
+    endpoint.origin !== "https://otlp.nr-data.net" &&
+    endpoint.origin !== "https://otlp.eu01.nr-data.net"
+  ) {
     throw new ConfigurationError(
       "OTEL_EXPORTER_OTLP_ENDPOINT",
-      "OTEL_EXPORTER_OTLP_ENDPOINT must use an official New Relic OTLP host",
+      "OTEL_EXPORTER_OTLP_ENDPOINT must select the exact US or EU New Relic OTLP origin",
     );
   }
 
@@ -499,9 +666,11 @@ function readOpenRouterApiKey(value: string | undefined, gateway: ModelGatewayMo
 function readDatabaseConfig(
   source: NodeJS.ProcessEnv,
   nodeEnv: RuntimeMode,
+  deploymentProfile: DeploymentProfile | null = null,
 ): Readonly<DatabaseConfig> {
   const databaseMode =
-    nodeEnv === "test" && source.WEB_ASSETS?.trim() === productionWebAssetsMode
+    deploymentProfile !== null ||
+    (nodeEnv === "test" && source.WEB_ASSETS?.trim() === productionWebAssetsMode)
       ? "production"
       : nodeEnv;
   const allowDevelopmentDefaults = databaseMode !== "production";
@@ -521,15 +690,39 @@ export function loadDatabaseConfig(
   source: NodeJS.ProcessEnv = process.env,
 ): Readonly<DatabaseConfig> {
   const nodeEnv = readRuntimeMode(source.NODE_ENV);
-  requireProductionSecretFile(source, nodeEnv);
-  return readDatabaseConfig(source, nodeEnv);
+  const deploymentProfile = readDeploymentProfile(source.CAPSTONE_DEPLOYMENT_PROFILE, nodeEnv);
+  readProductionPlatformAuthority(source, nodeEnv, deploymentProfile);
+  if (nodeEnv === "production" || deploymentProfile !== null) {
+    rejectConfiguredKeys(
+      source,
+      [
+        "BETTER_AUTH_SECRET",
+        "CAPSTONE_BOOTSTRAP_DATABASE_URL",
+        "CAPSTONE_BOOTSTRAP_MIGRATION_DATABASE_URL",
+        "CAPSTONE_INITIALIZATION_DOCUMENT",
+        "CAPSTONE_INITIALIZATION_SCHEMA_VERSION",
+        "OPENROUTER_API_KEY",
+        "OTEL_EXPORTER_OTLP_HEADERS",
+        "RESEND_API_KEY",
+      ],
+      "The migration job cannot receive application or initialization credentials",
+    );
+  }
+  return readDatabaseConfig(source, nodeEnv, deploymentProfile);
 }
 
 export function loadOpenRouterOperatorConfig(
   source: NodeJS.ProcessEnv = process.env,
 ): Readonly<OpenRouterOperatorConfig> {
   const nodeEnv = readRuntimeMode(source.NODE_ENV);
-  requireProductionSecretFile(source, nodeEnv);
+  const deploymentProfile = readDeploymentProfile(source.CAPSTONE_DEPLOYMENT_PROFILE, nodeEnv);
+  readProductionPlatformAuthority(source, nodeEnv, deploymentProfile);
+  if (deploymentProfile !== null) {
+    throw new ConfigurationError(
+      "OPENROUTER_API_KEY",
+      "OpenRouter operator access is prohibited in the managed rehearsal",
+    );
+  }
   const apiKey = readOpenRouterApiKey(source.OPENROUTER_API_KEY, "openrouter");
   if (apiKey === null) {
     throw new ConfigurationError(
@@ -544,7 +737,7 @@ export function loadIdentityOperatorConfig(
   source: NodeJS.ProcessEnv = process.env,
 ): Readonly<IdentityOperatorConfig> {
   const nodeEnv = readRuntimeMode(source.NODE_ENV);
-  requireProductionSecretFile(source, nodeEnv);
+  readProductionPlatformAuthority(source, nodeEnv);
   const { databaseUrl } = readDatabaseConfig(source, nodeEnv);
   const publicOrigin = readPublicOrigin(
     readRequired(
@@ -572,7 +765,7 @@ export function loadRecoveryPreparationOperatorConfig(
   source: NodeJS.ProcessEnv = process.env,
 ): Readonly<RecoveryPreparationOperatorConfig> {
   const nodeEnv = readRuntimeMode(source.NODE_ENV);
-  requireProductionSecretFile(source, nodeEnv);
+  requireOfflineRecoverySecretFile(source, nodeEnv);
   const migrationSecretFilePath = source.CAPSTONE_SECRET_FILE?.trim();
   if (migrationSecretFilePath === undefined || migrationSecretFilePath.length === 0) {
     throw new ConfigurationError(
@@ -586,10 +779,365 @@ export function loadRecoveryPreparationOperatorConfig(
   });
 }
 
+function requireProductionMode(source: NodeJS.ProcessEnv): "production" {
+  const nodeEnv = readRuntimeMode(source.NODE_ENV);
+  if (nodeEnv !== "production") {
+    throw new ConfigurationError("NODE_ENV", "NODE_ENV must be production for this entrypoint");
+  }
+  return nodeEnv;
+}
+
+function rejectConfiguredKeys(
+  source: NodeJS.ProcessEnv,
+  keys: readonly ConfigurationKey[],
+  message: string,
+): void {
+  for (const key of keys) {
+    if (source[key] !== undefined) {
+      throw new ConfigurationError(key, message);
+    }
+  }
+}
+
+function rejectConfigurationOutside(
+  source: NodeJS.ProcessEnv,
+  allowed: ReadonlySet<ConfigurationKey>,
+  message: string,
+): void {
+  for (const key of configurationKeys) {
+    if (!allowed.has(key) && source[key] !== undefined) {
+      throw new ConfigurationError(key, message);
+    }
+  }
+}
+
+function readManagedRehearsalRevision(source: NodeJS.ProcessEnv): string {
+  const revision = source.DEPLOYMENT_REVISION?.trim();
+  if (revision === undefined || !/^[0-9a-f]{40}$/iu.test(revision)) {
+    throw new ConfigurationError(
+      "DEPLOYMENT_REVISION",
+      "DEPLOYMENT_REVISION must be a full Git commit identifier for the managed rehearsal",
+    );
+  }
+  return revision.toLowerCase();
+}
+
+function readLoadDiagnosticsSecret(value: string | undefined, required: boolean): string | null {
+  if (value === undefined) {
+    if (required) {
+      throw new ConfigurationError(
+        "CAPSTONE_LOAD_DIAGNOSTICS_SECRET",
+        "CAPSTONE_LOAD_DIAGNOSTICS_SECRET is required for the managed rehearsal",
+      );
+    }
+    return null;
+  }
+  if (
+    value.trim() !== value ||
+    containsControlCharacter(value) ||
+    Buffer.byteLength(value, "utf8") < 32 ||
+    Buffer.byteLength(value, "utf8") > 256
+  ) {
+    throw new ConfigurationError(
+      "CAPSTONE_LOAD_DIAGNOSTICS_SECRET",
+      "CAPSTONE_LOAD_DIAGNOSTICS_SECRET must contain 32 to 256 UTF-8 bytes without whitespace padding or control characters",
+    );
+  }
+  return value;
+}
+
+const migrationConfigurationKeys = new Set<ConfigurationKey>([
+  "CAPSTONE_DEPLOYMENT_PROFILE",
+  "CAPSTONE_SECRET_SOURCE",
+  "DATABASE_URL",
+  "DEPLOYMENT_REVISION",
+  "DEPLOYMENT_TARGET",
+  "NODE_ENV",
+]);
+
+export function loadMigrationConfig(
+  source: NodeJS.ProcessEnv = process.env,
+): Readonly<DatabaseConfig> {
+  const nodeEnv = readRuntimeMode(source.NODE_ENV);
+  const deploymentProfile = readDeploymentProfile(source.CAPSTONE_DEPLOYMENT_PROFILE, nodeEnv);
+  readProductionPlatformAuthority(source, nodeEnv, deploymentProfile);
+  if (nodeEnv === "production" || deploymentProfile !== null) {
+    rejectConfigurationOutside(
+      source,
+      migrationConfigurationKeys,
+      "The migration job cannot receive application, provider, telemetry, or initialization configuration",
+    );
+  }
+  if (deploymentProfile !== null) {
+    readManagedRehearsalRevision(source);
+  }
+  return readDatabaseConfig(source, nodeEnv, deploymentProfile);
+}
+
+export function loadEgressBootstrapConfig(
+  source: NodeJS.ProcessEnv = process.env,
+): Readonly<EgressBootstrapConfig> {
+  const nodeEnv = requireProductionMode(source);
+  rejectConfigurationOutside(
+    source,
+    new Set<ConfigurationKey>([
+      "CAPSTONE_SECRET_SOURCE",
+      "CLIENT_ADDRESS_SOURCE",
+      "DEPLOYMENT_REVISION",
+      "DEPLOYMENT_TARGET",
+      "HOST",
+      "NODE_ENV",
+      "PORT",
+    ]),
+    "The egress bootstrap cannot receive runtime secrets or unrelated configuration",
+  );
+  rejectConfiguredKeys(
+    source,
+    ["CAPSTONE_SECRET_FILE"],
+    "The egress bootstrap cannot receive a secret file",
+  );
+  const deploymentTarget = readDeploymentTarget(source.DEPLOYMENT_TARGET, nodeEnv);
+  if (deploymentTarget === null) {
+    throw new ConfigurationError("DEPLOYMENT_TARGET", "DEPLOYMENT_TARGET is required");
+  }
+  const secretSource = readSecretSource(source.CAPSTONE_SECRET_SOURCE, nodeEnv);
+  const clientAddressSource = readClientAddressSource(source.CLIENT_ADDRESS_SOURCE, nodeEnv);
+  const host = readHost(source.HOST, nodeEnv);
+  const port = readPort(source.PORT, nodeEnv);
+  if (
+    secretSource === null ||
+    clientAddressSource !== "digitalocean-app-platform" ||
+    host !== "0.0.0.0" ||
+    port !== 3_000
+  ) {
+    throw new ConfigurationError(
+      "DEPLOYMENT_TARGET",
+      "The egress bootstrap requires the App Platform production authority",
+    );
+  }
+
+  return Object.freeze({
+    clientAddressSource,
+    deploymentRevision: readDeploymentRevision(source, nodeEnv),
+    deploymentTarget,
+    host,
+    nodeEnv,
+    port,
+    secretSource,
+  });
+}
+
+export function loadInitializationOperatorConfig(
+  source: NodeJS.ProcessEnv = process.env,
+): Readonly<InitializationOperatorConfig> {
+  const nodeEnv = requireProductionMode(source);
+  const platform = readProductionPlatformAuthority(source, nodeEnv);
+  rejectConfigurationOutside(
+    source,
+    new Set<ConfigurationKey>([
+      "CAPSTONE_BOOTSTRAP_DATABASE_URL",
+      "CAPSTONE_BOOTSTRAP_MIGRATION_DATABASE_URL",
+      "CAPSTONE_INITIALIZATION_DOCUMENT",
+      "CAPSTONE_INITIALIZATION_SCHEMA_VERSION",
+      "CAPSTONE_SECRET_SOURCE",
+      "DEPLOYMENT_REVISION",
+      "DEPLOYMENT_TARGET",
+      "MODEL_GATEWAY",
+      "NODE_ENV",
+      "OPENROUTER_API_KEY",
+    ]),
+    "The initialization job cannot receive steady application credentials or configuration",
+  );
+
+  const schemaVersion = source.CAPSTONE_INITIALIZATION_SCHEMA_VERSION?.trim();
+  if (schemaVersion !== "1") {
+    throw new ConfigurationError(
+      "CAPSTONE_INITIALIZATION_SCHEMA_VERSION",
+      "CAPSTONE_INITIALIZATION_SCHEMA_VERSION must be 1",
+    );
+  }
+  const initializationDocument = source.CAPSTONE_INITIALIZATION_DOCUMENT;
+  if (initializationDocument === undefined || initializationDocument.trim().length === 0) {
+    throw new ConfigurationError(
+      "CAPSTONE_INITIALIZATION_DOCUMENT",
+      "CAPSTONE_INITIALIZATION_DOCUMENT is required",
+    );
+  }
+  if (Buffer.byteLength(initializationDocument, "utf8") > initializationDocumentMaximumBytes) {
+    throw new ConfigurationError(
+      "CAPSTONE_INITIALIZATION_DOCUMENT",
+      "CAPSTONE_INITIALIZATION_DOCUMENT must be at most 32768 UTF-8 bytes",
+    );
+  }
+
+  const applicationDatabaseUrl = readDatabaseUrl(
+    readRequired(source, "CAPSTONE_BOOTSTRAP_DATABASE_URL", undefined),
+    nodeEnv,
+  );
+  const migrationDatabaseUrl = readDatabaseUrl(
+    readRequired(source, "CAPSTONE_BOOTSTRAP_MIGRATION_DATABASE_URL", undefined),
+    nodeEnv,
+  );
+  assertProductionDatabaseCredentialBoundary(migrationDatabaseUrl, applicationDatabaseUrl);
+
+  const modelGateway = readModelGateway(source.MODEL_GATEWAY, nodeEnv);
+  if (modelGateway !== "openrouter") {
+    throw new ConfigurationError("MODEL_GATEWAY", "MODEL_GATEWAY must be openrouter");
+  }
+  const openRouterApiKey = readOpenRouterApiKey(source.OPENROUTER_API_KEY, modelGateway);
+  if (
+    openRouterApiKey === null ||
+    platform.deploymentTarget === null ||
+    platform.secretSource === null
+  ) {
+    throw new ConfigurationError(
+      "DEPLOYMENT_TARGET",
+      "The initialization job requires the App Platform production authority",
+    );
+  }
+
+  return Object.freeze({
+    applicationDatabaseUrl,
+    deploymentRevision: readDeploymentRevision(source, nodeEnv),
+    deploymentTarget: platform.deploymentTarget,
+    initializationDocument,
+    initializationSchemaVersion: 1,
+    migrationDatabaseUrl,
+    modelGateway,
+    nodeEnv,
+    openRouterApiKey,
+    secretSource: platform.secretSource,
+  });
+}
+
+const managedInitializationConfigurationKeys = new Set<ConfigurationKey>([
+  "CAPSTONE_BOOTSTRAP_DATABASE_URL",
+  "CAPSTONE_BOOTSTRAP_MIGRATION_DATABASE_URL",
+  "CAPSTONE_DEPLOYMENT_PROFILE",
+  "CAPSTONE_INITIALIZATION_DOCUMENT",
+  "CAPSTONE_INITIALIZATION_SCHEMA_VERSION",
+  "CAPSTONE_SECRET_SOURCE",
+  "DEPLOYMENT_REVISION",
+  "DEPLOYMENT_TARGET",
+  "NODE_ENV",
+]);
+
+export function loadManagedRehearsalInitializationConfig(
+  source: NodeJS.ProcessEnv = process.env,
+): Readonly<ManagedRehearsalInitializationConfig> {
+  const nodeEnv = readRuntimeMode(source.NODE_ENV);
+  const deploymentProfile = readDeploymentProfile(source.CAPSTONE_DEPLOYMENT_PROFILE, nodeEnv);
+  if (deploymentProfile === null) {
+    throw new ConfigurationError(
+      "CAPSTONE_DEPLOYMENT_PROFILE",
+      "CAPSTONE_DEPLOYMENT_PROFILE=managed-rehearsal is required",
+    );
+  }
+  if (nodeEnv !== "test") {
+    throw new ConfigurationError("NODE_ENV", "NODE_ENV must be test for the managed rehearsal");
+  }
+  const platform = readProductionPlatformAuthority(source, nodeEnv, deploymentProfile);
+  rejectConfigurationOutside(
+    source,
+    managedInitializationConfigurationKeys,
+    "The managed rehearsal initialization job cannot receive steady service, provider, telemetry, or delivery configuration",
+  );
+
+  const schemaVersion = source.CAPSTONE_INITIALIZATION_SCHEMA_VERSION?.trim();
+  if (schemaVersion !== "1") {
+    throw new ConfigurationError(
+      "CAPSTONE_INITIALIZATION_SCHEMA_VERSION",
+      "CAPSTONE_INITIALIZATION_SCHEMA_VERSION must be 1",
+    );
+  }
+  const initializationDocument = source.CAPSTONE_INITIALIZATION_DOCUMENT;
+  if (initializationDocument === undefined || initializationDocument.trim().length === 0) {
+    throw new ConfigurationError(
+      "CAPSTONE_INITIALIZATION_DOCUMENT",
+      "CAPSTONE_INITIALIZATION_DOCUMENT is required",
+    );
+  }
+  if (Buffer.byteLength(initializationDocument, "utf8") > initializationDocumentMaximumBytes) {
+    throw new ConfigurationError(
+      "CAPSTONE_INITIALIZATION_DOCUMENT",
+      "CAPSTONE_INITIALIZATION_DOCUMENT must be at most 32768 UTF-8 bytes",
+    );
+  }
+
+  const applicationDatabaseUrl = readDatabaseUrl(
+    readRequired(source, "CAPSTONE_BOOTSTRAP_DATABASE_URL", undefined),
+    "production",
+  );
+  const migrationDatabaseUrl = readDatabaseUrl(
+    readRequired(source, "CAPSTONE_BOOTSTRAP_MIGRATION_DATABASE_URL", undefined),
+    "production",
+  );
+  assertProductionDatabaseCredentialBoundary(migrationDatabaseUrl, applicationDatabaseUrl);
+  if (platform.deploymentTarget === null || platform.secretSource === null) {
+    throw new ConfigurationError(
+      "DEPLOYMENT_TARGET",
+      "The managed rehearsal initialization job requires App Platform authority",
+    );
+  }
+
+  return Object.freeze({
+    applicationDatabaseUrl,
+    deploymentProfile,
+    deploymentRevision: readManagedRehearsalRevision(source),
+    deploymentTarget: platform.deploymentTarget,
+    initializationDocument,
+    initializationSchemaVersion: 1,
+    migrationDatabaseUrl,
+    nodeEnv,
+    secretSource: platform.secretSource,
+  });
+}
+
+const managedServiceConfigurationKeys = new Set<ConfigurationKey>([
+  "BETTER_AUTH_SECRET",
+  "CAPSTONE_DEPLOYMENT_PROFILE",
+  "CAPSTONE_LOAD_DIAGNOSTICS_SECRET",
+  "CAPSTONE_SECRET_SOURCE",
+  "CLIENT_ADDRESS_SOURCE",
+  "DATABASE_URL",
+  "DEPLOYMENT_REVISION",
+  "DEPLOYMENT_TARGET",
+  "EMAIL_DELIVERY",
+  "HOST",
+  "LOG_LEVEL",
+  "MODEL_GATEWAY",
+  "NODE_ENV",
+  "OTEL_EXPORTER_OTLP_ENDPOINT",
+  "OTEL_EXPORTER_OTLP_HEADERS",
+  "PORT",
+  "PUBLIC_ORIGIN",
+  "WEB_ASSETS",
+]);
+
 export function loadConfig(source: NodeJS.ProcessEnv = process.env): Readonly<ApiConfig> {
   const nodeEnv = readRuntimeMode(source.NODE_ENV);
-  requireProductionSecretFile(source, nodeEnv);
-  const { databaseUrl } = readDatabaseConfig(source, nodeEnv);
+  const deploymentProfile = readDeploymentProfile(source.CAPSTONE_DEPLOYMENT_PROFILE, nodeEnv);
+  const platform = readProductionPlatformAuthority(source, nodeEnv, deploymentProfile);
+  if (deploymentProfile !== null) {
+    rejectConfigurationOutside(
+      source,
+      managedServiceConfigurationKeys,
+      "The managed rehearsal service cannot receive initialization, provider, or delivery credentials",
+    );
+  } else if (nodeEnv === "production") {
+    rejectConfiguredKeys(
+      source,
+      [
+        "CAPSTONE_BOOTSTRAP_DATABASE_URL",
+        "CAPSTONE_BOOTSTRAP_MIGRATION_DATABASE_URL",
+        "CAPSTONE_INITIALIZATION_DOCUMENT",
+        "CAPSTONE_INITIALIZATION_SCHEMA_VERSION",
+        "CAPSTONE_LOAD_DIAGNOSTICS_SECRET",
+      ],
+      "The application service cannot receive initialization credentials",
+    );
+  }
+  const { databaseUrl } = readDatabaseConfig(source, nodeEnv, deploymentProfile);
   const allowDevelopmentDefaults = nodeEnv !== "production";
   const publicOrigin = readPublicOrigin(
     readRequired(
@@ -603,36 +1151,113 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): Readonly<Ap
   const emailDelivery = readEmailDelivery(source.EMAIL_DELIVERY, nodeEnv);
   const resend = readResendConfig(source, emailDelivery);
   const otlp = readOtlpConfig(source, nodeEnv);
+  const authSecret = readAuthSecret(source, nodeEnv);
+  const clientAddressSource = readClientAddressSource(source.CLIENT_ADDRESS_SOURCE, nodeEnv);
+  const host = readHost(source.HOST, nodeEnv);
+  const logLevel = readLogLevel(source.LOG_LEVEL, nodeEnv);
+  const port = readPort(source.PORT, nodeEnv);
+  const webAssetsDirectory = readWebAssetsDirectory(source.WEB_ASSETS, nodeEnv);
+  const loadDiagnosticsSecret = readLoadDiagnosticsSecret(
+    source.CAPSTONE_LOAD_DIAGNOSTICS_SECRET,
+    deploymentProfile !== null,
+  );
+  let deploymentRevision = readDeploymentRevision(source, nodeEnv);
+  let openRouterApiKey: string | null;
+
+  if (deploymentProfile !== null) {
+    if (source.BETTER_AUTH_SECRET === undefined) {
+      throw new ConfigurationError(
+        "BETTER_AUTH_SECRET",
+        "BETTER_AUTH_SECRET is required for the managed rehearsal",
+      );
+    }
+    if (publicOrigin !== managedRehearsalOrigin) {
+      throw new ConfigurationError(
+        "PUBLIC_ORIGIN",
+        `PUBLIC_ORIGIN must be ${managedRehearsalOrigin} for the managed rehearsal`,
+      );
+    }
+    if (source.WEB_ASSETS?.trim() !== productionWebAssetsMode || webAssetsDirectory === null) {
+      throw new ConfigurationError(
+        "WEB_ASSETS",
+        `WEB_ASSETS must be ${productionWebAssetsMode} for the managed rehearsal`,
+      );
+    }
+    if (clientAddressSource !== "digitalocean-app-platform") {
+      throw new ConfigurationError(
+        "CLIENT_ADDRESS_SOURCE",
+        "CLIENT_ADDRESS_SOURCE must be digitalocean-app-platform for the managed rehearsal",
+      );
+    }
+    if (host !== "0.0.0.0") {
+      throw new ConfigurationError("HOST", "HOST must be 0.0.0.0 for the managed rehearsal");
+    }
+    if (port !== 3_000) {
+      throw new ConfigurationError("PORT", "PORT must be 3000 for the managed rehearsal");
+    }
+    if (emailDelivery !== "disabled" || source.EMAIL_DELIVERY?.trim() !== "disabled") {
+      throw new ConfigurationError(
+        "EMAIL_DELIVERY",
+        "EMAIL_DELIVERY must be disabled for the managed rehearsal",
+      );
+    }
+    if (modelGateway !== "openrouter" || source.MODEL_GATEWAY?.trim() !== "openrouter") {
+      throw new ConfigurationError(
+        "MODEL_GATEWAY",
+        "MODEL_GATEWAY must be openrouter for managed rehearsal accounting semantics",
+      );
+    }
+    if (logLevel !== "info" || source.LOG_LEVEL?.trim() !== "info") {
+      throw new ConfigurationError("LOG_LEVEL", "LOG_LEVEL must be info for the managed rehearsal");
+    }
+    if (otlp.endpoint === null) {
+      throw new ConfigurationError(
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+        "OTEL_EXPORTER_OTLP_ENDPOINT is required for the managed rehearsal",
+      );
+    }
+    deploymentRevision = readManagedRehearsalRevision(source);
+    openRouterApiKey = null;
+  } else {
+    openRouterApiKey = readOpenRouterApiKey(source.OPENROUTER_API_KEY, modelGateway);
+  }
 
   return Object.freeze({
-    authSecret: readAuthSecret(source, nodeEnv),
-    clientAddressSource: readClientAddressSource(source.CLIENT_ADDRESS_SOURCE, nodeEnv),
+    authSecret,
+    clientAddressSource,
     databaseUrl,
-    deploymentRevision: readDeploymentRevision(source, nodeEnv),
+    deploymentProfile,
+    deploymentRevision,
+    deploymentTarget: platform.deploymentTarget,
     emailDelivery,
     emailFrom: resend.emailFrom,
-    host: readHost(source.HOST, nodeEnv),
-    logLevel: readLogLevel(source.LOG_LEVEL, nodeEnv),
+    host,
+    logLevel,
+    loadDiagnosticsSecret,
     modelGateway,
     nodeEnv,
-    openRouterApiKey: readOpenRouterApiKey(source.OPENROUTER_API_KEY, modelGateway),
+    openRouterApiKey,
     otlpEndpoint: otlp.endpoint,
     otlpHeaders: otlp.headers,
-    port: readPort(source.PORT),
+    port,
     publicOrigin,
     resendApiKey: resend.resendApiKey,
+    secretSource: platform.secretSource,
     trustProxy: false,
-    webAssetsDirectory: readWebAssetsDirectory(source.WEB_ASSETS, nodeEnv),
+    webAssetsDirectory,
   });
 }
 
 export function publicConfigMetadata(config: ApiConfig): Readonly<Record<string, unknown>> {
   return Object.freeze({
     clientAddressSource: config.clientAddressSource,
+    deploymentProfile: config.deploymentProfile,
+    deploymentTarget: config.deploymentTarget,
     emailDelivery: config.emailDelivery,
     deploymentRevision: config.deploymentRevision,
     host: config.host,
     logLevel: config.logLevel,
+    loadDiagnostics: config.loadDiagnosticsSecret !== null,
     modelGateway: config.modelGateway,
     nodeEnv: config.nodeEnv,
     port: config.port,

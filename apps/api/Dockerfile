@@ -32,10 +32,7 @@ FROM node:24.13.0-alpine AS runtime
 ARG DEPLOYMENT_REVISION
 LABEL org.opencontainers.image.revision="$DEPLOYMENT_REVISION"
 LABEL org.opencontainers.image.source="https://github.com/jmjalil96/capstone-chat"
-ENV CLIENT_ADDRESS_SOURCE=caddy
-ENV HOST=127.0.0.1
-ENV NODE_ENV=production
-ENV PORT=3000
+ENV DEPLOYMENT_REVISION=$DEPLOYMENT_REVISION
 WORKDIR /app
 
 COPY --from=production-dependencies --chown=node:node /workspace/node_modules ./node_modules

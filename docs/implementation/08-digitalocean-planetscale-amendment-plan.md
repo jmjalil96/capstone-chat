@@ -4,6 +4,12 @@ Status: approved; repository implementation completed in the authorized working 
 the NYC3 disposable managed rehearsal was authorized on 2026-08-11; candidate acceptance and
 production actions remain unauthorized
 
+Superseded production recommendation: the user-approved
+[DigitalOcean App Platform and PlanetScale amendment](./08-digitalocean-app-platform-planetscale-amendment-plan.md)
+replaces this raw-Droplet operator path. The implementation, measurements, and NYC3 troubleshooting
+below remain historical evidence; they are not App Platform acceptance evidence. Do not provision,
+deploy, or recover production from the removed host artifacts.
+
 External authorization: only the disposable NYC3 managed rehearsal is authorized, with at most USD
 5 of actual provider usage excluding temporary card holds and taxes. Production DNS, credentials,
 data, deployment, paid inference, and production/recovery-resource mutation remain unauthorized.

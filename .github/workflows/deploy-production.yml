@@ -1,0 +1,121 @@
+name: Deploy production
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Forward deploy or forward rollback through the current App spec
+        required: true
+        type: choice
+        options:
+          - deploy
+          - rollback
+          - reconcile
+      image_revision:
+        description: Exact 40-character revision whose full-SHA GHCR tag will be resolved
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+  deployments: write
+  packages: read
+
+concurrency:
+  group: capstone-chat-production-app-spec
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Exact-image App Platform release
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    environment: production
+    env:
+      CAPSTONE_IMAGE_REVISION: ${{ inputs.image_revision }}
+      CAPSTONE_TOOL_REVISION: ${{ github.sha }}
+      DIGITALOCEAN_APP_ID: ${{ vars.DIGITALOCEAN_APP_ID }}
+      IMAGE_REPOSITORY: ghcr.io/${{ github.repository }}
+    steps:
+      - name: Check out protected main
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: 11.20.0
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24.13.0
+          cache: pnpm
+
+      - name: Install locked deployment dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Validate operator input
+        run: |
+          test "$(git rev-parse HEAD)" = "$CAPSTONE_TOOL_REVISION"
+          test "${#CAPSTONE_IMAGE_REVISION}" -eq 40
+          case "$CAPSTONE_IMAGE_REVISION" in
+            *[!0-9a-f]*) exit 1 ;;
+          esac
+          test -n "$DIGITALOCEAN_APP_ID"
+
+      - name: Authenticate to the private image registry
+        run: printf '%s' "$GITHUB_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Resolve and inspect the exact immutable image
+        id: image
+        run: |
+          manifest="$(docker buildx imagetools inspect \
+            "$IMAGE_REPOSITORY:$CAPSTONE_IMAGE_REVISION" \
+            --format '{{json .Manifest}}')"
+          digest="$(printf '%s' "$manifest" | jq -er '.digest | select(test("^sha256:[0-9a-f]{64}$"))')"
+          image="$IMAGE_REPOSITORY@$digest"
+          docker pull "$image"
+          test "$(docker image inspect "$image" --format '{{.Config.User}}')" = "node"
+          test "$(docker image inspect "$image" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = "$CAPSTONE_IMAGE_REVISION"
+          test "$(docker image inspect "$image" --format '{{index .Config.Labels "org.opencontainers.image.source"}}')" = "https://github.com/$GITHUB_REPOSITORY"
+          docker run --rm --env EXPECTED_REVISION="$CAPSTONE_IMAGE_REVISION" --entrypoint sh "$image" -ec '
+            test "$(id -u)" -ne 0
+            test -f /app/apps/api/dist/entrypoint.js
+            test -f /app/apps/api/dist/server.js
+            test -d /app/apps/api/migrations
+            test -f /app/apps/api/migrations/0007_sloppy_northstar.sql
+            test -f /app/apps/web/dist/index.html
+            test -z "$(find /app/apps/api/dist /app/apps/web/dist /app/packages/protocol/dist -type f -name \*.map -print -quit)"
+            test ! -d /app/apps/api/tests
+            test ! -d /app/apps/web/e2e
+            test -z "$(find /app/apps/api /app/apps/web -maxdepth 2 -type f -name .env\* -print -quit)"
+            test "$DEPLOYMENT_REVISION" = "$EXPECTED_REVISION"
+            test -z "${CAPSTONE_SECRET_SOURCE:-}"
+            test -z "${CLIENT_ADDRESS_SOURCE:-}"
+            test -z "${DEPLOYMENT_TARGET:-}"
+            test -z "${HOST:-}"
+            grep -R -F -l "$EXPECTED_REVISION" /app/apps/web/dist/assets >/dev/null
+          '
+          printf 'digest=%s\n' "$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Mutate the pinned App through the guarded release path
+        run: |
+          if test "$CAPSTONE_OPERATION" = deploy; then
+            node deploy/app-platform/deploy.mjs deploy
+          elif test "$CAPSTONE_OPERATION" = rollback; then
+            node deploy/app-platform/rollback.mjs
+          else
+            node deploy/app-platform/deploy.mjs reconcile
+          fi
+        env:
+          CAPSTONE_IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+          CAPSTONE_OPERATION: ${{ inputs.operation }}
+          DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_DEPLOY_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}

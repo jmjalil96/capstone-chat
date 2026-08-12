@@ -65,7 +65,7 @@ describe.sequential("restored PostgreSQL branch preparation", () => {
         dataReadWriteVerified: true,
         ddlDenied: true,
       },
-      migrationCount: 7,
+      migrationCount: 8,
       migrationRole: {
         clusterAdministrationDenied: true,
         schemaWorkVerified: true,
@@ -74,7 +74,7 @@ describe.sequential("restored PostgreSQL branch preparation", () => {
       sessionGuardsVerified: true,
       tlsVerified: false,
     });
-    expect(evidence.objects).toMatchObject({ functions: 1, tables: 20 });
+    expect(evidence.objects).toMatchObject({ functions: 1, tables: 21 });
     expect(evidence.objects.constraints).toBeGreaterThan(20);
     expect(evidence.objects.indexes).toBeGreaterThan(20);
   });

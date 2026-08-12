@@ -3,8 +3,8 @@
 Status: repository implementation complete on 2026-08-08; production acceptance pending
 
 Current production baseline: the user-approved
-[DigitalOcean and PlanetScale amendment](./08-digitalocean-planetscale-amendment-plan.md) supersedes
-this plan's active Render topology and the later
+[DigitalOcean App Platform and PlanetScale amendment](./08-digitalocean-app-platform-planetscale-amendment-plan.md)
+supersedes this plan's active Render topology, the Droplet amendment, and the later
 [minimal Render amendment](./08-production-baseline-amendment-plan.md). All original Render sizes,
 private-network assumptions, Blueprint instructions, and local 4 CPU / 8 GB evidence below remain
 historical evidence only. They are not DigitalOcean, PlanetScale, or managed-candidate acceptance
@@ -12,7 +12,7 @@ evidence and are not an active operator path.
 
 Operator notice: do not execute any Render provisioning, Blueprint, deploy, DNS, log-stream, or
 recovery instruction in this historical record. Use the current operations index and the active
-DigitalOcean/PlanetScale amendment.
+DigitalOcean App Platform/PlanetScale amendment.
 
 Historical code authorization: granted for the 2026-08-08 repository changes. No Render external
 action was granted. The active external authorization boundary is now defined by the

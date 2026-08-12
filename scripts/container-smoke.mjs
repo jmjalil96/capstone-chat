@@ -49,7 +49,6 @@ assert(
 
 const containerName = `capstone-chat-smoke-${process.pid}`;
 const entrypointContainerName = `capstone-chat-entrypoint-smoke-${process.pid}`;
-const secretVolumeName = `capstone-chat-smoke-secrets-${process.pid}`;
 const baseUrl = `http://127.0.0.1:${port}`;
 const containerDatabaseUrl = databaseUrlForContainer(databaseUrl);
 const bootstrap = `
@@ -77,12 +76,8 @@ function runTestOperator(arguments_, environment = []) {
     "--rm",
     "--add-host",
     "host.docker.internal:host-gateway",
-    "--group-add",
-    "1000",
-    "--volume",
-    `${secretVolumeName}:/secrets:ro`,
     "--env",
-    "CAPSTONE_SECRET_FILE=/secrets/migration.json",
+    `DATABASE_URL=${containerDatabaseUrl}`,
     "--env",
     "NODE_ENV=test",
     ...environment.flatMap((value) => ["--env", value]),
@@ -97,18 +92,17 @@ function runTestOperator(arguments_, environment = []) {
 function cleanup() {
   spawnSync("docker", ["rm", "--force", containerName], { encoding: "utf8" });
   spawnSync("docker", ["rm", "--force", entrypointContainerName], { encoding: "utf8" });
-  spawnSync("docker", ["volume", "rm", "--force", secretVolumeName], { encoding: "utf8" });
 }
 
-async function waitForDefaultEntrypoint() {
+async function waitForInternalHealth(path, expectedStatus) {
   const deadline = Date.now() + 30_000;
   const probe = `
-    const response = await fetch("http://127.0.0.1:3000/api/health/ready");
+    const response = await fetch("http://127.0.0.1:3000${path}");
     const body = await response.json();
     if (
       response.status !== 200 ||
       response.headers.get("x-capstone-revision") !== ${JSON.stringify(revision)} ||
-      body.status !== "ready"
+      body.status !== ${JSON.stringify(expectedStatus)}
     ) {
       process.exit(1);
     }
@@ -124,7 +118,7 @@ async function waitForDefaultEntrypoint() {
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
-  throw new Error("The image default entrypoint did not serve liveness within 30 seconds");
+  throw new Error(`The image entrypoint did not serve ${path} within 30 seconds`);
 }
 
 async function response(path) {
@@ -162,67 +156,31 @@ function assertSecurityHeaders(response_) {
 
 let containerStarted = false;
 try {
-  docker(["volume", "create", secretVolumeName]);
-  docker(
-    [
-      "run",
-      "--rm",
-      "--interactive",
-      "--user",
-      "0:0",
-      "--volume",
-      `${secretVolumeName}:/secrets`,
-      "--entrypoint",
-      "sh",
-      image,
-      "-ec",
-      "umask 027; cat > /secrets/runtime.json; chown 0:1000 /secrets/runtime.json; chmod 0440 /secrets/runtime.json",
-    ],
-    {
-      input: JSON.stringify({
-        BETTER_AUTH_SECRET: "container-secret-loader-auth-value",
-        DATABASE_URL:
-          "postgresql://app:container-password@database.example:5432/capstone?sslmode=verify-full",
-        OPENROUTER_API_KEY: "container-secret-loader-model-value",
-        OTEL_EXPORTER_OTLP_HEADERS: "api-key=container-secret-loader-telemetry-value",
-        RESEND_API_KEY: "container-secret-loader-email-value",
-      }),
-    },
-  );
-  docker(
-    [
-      "run",
-      "--rm",
-      "--interactive",
-      "--user",
-      "0:0",
-      "--volume",
-      `${secretVolumeName}:/secrets`,
-      "--entrypoint",
-      "sh",
-      image,
-      "-ec",
-      "umask 027; cat > /secrets/migration.json; chown 0:1000 /secrets/migration.json; chmod 0440 /secrets/migration.json",
-    ],
-    { input: JSON.stringify({ DATABASE_URL: containerDatabaseUrl }) },
-  );
   docker([
     "run",
     "--rm",
-    "--group-add",
-    "1000",
-    "--volume",
-    `${secretVolumeName}:/secrets:ro`,
     "--env",
-    "CAPSTONE_SECRET_FILE=/secrets/runtime.json",
+    "BETTER_AUTH_SECRET=container-platform-auth-secret-longer-than-thirty-two-characters",
+    "--env",
+    "DATABASE_URL=postgresql://app:container-password@database.example:5432/capstone?sslmode=verify-full",
+    "--env",
+    "OPENROUTER_API_KEY=container-platform-model-value",
+    "--env",
+    "OTEL_EXPORTER_OTLP_HEADERS=api-key=container-platform-telemetry-value",
+    "--env",
+    "RESEND_API_KEY=container-platform-email-value",
     "--env",
     "NODE_ENV=production",
     "--env",
-    "HOST=127.0.0.1",
+    "HOST=0.0.0.0",
     "--env",
     "PUBLIC_ORIGIN=https://chat.capstone.com.ec",
     "--env",
-    "CLIENT_ADDRESS_SOURCE=caddy",
+    "CLIENT_ADDRESS_SOURCE=digitalocean-app-platform",
+    "--env",
+    "DEPLOYMENT_TARGET=digitalocean-app-platform",
+    "--env",
+    "CAPSTONE_SECRET_SOURCE=platform-environment",
     "--env",
     "EMAIL_DELIVERY=resend",
     "--env",
@@ -232,20 +190,21 @@ try {
     "--env",
     "OTEL_EXPORTER_OTLP_ENDPOINT=https://otlp.nr-data.net",
     "--env",
-    `DEPLOYMENT_REVISION=${revision}`,
+    `EXPECTED_REVISION=${revision}`,
     "--entrypoint",
     "node",
     image,
     "--input-type=module",
     "--eval",
     `
-      const { loadEnvironmentFile } = await import("./apps/api/dist/environment.js");
-      loadEnvironmentFile();
       const { loadConfig } = await import("./apps/api/dist/config.js");
       const config = loadConfig();
       if (
         config.nodeEnv !== "production" ||
-        config.clientAddressSource !== "caddy" ||
+        config.clientAddressSource !== "digitalocean-app-platform" ||
+        config.deploymentTarget !== "digitalocean-app-platform" ||
+        config.secretSource !== "platform-environment" ||
+        config.deploymentRevision !== process.env.EXPECTED_REVISION ||
         config.databaseUrl.length === 0 ||
         config.openRouterApiKey === null ||
         config.resendApiKey === null ||
@@ -261,47 +220,41 @@ try {
     "--init",
     "--name",
     entrypointContainerName,
-    "--add-host",
-    "host.docker.internal:host-gateway",
-    "--group-add",
-    "1000",
-    "--volume",
-    `${secretVolumeName}:/secrets:ro`,
     "--env",
-    "CAPSTONE_SECRET_FILE=/secrets/migration.json",
+    "CAPSTONE_SECRET_SOURCE=platform-environment",
     "--env",
-    "NODE_ENV=test",
+    "CLIENT_ADDRESS_SOURCE=digitalocean-app-platform",
     "--env",
-    "HOST=127.0.0.1",
+    "DEPLOYMENT_TARGET=digitalocean-app-platform",
+    "--env",
+    "HOST=0.0.0.0",
+    "--env",
+    "NODE_ENV=production",
     "--env",
     "PORT=3000",
-    "--env",
-    "PUBLIC_ORIGIN=http://localhost:3000",
-    "--env",
-    "CLIENT_ADDRESS_SOURCE=socket",
-    "--env",
-    "EMAIL_DELIVERY=fake",
-    "--env",
-    "MODEL_GATEWAY=fake",
-    "--env",
-    "LOG_LEVEL=silent",
-    "--env",
-    `DEPLOYMENT_REVISION=${revision}`,
+    "--entrypoint",
+    "node",
     image,
+    "apps/api/dist/entrypoint.js",
+    "egress-bootstrap",
   ]);
-  await waitForDefaultEntrypoint();
+  await waitForInternalHealth("/api/health/ready", "ready");
+  docker([
+    "exec",
+    entrypointContainerName,
+    "node",
+    "--input-type=module",
+    "--eval",
+    `const response = await fetch("http://127.0.0.1:3000/api/session"); if (response.status !== 404) process.exit(1);`,
+  ]);
   docker(["rm", "--force", entrypointContainerName]);
   docker([
     "run",
     "--rm",
     "--add-host",
     "host.docker.internal:host-gateway",
-    "--group-add",
-    "1000",
-    "--volume",
-    `${secretVolumeName}:/secrets:ro`,
     "--env",
-    "CAPSTONE_SECRET_FILE=/secrets/migration.json",
+    `DATABASE_URL=${containerDatabaseUrl}`,
     "--env",
     "NODE_ENV=test",
     "--entrypoint",
@@ -345,6 +298,41 @@ try {
     "--reservation-margin-bps",
     "2000",
   ]);
+
+  docker([
+    "run",
+    "--detach",
+    "--init",
+    "--name",
+    entrypointContainerName,
+    "--add-host",
+    "host.docker.internal:host-gateway",
+    "--env",
+    `DATABASE_URL=${containerDatabaseUrl}`,
+    "--env",
+    "NODE_ENV=test",
+    "--env",
+    "HOST=127.0.0.1",
+    "--env",
+    "PORT=3000",
+    "--env",
+    "PUBLIC_ORIGIN=http://localhost:3000",
+    "--env",
+    "CLIENT_ADDRESS_SOURCE=socket",
+    "--env",
+    "EMAIL_DELIVERY=fake",
+    "--env",
+    "MODEL_GATEWAY=fake",
+    "--env",
+    "LOG_LEVEL=silent",
+    "--env",
+    `DEPLOYMENT_REVISION=${revision}`,
+    image,
+  ]);
+  // Migration plus exact identity/policy bootstrap completed above, so the image's unmodified
+  // default command must now pass the same application-authority readiness gate as deployment.
+  await waitForInternalHealth("/api/health/ready", "ready");
+  docker(["rm", "--force", entrypointContainerName]);
 
   docker(
     [

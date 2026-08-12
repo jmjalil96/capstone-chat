@@ -500,6 +500,7 @@ export class OpenRouterGateway implements ModelGateway, GenerationAccountingGate
           "content-type": "application/json",
         },
         method: "POST",
+        redirect: "error",
         signal: upstreamSignal,
       });
       const responseHeadersElapsedMilliseconds = transportClock.elapsedMilliseconds();
@@ -880,6 +881,7 @@ export class OpenRouterGateway implements ModelGateway, GenerationAccountingGate
           authorization: `Bearer ${this.#apiKey}`,
         },
         method: "GET",
+        redirect: "error",
         signal: AbortSignal.any([signal, timeoutController.signal]),
       });
       if (!response.ok) {

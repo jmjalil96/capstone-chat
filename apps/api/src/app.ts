@@ -46,6 +46,10 @@ import {
 import { createModelPolicyService, type ModelPolicyService } from "./model-policy/service.js";
 import { createUsageService, type UsageService } from "./model-policy/usage-service.js";
 import { createClientErrorRateLimiter } from "./observability/client-error-rate-limit.js";
+import {
+  createNewRelicLogMirror,
+  type NewRelicLogMirror,
+} from "./observability/new-relic-log-mirror.js";
 import { createApplicationTelemetry } from "./observability/telemetry.js";
 import type { ApplicationTelemetry } from "./observability/telemetry-contract.js";
 import { OpenRouterCatalogClient } from "./openrouter/catalog-client.js";
@@ -88,6 +92,7 @@ export interface ApplicationDependencies {
   readonly generations?: GenerationService;
   readonly identity?: IdentityService;
   readonly loggerStream?: { write(message: string): void };
+  readonly logMirror?: NewRelicLogMirror | null;
   readonly maintenance?: CostControlMaintenance;
   readonly modelGateway?: ModelGateway;
   readonly modelPolicy?: ModelPolicyService;
@@ -103,14 +108,41 @@ export interface ApplicationDependencies {
 export function createApplication(config: ApiConfig, dependencies: ApplicationDependencies = {}) {
   const isKnownApplicationAsset = createKnownApplicationAssetValidator(config.webAssetsDirectory);
   const requestIdFactory = dependencies.requestIdFactory ?? randomUUID;
+  if (config.deploymentProfile === "managed-rehearsal" && dependencies.modelGateway === undefined) {
+    throw new Error("The managed rehearsal requires its injected deterministic model gateway");
+  }
   const modelGateway =
     dependencies.modelGateway ??
     (config.modelGateway === "openrouter"
       ? new OpenRouterGateway({ apiKey: config.openRouterApiKey ?? "" })
       : new FakeModelGateway());
-  if (config.nodeEnv === "production" && modelGateway instanceof FakeModelGateway) {
-    throw new Error("FakeModelGateway is prohibited in production");
+  if (
+    (config.nodeEnv === "production" || config.deploymentProfile === "managed-rehearsal") &&
+    modelGateway instanceof FakeModelGateway
+  ) {
+    throw new Error("FakeModelGateway is prohibited in production and the managed rehearsal");
   }
+  let applicationTelemetry: ApplicationTelemetry | undefined;
+  const logMirror =
+    dependencies.logMirror === undefined
+      ? (config.nodeEnv === "production" || config.deploymentProfile === "managed-rehearsal") &&
+        dependencies.loggerStream === undefined
+        ? createNewRelicLogMirror({
+            apiKey: config.otlpHeaders["api-key"] ?? "",
+            environment: config.deploymentProfile ?? "production",
+            onDrop(reason, count) {
+              try {
+                applicationTelemetry?.recordLogMirrorDrop(reason, count);
+              } catch {
+                // A telemetry metric cannot disable or recurse through the log destination.
+              }
+            },
+            otlpEndpoint: config.otlpEndpoint ?? "",
+            release: config.deploymentRevision,
+          })
+        : null
+      : dependencies.logMirror;
+  const loggerStream = dependencies.loggerStream ?? logMirror ?? undefined;
   const server = Fastify({
     bodyLimit: 64 * 1024,
     genReqId: () => requestIdFactory(),
@@ -120,7 +152,7 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
         censor: "[Redacted]",
         paths: ["req.headers.authorization", "req.headers.cookie"],
       },
-      ...(dependencies.loggerStream === undefined ? {} : { stream: dependencies.loggerStream }),
+      ...(loggerStream === undefined ? {} : { stream: loggerStream }),
     },
     logController: new LogController({
       disableRequestLogging: true,
@@ -133,13 +165,14 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
     dependencies.telemetry ??
     createApplicationTelemetry({
       endpoint: config.otlpEndpoint,
-      environment: config.nodeEnv,
+      environment: config.deploymentProfile ?? config.nodeEnv,
       headers: config.otlpHeaders,
       onExporterFailure(metadata) {
         server.log.warn(metadata, "telemetry exporter operation failed");
       },
       release: config.deploymentRevision,
     });
+  applicationTelemetry = telemetry;
   function observeTelemetry(
     operation: "email-delivery" | "http-request",
     observation: () => void,
@@ -190,7 +223,7 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
   const modelPolicy =
     dependencies.modelPolicy ?? createModelPolicyService(database, { cursorCodec });
   const readinessPolicyMode =
-    config.nodeEnv === "production"
+    config.nodeEnv === "production" || config.deploymentProfile === "managed-rehearsal"
       ? "openrouter"
       : config.nodeEnv === "test" && config.webAssetsDirectory !== null
         ? "simulated"
@@ -246,7 +279,7 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
       telemetry,
     });
   const catalogClient =
-    config.modelGateway === "openrouter"
+    config.modelGateway === "openrouter" && config.deploymentProfile === null
       ? new OpenRouterCatalogClient({ apiKey: config.openRouterApiKey ?? "" })
       : undefined;
   const catalogRefreshOwnerId = randomUUID();
@@ -300,7 +333,7 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
 
   server.addHook("onRequest", (request, reply, done) => {
     captureTrustedClientAddress(request, config.clientAddressSource);
-    applySecurityHeaders(reply, config.nodeEnv);
+    applySecurityHeaders(reply, config.nodeEnv, config.deploymentProfile);
     if (!ordinaryRequestDrain.track(request, reply)) {
       done(new ApplicationError(503, "INTERNAL_ERROR", "El servicio se está reiniciando."));
       return;
@@ -501,6 +534,18 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
         shutdownErrors.push(new Error("Database pool shutdown exceeded its deadline"));
       }
 
+      const logMirrorShutdownPromise = captureShutdownOperation(
+        () => logMirror?.shutdown() ?? Promise.resolve(),
+      );
+      const logMirrorStopped = await settleWithin(
+        logMirrorShutdownPromise,
+        applicationShutdownBudget.logMirrorShutdownMaximumMilliseconds,
+      );
+      if (!logMirrorStopped) {
+        shutdownErrors.push(new Error("Log mirror shutdown exceeded its deadline"));
+      }
+
+      // Closing the mirror first lets its final drop counters reach the still-open meter.
       const telemetryShutdownPromise = captureShutdownOperation(() => telemetry.shutdown());
       const telemetryStopped = await settleWithin(
         telemetryShutdownPromise,
@@ -534,6 +579,7 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
     generations,
     identity,
     lifecycle,
+    logMirror,
     maintenance,
     modelGateway,
     modelPolicy,

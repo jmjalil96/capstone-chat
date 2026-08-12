@@ -22,6 +22,17 @@ async function main(): Promise<void> {
       "The load rehearsal server requires test mode, isolated inference, and a non-production origin",
     );
   }
+  const diagnosticsSecret =
+    config.deploymentProfile === "managed-rehearsal"
+      ? config.loadDiagnosticsSecret
+      : config.authSecret;
+  if (
+    diagnosticsSecret === null ||
+    diagnosticsSecret === undefined ||
+    diagnosticsSecret.length < 32
+  ) {
+    throw new Error("The load rehearsal server requires a bounded diagnostics secret");
+  }
 
   const application = await startServer(
     config,
@@ -35,6 +46,7 @@ async function main(): Promise<void> {
         configuredApplication.server,
         configuredApplication.pool,
         configuredApplication.streamRegistry,
+        diagnosticsSecret,
       );
     },
   );

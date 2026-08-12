@@ -1,0 +1,81 @@
+name: Configure production
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Reviewed steady-state App configuration operation
+        required: true
+        type: choice
+        options:
+          - maintenance-enable
+          - maintenance-disable
+          - domain-detach
+          - domain-attach
+      base_deployment_id:
+        description: Active deployment ID reviewed immediately before this operation
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  deployments: read
+
+concurrency:
+  group: capstone-chat-production-app-spec
+  cancel-in-progress: false
+
+jobs:
+  configure:
+    name: Guarded App Platform configuration
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    environment: production
+    env:
+      CAPSTONE_CONFIGURATION_OPERATION: ${{ inputs.operation }}
+      CAPSTONE_CONFIGURATION_BASE_DEPLOYMENT_ID: ${{ inputs.base_deployment_id }}
+      CAPSTONE_TOOL_REVISION: ${{ github.sha }}
+      DIGITALOCEAN_APP_ID: ${{ vars.DIGITALOCEAN_APP_ID }}
+    steps:
+      - name: Check out protected main
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: 11.20.0
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24.13.0
+          cache: pnpm
+
+      - name: Install locked configuration dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Validate pinned configuration authority
+        run: |
+          test "$(git rev-parse HEAD)" = "$CAPSTONE_TOOL_REVISION"
+          test -n "$DIGITALOCEAN_APP_ID"
+          case "$CAPSTONE_CONFIGURATION_BASE_DEPLOYMENT_ID" in
+            ????????*) ;;
+            *) exit 1 ;;
+          esac
+          case "$CAPSTONE_CONFIGURATION_BASE_DEPLOYMENT_ID" in
+            *[!A-Za-z0-9-]*) exit 1 ;;
+          esac
+          case "$CAPSTONE_CONFIGURATION_OPERATION" in
+            maintenance-enable|maintenance-disable|domain-detach|domain-attach) ;;
+            *) exit 1 ;;
+          esac
+
+      - name: Apply maintenance or domain transition
+        run: node deploy/app-platform/configure.mjs "$CAPSTONE_CONFIGURATION_OPERATION"
+        env:
+          DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_DEPLOY_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}

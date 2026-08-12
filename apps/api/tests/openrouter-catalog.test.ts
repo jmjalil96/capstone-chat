@@ -374,10 +374,10 @@ describe("OpenRouter catalog validation", () => {
   });
 
   it("fetches only the authenticated ZDR and exact-model metadata endpoints", async () => {
-    const calls: { headers: Headers; url: string }[] = [];
+    const calls: { headers: Headers; redirect: RequestInit["redirect"]; url: string }[] = [];
     const transport: OpenRouterFetch = async (input, init) => {
       const url = String(input);
-      calls.push({ headers: new Headers(init?.headers), url });
+      calls.push({ headers: new Headers(init?.headers), redirect: init?.redirect, url });
       return new Response(
         JSON.stringify(url.endsWith("/endpoints/zdr") ? { data: [endpoint()] } : modelPayload()),
         { headers: { "content-type": "application/json" }, status: 200 },
@@ -399,6 +399,7 @@ describe("OpenRouter catalog validation", () => {
     expect(
       calls.every((call) => call.headers.get("authorization") === "Bearer test-key-never-sent"),
     ).toBe(true);
+    expect(calls.every((call) => call.redirect === "error")).toBe(true);
   });
 
   it("loads one ZDR batch and omits missing or confirmed-ineligible approved models", async () => {

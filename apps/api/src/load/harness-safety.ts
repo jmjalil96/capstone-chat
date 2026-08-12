@@ -1,5 +1,6 @@
 const finalProductionOrigin = "https://chat.capstone.com.ec";
 const finalProductionHostname = new URL(finalProductionOrigin).hostname;
+const managedRehearsalOrigin = "https://rehearsal.chat.capstone.com.ec";
 const requiredFlags = new Set(["--confirm-isolated-database", "--confirm-non-production"]);
 
 type StreamLifecycleType =
@@ -19,6 +20,7 @@ function normalizedHostname(hostname: string): string {
 
 export interface LoadOptions {
   readonly employees: number;
+  readonly managedRehearsal: boolean;
   readonly responseStartedP95ObjectiveMilliseconds: 500 | 750;
   readonly target: URL;
   readonly waves: number;
@@ -51,7 +53,7 @@ export function parseLoadOptions(argumentsList: readonly string[]): LoadOptions 
     if (argument === undefined || !argument.startsWith("--")) {
       throw new Error("Load arguments must use named --flags");
     }
-    if (requiredFlags.has(argument)) {
+    if (requiredFlags.has(argument) || argument === "--managed-rehearsal") {
       parsed.set(argument, true);
       continue;
     }
@@ -81,6 +83,7 @@ export function parseLoadOptions(argumentsList: readonly string[]): LoadOptions 
     throw new Error("The load harness requires --target");
   }
   const target = new URL(rawTarget);
+  const managedRehearsal = parsed.get("--managed-rehearsal") === true;
   if (
     (target.protocol !== "http:" && target.protocol !== "https:") ||
     target.username !== "" ||
@@ -92,6 +95,14 @@ export function parseLoadOptions(argumentsList: readonly string[]): LoadOptions 
   ) {
     throw new Error(
       "The load target must be a non-production HTTP origin without credentials or a path",
+    );
+  }
+  if (
+    (managedRehearsal && target.origin !== managedRehearsalOrigin) ||
+    (!managedRehearsal && target.origin === managedRehearsalOrigin)
+  ) {
+    throw new Error(
+      `The managed rehearsal requires --managed-rehearsal and the exact ${managedRehearsalOrigin} origin`,
     );
   }
   const rawWaves = parsed.get("--waves") ?? "3";
@@ -113,10 +124,24 @@ export function parseLoadOptions(argumentsList: readonly string[]): LoadOptions 
     rawResponseStartedP95Objective === "500" ? 500 : 750;
   return {
     employees: Number(rawEmployees),
+    managedRehearsal,
     responseStartedP95ObjectiveMilliseconds,
     target,
     waves: Number(rawWaves),
   };
+}
+
+export function diagnosticsAuthorization(
+  options: Pick<LoadOptions, "managedRehearsal" | "target">,
+  secret: string,
+): Readonly<Record<string, string>> {
+  if (options.managedRehearsal) {
+    if (options.target.origin !== managedRehearsalOrigin || secret.length < 32) {
+      throw new Error("Managed diagnostics authorization is not safe to send");
+    }
+    return Object.freeze({ authorization: `Bearer ${secret}` });
+  }
+  return Object.freeze({ authorization: `Bearer ${secret}` });
 }
 
 export class BoundedNdjsonDecoder {

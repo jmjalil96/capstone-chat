@@ -3,44 +3,52 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseDocument } from "yaml";
+import { readContract } from "../deploy/app-platform/contract.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const operationsDirectory = path.join(repositoryRoot, "docs/operations");
-const deploymentDirectory = path.join(repositoryRoot, "deploy/digitalocean");
-const expectedDeploymentFiles = [
-  "Caddyfile",
+const deploymentDirectory = path.join(repositoryRoot, "deploy/app-platform");
+const legacyDeploymentDirectory = path.join(repositoryRoot, "deploy/digitalocean");
+const requiredDeploymentFiles = [
   "README.md",
-  "capstone-boot.service",
-  "capstone-caddy.service",
-  "capstone-chat@.service",
-  "capstone-deploy.service",
-  "capstone-fluent-bit.service",
-  "capstone-operator.service",
-  "ci-evidence.example.json",
-  "cleanup-migrations.sh",
-  "cloud-init.yaml",
-  "deploy-state-machine.test.sh",
-  "deploy.sh",
-  "fluent-bit-parsers.conf",
-  "fluent-bit-privacy.test.mjs",
-  "fluent-bit-secret.test.sh",
-  "fluent-bit.conf",
+  "app.contract.yaml",
+  "bootstrap.contract.yaml",
+  "configuration.mjs",
+  "configuration.test.mjs",
+  "configure.mjs",
+  "consumable-input.mjs",
+  "consumable-input.test.mjs",
+  "console.mjs",
+  "contract.mjs",
+  "contract.test.mjs",
+  "deploy.mjs",
+  "domain.contract.yaml",
+  "egress.contract.yaml",
   "ghcr-retention.py",
   "ghcr-retention.test.py",
-  "host.env",
-  "maintenance.caddy",
-  "migration-cleanup.test.sh",
-  "operator-entrypoint.mjs",
-  "operator-secret.test.sh",
-  "operator.sh",
-  "request-deploy.sh",
-  "request-lifecycle.sh",
-  "request-lifecycle.test.sh",
-  "request-operator.sh",
-  "start-fluent-bit.sh",
-  "verify-artifacts.sh",
-  "verify-host-negative.test.sh",
-  "verify-host.sh",
+  "github-api.mjs",
+  "github-api.test.mjs",
+  "initialization.contract.yaml",
+  "http-json.mjs",
+  "live-contract.mjs",
+  "mutate-app.mjs",
+  "mutate-app.test.mjs",
+  "provider-api.mjs",
+  "provider-api.test.mjs",
+  "release.mjs",
+  "release.test.mjs",
+  "rollback.mjs",
+  "operator-console.mjs",
+  "operator-console.test.mjs",
+  "provision.mjs",
+  "provisioning.mjs",
+  "provisioning.test.mjs",
+  "rehearsal-bootstrap.contract.yaml",
+  "rehearsal-domain.contract.yaml",
+  "rehearsal-egress.contract.yaml",
+  "rehearsal-initialization.contract.yaml",
+  "rehearsal.contract.yaml",
+  "workflow.test.mjs",
 ];
 const requiredRunbooks = [
   "README.md",
@@ -59,14 +67,19 @@ const pitrIntegrityKeys = [
   "budgetTotals",
   "compactions",
   "conversationTrees",
+  "dedicatedEgressRestricted",
   "drafts",
   "expectedMarkerBoundary",
   "extensionRecreated",
   "fakeReadWrite",
   "generations",
+  "initialInvitationNotSent",
+  "initializationLatchVerified",
+  "initializationNotRepeated",
   "migrationLedger",
   "poolTimeouts",
   "postgresMajorVersion",
+  "preDeployMigration",
   "readiness",
   "reconciliation",
   "reservations",
@@ -75,18 +88,22 @@ const pitrIntegrityKeys = [
   "signIn",
   "workspaceMemberships",
 ];
-const coldRebuildIntegrityKeys = [
-  "caddyTls",
-  "cloudInit",
+const coldRecreationIntegrityKeys = [
   "databaseSourceUntouched",
-  "encryptedVolume",
-  "firewall",
-  "hostAudit",
+  "defaultDomainRedirect",
+  "dedicatedEgress",
+  "domainDetachedBeforeDelete",
+  "egressAllowlistReplaced",
+  "exactAppContract",
   "immutableImage",
+  "initialInvitationNotSent",
+  "initializationLatchVerified",
+  "initializationNotRepeated",
+  "preDeployMigration",
   "readiness",
-  "reservedAddressReassigned",
   "secretIsolation",
   "telemetry",
+  "unsafeHistoryEvicted",
 ];
 
 function fail(message) {
@@ -137,689 +154,644 @@ function hasText(contents, pattern) {
   return typeof pattern === "string" ? contents.includes(pattern) : pattern.test(contents);
 }
 
+function workflowCommands(workflow) {
+  const jobs = Object.values(assertRecord(workflow.jobs, "workflow jobs"));
+  return jobs
+    .flatMap((job) => (Array.isArray(job?.steps) ? job.steps : []))
+    .map((step) => (typeof step?.run === "string" ? step.run : ""))
+    .join("\n");
+}
+
+function latestMigrationFile() {
+  const migrations = readdirSync(path.join(repositoryRoot, "apps/api/migrations"))
+    .filter((file) => /^\d{4}_.+\.sql$/u.test(file))
+    .sort();
+  const latest = migrations.at(-1);
+  assert(latest !== undefined, "at least one database migration must exist");
+  return latest;
+}
+
+function latestMigration() {
+  return latestMigrationFile().slice(0, 4);
+}
+
 function applicationPoolSettingsAreLocked(poolSource) {
   return [
     "connectionTimeoutMillis: 5_000",
     "idleTimeoutMillis: 30_000",
     "max: 10",
+    "query_timeout: 5_000",
     "statement_timeout=5000",
     "lock_timeout=5000",
     "idle_in_transaction_session_timeout=5000",
-    "query_timeout: 5_000",
   ].every((setting) => poolSource.includes(setting));
 }
 
-function inspectOperationsContract() {
-  const deploymentFiles = readdirSync(deploymentDirectory).sort();
-  const cloudInit = parseYaml("deploy/digitalocean/cloud-init.yaml", "cloud-init.yaml");
-  const commands = Array.isArray(cloudInit.runcmd) ? cloudInit.runcmd : [];
-  const firewallAllows = commands.filter(
-    (command) => Array.isArray(command) && command[0] === "ufw" && command[1] === "allow",
-  );
-  const publicPorts = firewallAllows
-    .filter((command) => !command.includes("from"))
-    .map((command) => Number(String(command[2]).split("/", 1)[0]))
-    .filter(Number.isFinite)
-    .sort((left, right) => left - right);
-  const sshRestricted = firewallAllows.some(
-    (command) =>
-      command.includes("from") &&
-      command.includes("__OPERATOR_IPV4_CIDR__") &&
-      command.includes("port") &&
-      command.includes("22"),
-  );
+function activeAuthoritySources() {
+  return [
+    "README.md",
+    ".env.example",
+    "docs/prd/README.md",
+    "docs/prd/02-system-architecture-and-data.md",
+    "docs/prd/06-development-roadmap.md",
+    ...requiredRunbooks.map((file) => `docs/operations/${file}`),
+    ".github/workflows/ci.yml",
+    ".github/workflows/deploy-production.yml",
+    ".github/workflows/configure-production.yml",
+    ".github/workflows/ghcr-retention.yml",
+    "apps/api/Dockerfile",
+  ].map(readRepositoryFile);
+}
 
+function inspectOperationsContract() {
+  const bootstrap = readContract(
+    path.join(deploymentDirectory, "bootstrap.contract.yaml"),
+    "bootstrap",
+  );
+  const initialization = readContract(
+    path.join(deploymentDirectory, "initialization.contract.yaml"),
+    "initialization",
+  );
+  const egress = readContract(path.join(deploymentDirectory, "egress.contract.yaml"), "egress");
+  const domain = readContract(path.join(deploymentDirectory, "domain.contract.yaml"), "domain");
+  const live = readContract(path.join(deploymentDirectory, "app.contract.yaml"), "live");
+  const rehearsal = readContract(
+    path.join(deploymentDirectory, "rehearsal.contract.yaml"),
+    "rehearsal",
+  );
+  const contractSources = [
+    readRepositoryFile("deploy/app-platform/bootstrap.contract.yaml"),
+    readRepositoryFile("deploy/app-platform/egress.contract.yaml"),
+    readRepositoryFile("deploy/app-platform/domain.contract.yaml"),
+    readRepositoryFile("deploy/app-platform/initialization.contract.yaml"),
+    readRepositoryFile("deploy/app-platform/app.contract.yaml"),
+    readRepositoryFile("deploy/app-platform/rehearsal-bootstrap.contract.yaml"),
+    readRepositoryFile("deploy/app-platform/rehearsal-egress.contract.yaml"),
+    readRepositoryFile("deploy/app-platform/rehearsal-domain.contract.yaml"),
+    readRepositoryFile("deploy/app-platform/rehearsal-initialization.contract.yaml"),
+    readRepositoryFile("deploy/app-platform/rehearsal.contract.yaml"),
+  ].join("\n");
+  const authoritySources = activeAuthoritySources().join("\n");
   const roadmap = readRepositoryFile("docs/prd/06-development-roadmap.md");
   const amendment = readRepositoryFile(
-    "docs/implementation/08-digitalocean-planetscale-amendment-plan.md",
+    "docs/implementation/08-digitalocean-app-platform-planetscale-amendment-plan.md",
   );
+  const operationsReadme = readRepositoryFile("docs/operations/README.md");
   const provisioning = readRepositoryFile("docs/operations/provision-and-deploy.md");
-  const deployRunbook = readRepositoryFile("docs/operations/deploy-and-rollback.md");
-  const hostReadme = readRepositoryFile("deploy/digitalocean/README.md");
-  const caddy = readRepositoryFile("deploy/digitalocean/Caddyfile");
-  const caddyService = readRepositoryFile("deploy/digitalocean/capstone-caddy.service");
-  const applicationService = readRepositoryFile("deploy/digitalocean/capstone-chat@.service");
-  const bootService = readRepositoryFile("deploy/digitalocean/capstone-boot.service");
-  const deployService = readRepositoryFile("deploy/digitalocean/capstone-deploy.service");
-  const deploy = readRepositoryFile("deploy/digitalocean/deploy.sh");
-  const migrationCleanup = readRepositoryFile("deploy/digitalocean/cleanup-migrations.sh");
-  const operator = readRepositoryFile("deploy/digitalocean/operator.sh");
-  const operatorEntrypoint = readRepositoryFile("deploy/digitalocean/operator-entrypoint.mjs");
-  const operatorService = readRepositoryFile("deploy/digitalocean/capstone-operator.service");
-  const requestDeploy = readRepositoryFile("deploy/digitalocean/request-deploy.sh");
-  const requestLifecycle = readRepositoryFile("deploy/digitalocean/request-lifecycle.sh");
-  const requestOperator = readRepositoryFile("deploy/digitalocean/request-operator.sh");
-  const fluentBitLauncher = readRepositoryFile("deploy/digitalocean/start-fluent-bit.sh");
-  const verifyHost = readRepositoryFile("deploy/digitalocean/verify-host.sh");
-  const verifyHostNegative = readRepositoryFile("deploy/digitalocean/verify-host-negative.test.sh");
-  const retentionProgram = readRepositoryFile("deploy/digitalocean/ghcr-retention.py");
-  const fluentBit = readRepositoryFile("deploy/digitalocean/fluent-bit.conf");
-  const fluentBitService = readRepositoryFile("deploy/digitalocean/capstone-fluent-bit.service");
-  const hostEnvironment = readRepositoryFile("deploy/digitalocean/host.env");
+  const deploymentRunbook = readRepositoryFile("docs/operations/deploy-and-rollback.md");
+  const recoveryRunbook = readRepositoryFile("docs/operations/database-recovery.md");
+  const domainRunbook = readRepositoryFile("docs/operations/domain-and-tls.md");
+  const secretsRunbook = readRepositoryFile("docs/operations/secret-rotation.md");
   const dockerfile = readRepositoryFile("apps/api/Dockerfile");
-  const apiApp = readRepositoryFile("apps/api/src/app.ts");
   const apiConfig = readRepositoryFile("apps/api/src/config.ts");
-  const identityCommand = readRepositoryFile("apps/api/src/operator/identity-command.ts");
-  const productionDatabaseUrl = readRepositoryFile(
-    "apps/api/src/database/production-database-url.ts",
-  );
+  const clientAddress = readRepositoryFile("apps/api/src/security/client-address.ts");
   const secretEnvironment = readRepositoryFile("apps/api/src/secret-environment.ts");
   const databasePool = readRepositoryFile("apps/api/src/database/pool.ts");
   const entrypoint = readRepositoryFile("apps/api/src/entrypoint.ts");
-  const server = readRepositoryFile("apps/api/src/server.ts");
-  const workflow = parseYaml(".github/workflows/ci.yml", "CI workflow");
-  const jobs = assertRecord(workflow.jobs, "CI jobs");
-  const publish = assertRecord(jobs["publish-image"], "publish-image job");
-  const publishSteps = Array.isArray(publish.steps) ? publish.steps : [];
-  const publishCommands = publishSteps
+  const identityCommand = readRepositoryFile("apps/api/src/operator/initial-invitation-command.ts");
+  const initializationCommand = readRepositoryFile(
+    "apps/api/src/operator/production-initialization-command.ts",
+  );
+  const logMirror = readRepositoryFile("apps/api/src/observability/new-relic-log-mirror.ts");
+  const telemetry = readRepositoryFile("apps/api/src/observability/telemetry.ts");
+  const productionDatabaseUrl = readRepositoryFile(
+    "apps/api/src/database/production-database-url.ts",
+  );
+  const liveContractTool = readRepositoryFile("deploy/app-platform/live-contract.mjs");
+  const mutationTool = readRepositoryFile("deploy/app-platform/mutate-app.mjs");
+  const releaseTool = readRepositoryFile("deploy/app-platform/release.mjs");
+  const deployTool = readRepositoryFile("deploy/app-platform/deploy.mjs");
+  const rollbackTool = readRepositoryFile("deploy/app-platform/rollback.mjs");
+  const configurationTool = readRepositoryFile("deploy/app-platform/configuration.mjs");
+  const consoleTool = readRepositoryFile("deploy/app-platform/operator-console.mjs");
+  const provisioningTool = readRepositoryFile("deploy/app-platform/provisioning.mjs");
+  const retentionTool = readRepositoryFile("deploy/app-platform/ghcr-retention.py");
+  const ci = parseYaml(".github/workflows/ci.yml", "CI workflow");
+  const deployWorkflow = parseYaml(
+    ".github/workflows/deploy-production.yml",
+    "production deployment workflow",
+  );
+  const retentionWorkflow = parseYaml(
+    ".github/workflows/ghcr-retention.yml",
+    "GHCR retention workflow",
+  );
+  const configureWorkflow = parseYaml(
+    ".github/workflows/configure-production.yml",
+    "production configuration workflow",
+  );
+  const ciJobs = assertRecord(ci.jobs, "CI jobs");
+  const quality = assertRecord(ciJobs.quality, "CI quality job");
+  const publish = assertRecord(ciJobs["publish-image"], "CI publish-image job");
+  const publishCommands = (Array.isArray(publish.steps) ? publish.steps : [])
     .map((step) => (typeof step?.run === "string" ? step.run : ""))
     .join("\n");
-  const migrationCall = deploy.search(/\n {2}run_migrations "\$\{revision\}" "\$\{digest\}"/u);
-  const startCall = deploy.search(/\n {2}start_release "\$\{candidate_release\}"/u);
-  const deploymentExitBody = deploy.split("on_exit() {", 2)[1]?.split("\n}\n", 1)[0] ?? "";
-  const runtimeContract =
-    deploy.split(`case "\${CAPSTONE_NODE_ENV:-}" in`, 2)[1]?.split("\n  esac", 1)[0] ?? "";
-  const productionRuntimeContract = runtimeContract.split("\n    test)", 1)[0] ?? "";
-  const rehearsalRuntimeContract =
-    runtimeContract.split("\n    test)", 2)[1]?.split("\n    *)", 1)[0] ?? "";
-  const headerClaims = ["Forwarded", "X-Forwarded-*", "CF-Connecting-IP", "X-Capstone-Client-IP"];
-  const activeProductionSources = [
-    readRepositoryFile("README.md"),
-    ...readdirSync(path.join(repositoryRoot, "docs/prd"))
-      .filter((file) => file.endsWith(".md"))
-      .map((file) => readRepositoryFile(`docs/prd/${file}`)),
-    ...requiredRunbooks.map((file) => readRepositoryFile(`docs/operations/${file}`)),
-    readRepositoryFile(".github/workflows/ci.yml"),
-    readRepositoryFile(".env.example"),
-    dockerfile,
-  ].join("\n");
+  const deployJob = assertRecord(
+    assertRecord(deployWorkflow.jobs, "deployment jobs").release,
+    "deployment release job",
+  );
+  const deployInputs = assertRecord(
+    assertRecord(deployWorkflow.on?.workflow_dispatch, "deployment workflow dispatch").inputs,
+    "deployment workflow inputs",
+  );
+  const retentionJob = assertRecord(
+    assertRecord(retentionWorkflow.jobs, "retention jobs").retention,
+    "retention job",
+  );
+  const configureJob = assertRecord(
+    assertRecord(configureWorkflow.jobs, "configuration jobs").configure,
+    "configuration job",
+  );
+  const deployCommands = workflowCommands(deployWorkflow);
+  const retentionCommands = workflowCommands(retentionWorkflow);
+  const configureCommands = workflowCommands(configureWorkflow);
+  const latestMigration = latestMigrationFile();
+  const prohibitedHostInstruction =
+    /deploy\/digitalocean|\/opt\/capstone-chat|\/run\/capstone-secrets|request-(?:deploy|operator)\.sh|\bsystemctl\b|\bjournalctl\b|cloud-init\.yaml|capstone-chat@\.service/iu;
 
   return {
+    activeHostInstructionsAbsent: !prohibitedHostInstruction.test(authoritySources),
     activeRenderConfigurationAbsent: !existsSync(path.join(repositoryRoot, "render.yaml")),
     activeRenderInstructionsAbsent:
-      !/RENDER_GIT_COMMIT|render\.yaml|render\.com|\brender deploy\b|Render hosts|Render deploys/iu.test(
-        activeProductionSources,
+      !/RENDER_GIT_COMMIT|\brender\.yaml\b|\brender deploy\b|Render hosts|Render deploys/iu.test(
+        authoritySources,
       ),
-    applicationServiceCount: deploymentFiles.filter((file) => file === "capstone-chat@.service")
-      .length,
-    applicationRoleSeparated:
-      hasText(amendment, /Use three credential boundaries/u) &&
-      hasText(amendment, /\*\*application role:\*\*/u) &&
-      hasText(amendment, /\*\*migration role:\*\*/u) &&
-      hasText(amendment, /\*\*default near-superuser role:\*\*/u),
+    appPlatformArtifactSetPresent: requiredDeploymentFiles.every((file) =>
+      existsSync(path.join(deploymentDirectory, file)),
+    ),
+    appPlatformHostArtifactsAbsent: !readdirSync(deploymentDirectory).some(
+      (file) =>
+        file === "Caddyfile" ||
+        file.endsWith(".service") ||
+        file.endsWith(".sh") ||
+        /cloud-init|fluent-bit|systemd|ufw/iu.test(file),
+    ),
+    applicationPoolSettingsLocked: applicationPoolSettingsAreLocked(databasePool),
     applicationRunsMigrationsAtStartup:
-      /migrat/iu.test(server) ||
+      /migrat/iu.test(readRepositoryFile("apps/api/src/server.ts")) ||
       !dockerfile.includes('CMD ["node", "apps/api/dist/entrypoint.js", "server"]') ||
       !entrypoint.includes('server: () => import("./server.js")'),
-    applicationLoopbackOnly:
-      applicationService.includes("--network host") &&
-      applicationService.includes("--env HOST=127.0.0.1") &&
-      apiConfig.includes("HOST must be 127.0.0.1 in production"),
-    applicationPoolSettingsLocked: applicationPoolSettingsAreLocked(databasePool),
-    artifactSetExact:
-      deploymentFiles.length === expectedDeploymentFiles.length &&
-      deploymentFiles.every((file, index) => file === expectedDeploymentFiles[index]),
     backupHours: hasText(roadmap, /backups run every 12 hours/u) ? 12 : null,
-    caddyAdminUnix: caddy.includes("admin unix//run/capstone-caddy/admin.sock"),
-    caddyEncryptedState:
-      caddyService.includes("XDG_DATA_HOME=/srv/capstone-secure/caddy/data") &&
-      caddyService.includes("XDG_CONFIG_HOME=/srv/capstone-secure/caddy/config"),
-    caddyHeaderOverwrite: deploy.includes(
-      "header_up X-Capstone-Client-IP {http.request.remote.host}",
-    ),
-    caddyHeaderStripCount: headerClaims.filter((header) => deploy.includes(`header_up -${header}`))
-      .length,
-    caddyHasAccessLog: /(^|\n)[\t ]*log(?:[\t {]|$)/u.test(caddy),
-    caddyHasNegativeFlush: /flush_interval[\t ]+-/u.test(`${caddy}\n${deploy}`),
-    caddyPersistsApiConfig: !caddy.includes("persist_config off"),
-    caddyTransformsStreams: /(^|\n)[\t ]*encode(?:[\t {]|$)/u.test(caddy),
-    caddyUser: /^User=caddy$/mu.test(caddyService) ? "caddy" : "root",
-    caddyLeastPrivilege:
-      caddyService.includes("CapabilityBoundingSet=CAP_NET_BIND_SERVICE") &&
-      caddyService.includes("AmbientCapabilities=CAP_NET_BIND_SERVICE") &&
-      caddyService.includes(
-        "InaccessiblePaths=/srv/capstone-secure/runtime /srv/capstone-secure/migration /srv/capstone-secure/registry /srv/capstone-secure/fluent-bit",
-      ) &&
-      caddy.includes("protocols h1 h2") &&
-      caddy.includes('Strict-Transport-Security "max-age=31536000"') &&
-      !caddy.includes("includeSubDomains"),
+    bootstrapBoundary:
+      bootstrap.service.environment.secret_keys.length === 0 &&
+      bootstrap.job === undefined &&
+      bootstrap.egress === undefined &&
+      bootstrap.domain === undefined &&
+      bootstrap.service.run_command.endsWith("egress-bootstrap"),
+    stagedProvisioningBoundary:
+      egress.egress.type === "DEDICATED_IP" &&
+      egress.domain === undefined &&
+      egress.job === undefined &&
+      egress.service.environment.secret_keys.length === 0 &&
+      domain.egress.type === "DEDICATED_IP" &&
+      domain.domain.domain === "chat.capstone.com.ec" &&
+      domain.job === undefined &&
+      domain.service.environment.secret_keys.length === 0,
     ciPublishesImmutableRevision:
       publishCommands.includes('image="$IMAGE_REPOSITORY:$GITHUB_SHA"') &&
       publishCommands.includes('docker push "$image"') &&
+      publishCommands.includes('candidate_id="$(docker image inspect') &&
+      publishCommands.includes('existing_digest="$(printf') &&
+      publishCommands.includes('test "$existing_id" = "$candidate_id"') &&
+      publishCommands.includes('test "$confirmed_digest" = "$digest"') &&
+      publish.concurrency?.group === `capstone-chat-image-${"$"}{{ github.sha }}` &&
+      publish.concurrency?.["cancel-in-progress"] === false &&
       !publishCommands.includes(":latest"),
-    imageRequiresFullRevision: dockerfile.includes(
-      `printf '%s\\n' "$DEPLOYMENT_REVISION" | grep -Eq '^[0-9a-f]{40}$'`,
-    ),
     ciPublicationNeedsAllGates:
       Array.isArray(publish.needs) &&
       publish.needs.length === 2 &&
       publish.needs.includes("quality") &&
       publish.needs.includes("playwright") &&
       publish.permissions?.packages === "write",
-    containerCapabilitiesDropped: applicationService.includes("--cap-drop ALL"),
-    containerCoreDumpsDisabled: applicationService.includes("--ulimit core=0:0"),
-    containerMemoryMiB: applicationService.includes("--memory 640m") ? 640 : null,
-    containerPids: applicationService.includes("--pids-limit 256") ? 256 : null,
-    containerReadOnly: applicationService.includes("--read-only"),
-    containerUser: applicationService.includes("--user 1000:1000") ? "1000:1000" : "root",
-    credentialPathsSeparated:
-      applicationService.includes("/run/capstone-secrets/runtime.json") &&
-      deploy.includes("/run/capstone-secrets/migration.json") &&
-      !applicationService.includes("migration.json") &&
-      operator.includes("secret_target=/run/capstone-secrets/operator.json") &&
-      !operator.includes("secret_target=/run/capstone-secrets/runtime.json") &&
-      hostEnvironment.includes("/srv/capstone-secure/registry") &&
-      !applicationService.includes("/srv/capstone-secure/registry"),
-    databaseArchitecture: hasText(roadmap, /PS-5 ARM Single[\n ]+Node/u) ? "arm-single-node" : null,
+    ciValidatesLatestMigration:
+      workflowCommands(ci).includes(latestMigration) && deployCommands.includes(latestMigration),
+    ciWiresOperationsAudit: (Array.isArray(quality.steps) ? quality.steps : []).some(
+      (step) => typeof step?.run === "string" && step.run.includes("pnpm verify:operations"),
+    ),
+    clientAddressBoundary:
+      clientAddress.includes('request.headers["do-connecting-ip"]') &&
+      clientAddress.includes('header === "do-connecting-ip"') &&
+      clientAddress.includes('header === "forwarded"') &&
+      clientAddress.includes('header.startsWith("x-forwarded-")') &&
+      clientAddress.includes('header === "x-real-ip"') &&
+      clientAddress.includes('header === "cf-connecting-ip"') &&
+      clientAddress.includes("healthRoutes.has(request.url)") &&
+      clientAddress.includes('value.includes(",")') &&
+      clientAddress.indexOf("const appPlatformAddress") <
+        clientAddress.indexOf("stripForwardingHeaders(request)"),
+    contractReleaseValuesAbsent: !/digest|registry_credentials|DEPLOYMENT_REVISION|sha256:/u.test(
+      contractSources,
+    ),
+    databaseArchitecture: hasText(roadmap, /PS-5 ARM Single Node/u) ? "arm-single-node" : null,
     databaseInitialStorageGb: hasText(roadmap, /starts at 10 GB/u) ? 10 : null,
     databaseIpRestricted:
-      hasText(roadmap, /accepts new connections only from the verified Droplet `\/32`/u) &&
-      hasText(amendment, /never opens to[\n ]+`0\.0\.0\.0\/0`/u),
+      hasText(roadmap, /both exclusive App Platform Dedicated Egress IPv4[\n ]+`\/32`s/u) &&
+      hasText(amendment, /No step temporarily opens PlanetScale to `0\.0\.0\.0\/0`/u),
     databaseMaximumStorageGb: hasText(roadmap, /hard 15 GB storage[\n ]+ceiling/u) ? 15 : null,
-    databasePlan: hasText(roadmap, /PS-5 ARM Single[\n ]+Node/u) ? "PS-5" : null,
-    databasePostgresMajor: hasText(amendment, /PostgreSQL 18\.4, PS-5 ARM Single Node/u)
-      ? 18
-      : null,
+    databasePlan: hasText(roadmap, /PS-5 ARM Single Node/u) ? "PS-5" : null,
     databaseRegion: hasText(roadmap, /AWS `us-east-1`/u) ? "us-east-1" : null,
     databaseTlsVerifyFull:
       apiConfig.includes("parseProductionDatabaseUrl(value)") &&
-      productionDatabaseUrl.includes('some((key) => key !== "sslmode")') &&
-      productionDatabaseUrl.includes('url.searchParams.getAll("sslmode").length !== 1') &&
       productionDatabaseUrl.includes('url.searchParams.get("sslmode") !== "verify-full"') &&
-      productionDatabaseUrl.includes('url.searchParams.has("sslrootcert")') &&
-      productionDatabaseUrl.includes('url.searchParams.has("options")') &&
       productionDatabaseUrl.includes('(url.port !== "" && url.port !== "5432")') &&
-      hasText(roadmap, /direct[\n ]+port 5432, `verify-full` TLS/u),
-    deploymentAtomicAuthority: /mv -fT "\$\{temporary\}" "\$\{ACTIVE_LINK\}"/u.test(deploy),
-    deploymentActivationEvidence:
-      /activation-evidence schema=1 activatedAt=\$\{activated_at\} revision=\$\{revision\} digest=\$\{digest\}/u.test(
-        deploy,
-      ) &&
-      (deploy.match(/record_activation_evidence "\$\{(?:candidate_release|previous)\}"/gu)
-        ?.length ?? 0) === 2 &&
-      provisioning.includes(
-        "journalctl --unit=capstone-deploy.service --lines=1 --no-pager --output=cat",
-      ) &&
-      provisioning.includes("--grep='^capstone-deploy: activation-evidence schema=1 '") &&
-      provisioning.includes("authorized external change record") &&
-      provisioning.includes("pre-activation `createdAt`") &&
-      deployRunbook.includes(
-        "journalctl --unit=capstone-deploy.service --lines=1 --no-pager --output=cat",
-      ) &&
-      deployRunbook.includes("authorized external change record") &&
-      deployRunbook.includes("Collect the rollback's exact final activation record"),
-    deploymentBootBudget:
-      bootService.includes("TimeoutStartSec=900s") &&
-      bootService.includes("TimeoutStopSec=900s") &&
-      bootService.includes("KillMode=mixed"),
-    deploymentCleanShutdown:
-      !applicationService.includes("docker run --rm --name capstone-chat-") &&
-      deploy.includes("$container.State.ExitCode == 0") &&
-      deploy.includes("write_shutdown_acknowledgement") &&
-      deploy.search(/write_shutdown_acknowledgement "\$\{slot\}" "\$\{inspection\}"/u) <
-        deploy.search(/docker rm "\$\{initial_id\}"/u) &&
-      applicationService.includes("docker stop --time 300") &&
-      applicationService.includes("TimeoutStopSec=330s") &&
-      deployService.includes("TimeoutStartSec=2400s") &&
-      deployService.includes("TimeoutStopSec=1200s") &&
-      deployService.includes("KillMode=mixed"),
-    deploymentCredentialFreeSmoke:
-      deploy.includes("static_application_is_served") &&
-      deploy.includes("anonymous_session_is_rejected") &&
-      deploy.includes("X-Capstone-Client-IP: 192.0.2.1") &&
-      deploy.includes("verify_direct_smoke") &&
-      deploy.includes("verify_public_smoke"),
-    deploymentDigestOnly: /\$\{CAPSTONE_IMAGE_REPOSITORY\}@\$\{digest\}/u.test(deploy),
-    deploymentExternalSourceGated:
-      deploy.includes("https://icanhazip.com/") &&
-      (deploy.match(/^ {2}validate_external_outbound_source$/gmu)?.length ?? 0) === 2,
-    deploymentFailureConvergence:
-      deploymentExitBody.indexOf("reconcile_unlocked || reconcile_status=$?") <
-        deploymentExitBody.indexOf("remove_uncommitted_candidate") &&
-      deploymentExitBody.includes("preserving the candidate for boot reconciliation"),
-    deploymentIsSupervised:
-      deploy.includes("CAPSTONE_DEPLOY_SUPERVISED") &&
-      requestDeploy.includes("capstone-deploy.service"),
-    deploymentRegionModeBound:
-      productionRuntimeContract.includes("CAPSTONE_EXPECTED_REGION:-} == ric1") &&
-      !productionRuntimeContract.includes("CAPSTONE_EXPECTED_REGION:-} == nyc3") &&
-      rehearsalRuntimeContract.includes("CAPSTONE_EXPECTED_REGION:-} == nyc3") &&
-      rehearsalRuntimeContract.includes("CAPSTONE_PUBLIC_HOST} != chat.capstone.com.ec") &&
-      !rehearsalRuntimeContract.includes("CAPSTONE_EXPECTED_REGION:-} == ric1") &&
-      (deploy.match(/CAPSTONE_EXPECTED_REGION/gu)?.length ?? 0) === 2,
-    deploymentRequestsAreLifecycleBound:
-      requestLifecycle.includes("ActiveState") &&
-      requestLifecycle.includes("Job") &&
-      /active_state\} == inactive \|\| \$\{active_state\} == failed/u.test(requestLifecycle) &&
-      requestDeploy.includes("capstone_request_unit_accepts_new_work capstone-deploy.service") &&
-      requestOperator.includes("capstone_request_unit_accepts_new_work capstone-operator.service"),
-    deploymentDockerCallsAreBounded:
-      deploy.includes("inspect_container_if_present") &&
-      deploy.includes("capture_value_interruptible") &&
-      deployService.includes(
-        "timeout --signal=TERM --kill-after=10s 60s /opt/capstone-chat/bin/cleanup-migrations.sh post-stop",
-      ),
-    deploymentRunsMigrationBeforeStart:
-      migrationCall >= 0 && startCall >= 0 && migrationCall < startCall,
-    migrationSecretSchemaExact:
-      deploy.includes('keys == ["DATABASE_URL"]') &&
-      deploy.includes("migration secret must contain only DATABASE_URL") &&
-      /validate_migration_secret_file "\$\{secret_source\}" "\$\{secret_gid\}"/u.test(operator),
-    initialPolicyBootstrap:
-      requestOperator.includes("model-policy-initialize") &&
-      requestOperator.includes("rehearsal identity-bootstrap requires one full revision") &&
-      operator.includes("initial_release_is_absent") &&
-      operator.includes("operation_uses_initial_image") &&
-      operator.includes("validate_ci_evidence") &&
-      operator.includes("pull_and_verify_initial_image") &&
-      operator.includes("run_initial_migrations") &&
-      operatorEntrypoint.includes('request.operation === "model-policy-initialize"') &&
-      provisioning.indexOf("identity-bootstrap <revision> <digest>") <
-        provisioning.indexOf("model-policy-initialize <revision> <digest>") &&
-      provisioning.indexOf("identity-bootstrap <full-revision> sha256:<digest>") <
-        provisioning.indexOf("model-policy-initialize <full-revision> sha256:<digest>"),
-    managedRehearsalBoundaries:
-      operator.includes("CAPSTONE_PUBLIC_HOST} != chat.capstone.com.ec") &&
-      requestOperator.includes("CAPSTONE_PUBLIC_HOST} != chat.capstone.com.ec") &&
-      verifyHost.includes("CAPSTONE_PUBLIC_HOST} != chat.capstone.com.ec") &&
-      verifyHostNegative.includes("managed rehearsal using the production hostname") &&
-      deploy.includes("managed rehearsal runtime secret schema is invalid") &&
-      verifyHost.includes("runtime_secret_schema_is_exact") &&
-      verifyHostNegative.includes("rehearsal runtime secret with real provider keys") &&
-      identityCommand.includes("reserved .test TLD") &&
-      apiConfig.includes("source.WEB_ASSETS?.trim() === productionWebAssetsMode") &&
-      apiApp.includes("validateReady: () => modelPolicy.assertRuntimeMode(readinessPolicyMode)") &&
-      apiApp.includes('? "simulated"'),
-    dnsOnly: hasText(roadmap, /DNS-only IPv4 record/u),
-    dropletCpu: hasText(roadmap, /one vCPU and 1 GiB RAM/u) ? 1 : null,
-    dropletRamMiB: hasText(roadmap, /one vCPU and 1 GiB RAM/u) ? 1_024 : null,
-    dropletRegion: hasText(roadmap, /in RIC1/u) ? "ric1" : null,
-    fluentBitDiskBuffer: /storage\.path|filesystem/iu.test(fluentBit),
-    fluentBitFieldAllowlist:
-      fluentBit.includes("Name                      record_modifier") &&
-      fluentBit.includes("Reserve_Data              Off") &&
-      fluentBit.includes("Buffer_Max_Size           16K") &&
-      !/^\s*Allowlist_key\s+(?:authorization|cookie|databaseUrl|email|prompt|providerBody|query|raw|response|url)\s*$/mu.test(
-        fluentBit,
-      ),
-    fluentBitInput: /Unix_Path[\t ]+\/run\/capstone-fluent-bit\/docker\.sock/u.test(fluentBit)
-      ? "unix"
-      : "tcp",
-    fluentBitMemoryMiB: /Mem_Buf_Limit[\t ]+8M/u.test(fluentBit) ? 8 : null,
-    fluentBitOutput: /Name[\t ]+http/u.test(fluentBit) ? "builtin-http" : "external-plugin",
-    fluentBitRetryLimit: /Retry_Limit[\t ]+10/u.test(fluentBit) ? 10 : null,
-    fluentBitUser: /^User=capstone-fluent-bit$/mu.test(fluentBitService)
-      ? "capstone-fluent-bit"
-      : "root",
-    fluentBitSecretLauncher:
-      fluentBitService.includes("ExecStart=/opt/capstone-chat/bin/start-fluent-bit.sh") &&
-      !fluentBitService.includes("EnvironmentFile=") &&
-      fluentBitService.includes("ReadOnlyPaths=/etc/capstone-chat /opt/fluent-bit") &&
-      fluentBitLauncher.includes("NEW_RELIC_LICENSE_KEY=[A-Za-z0-9._-]+") &&
-      fluentBitLauncher.includes("exec /opt/fluent-bit/bin/fluent-bit") &&
-      verifyHost.includes("start-fluent-bit.sh root capstone-fluent-bit-secrets 550"),
-    freshHostStartOrder:
-      !hostReadme.includes("systemctl enable --now") &&
-      hostReadme.indexOf(
-        "systemctl enable capstone-fluent-bit.service capstone-caddy.service capstone-boot.service",
-      ) < hostReadme.indexOf("systemctl start capstone-fluent-bit.service") &&
-      hostReadme.indexOf("systemctl start capstone-fluent-bit.service") <
-        hostReadme.indexOf("systemctl start capstone-caddy.service") &&
-      hostReadme.indexOf("systemctl start capstone-caddy.service") <
-        hostReadme.indexOf("systemctl start capstone-boot.service") &&
-      !provisioning.includes("systemctl enable --now") &&
-      provisioning.indexOf(
-        "systemctl enable capstone-fluent-bit.service capstone-caddy.service capstone-boot.service",
-      ) < provisioning.indexOf("systemctl start capstone-fluent-bit.service") &&
-      provisioning.indexOf("systemctl start capstone-fluent-bit.service") <
-        provisioning.indexOf("systemctl start capstone-caddy.service") &&
-      provisioning.indexOf("systemctl start capstone-caddy.service") <
-        provisioning.indexOf("systemctl start capstone-boot.service"),
-    hostCoreDumpsDisabled:
-      hasText(readRepositoryFile("deploy/digitalocean/cloud-init.yaml"), "Storage=none") &&
-      hasText(
-        readRepositoryFile("deploy/digitalocean/cloud-init.yaml"),
-        "kernel.core_pattern=/dev/null",
-      ),
-    hostVolumeEncryptedBoundary:
-      hostEnvironment.includes("CAPSTONE_SECURE_ROOT=/srv/capstone-secure") &&
-      hasText(amendment, /encrypted 1 GiB Volume/u),
-    hostVolumeDeviceBoundary:
-      deploy.includes("mount_field / MAJ:MIN") &&
-      /\/sys\/dev\/block\/\$\{identity\}\/size/u.test(deploy) &&
-      operator.includes("mount_field / MAJ:MIN") &&
-      operator.includes("validate_secure_mount") &&
-      verifyHost.includes("mount_field / MAJ:MIN") &&
-      verifyHost.includes("block_device_size_bytes"),
-    hostSecretDirectoriesExact:
-      verifyHost.includes("directory_exact /srv/capstone-secure root root 711") &&
-      verifyHost.includes(
-        "directory_exact /srv/capstone-secure/runtime root capstone-runtime-secrets 750",
-      ) &&
-      verifyHost.includes(
-        "directory_exact /srv/capstone-secure/migration root capstone-migration-secrets 750",
-      ) &&
-      verifyHost.includes("service_identities_cannot_cross_read"),
-    hostNegativeEvidenceFailsClosed:
-      verifyHost.includes("systemd_unit_snapshot") &&
-      verifyHost.includes("unit_is_quiescent capstone-deploy.service") &&
-      verifyHost.includes("unit_is_quiescent capstone-operator.service") &&
-      verifyHost.includes("docker ps --all --quiet --filter name=^/capstone-operator$") &&
-      verifyHost.includes("tcp_listener_allowlist_is_exact") &&
-      verifyHost.includes("rule_count} -eq 3") &&
-      verifyHost.includes("deny \\(incoming\\), allow \\(outgoing\\), disabled \\(routed\\)") &&
-      verifyHost.includes("net.ipv6.conf.lo.disable_ipv6") &&
-      verifyHost.includes("managed_container_inventory_is_exact") &&
-      verifyHost.includes("docker ps --all --quiet) || return 1") &&
-      verifyHostNegative.includes("failed swap inventory") &&
-      verifyHostNegative.includes("two failed route commands with empty output") &&
-      verifyHostNegative.includes("unexpected public Docker listener") &&
-      verifyHostNegative.includes("extra UFW allow rule") &&
-      verifyHostNegative.includes("default-allow incoming firewall") &&
-      verifyHostNegative.includes("failed slot systemd query") &&
-      verifyHostNegative.includes("stopped extra application container") &&
-      verifyHostNegative.includes("unlabeled exact-name stale slot container") &&
-      verifyHostNegative.includes("unlabeled initial migration container") &&
-      verifyHostNegative.includes("arbitrary foreign stopped container"),
-    hostRegionMetadataBound:
-      verifyHost.includes("region_matches_host_contract") &&
-      verifyHost.includes(`[[ \${region} == "\${CAPSTONE_EXPECTED_REGION}" ]]`) &&
-      !verifyHost.includes("approved RIC1 region") &&
-      !verifyHost.includes("region_is_ric1"),
-    hostRuntimeContractBound:
-      verifyHost.includes("runtime_contract_is_exact") &&
-      verifyHost.includes("CAPSTONE_EMAIL_DELIVERY:-} == resend") &&
-      verifyHost.includes("CAPSTONE_MODEL_GATEWAY:-} == openrouter") &&
-      verifyHost.includes("CAPSTONE_EXPECTED_REGION:-} == ric1") &&
-      verifyHost.includes("CAPSTONE_EMAIL_DELIVERY:-} == disabled") &&
-      verifyHost.includes("CAPSTONE_MODEL_GATEWAY:-} == fake") &&
-      verifyHost.includes("CAPSTONE_EXPECTED_REGION:-} == nyc3") &&
-      verifyHostNegative.includes("production runtime in the rehearsal region") &&
-      verifyHostNegative.includes("managed rehearsal runtime in the production region") &&
-      verifyHostNegative.includes("production runtime with rehearsal providers") &&
-      verifyHostNegative.includes("managed rehearsal runtime with production providers") &&
-      verifyHostNegative.includes("unknown runtime environment"),
-    imageOriginExact:
+      hasText(roadmap, /direct port 5432[\s\S]{0,80}`verify-full`/u),
+    deploymentToolBoundaries:
+      liveContractTool.includes('operation === "render"') &&
+      liveContractTool.includes('operation === "validate"') &&
+      liveContractTool.includes('operation === "fingerprint"') &&
+      liveContractTool.includes("assertSafeRollbackHistory") &&
+      mutationTool.includes("liveFingerprint(initial)") &&
+      mutationTool.includes("liveFingerprint(immediate)") &&
+      mutationTool.includes("Another DigitalOcean deployment is in progress") &&
+      mutationTool.includes("await waitForDeployment") &&
+      releaseTool.includes("assertStrictForward") &&
+      releaseTool.includes("Normal deployment revision is not protected main HEAD") &&
+      releaseTool.includes("assertSafeRollbackHistory") &&
+      releaseTool.includes("Accepted release baseline does not match the exact initial App") &&
+      releaseTool.includes("History eviction revision is not protected main HEAD") &&
+      deployTool.includes('runReleaseOperation("deploy")') &&
+      deployTool.includes('operation === "adopt-initial"') &&
+      deployTool.includes('operation === "history-eviction"') &&
+      rollbackTool.includes('runReleaseOperation("rollback")') &&
+      configurationTool.includes("guardedSpecMutation") &&
+      configurationTool.includes("assertOnlySelectedSecretsChanged") &&
+      configurationTool.includes("assertOnlyRegistryChanged") &&
+      consoleTool.includes("CAPSTONE_CONSOLE_READY") &&
+      consoleTool.includes("CAPSTONE_OPERATOR_EXIT:0") &&
+      provisioningTool.includes("createBootstrapApp") &&
+      provisioningTool.includes("advanceProvisioningStage") &&
+      provisioningTool.includes("CAPSTONE_PROVISIONING_BASE_DEPLOYMENT_ID") &&
+      provisioningTool.includes("getContainerDigestForRevision") &&
+      provisioningTool.includes("guardedSpecMutation"),
+    deploymentWorkflowBound:
+      deployWorkflow.on?.workflow_dispatch !== undefined &&
+      deployInputs.operation?.required === true &&
+      deployInputs.operation?.type === "choice" &&
+      Array.isArray(deployInputs.operation?.options) &&
+      deployInputs.operation.options.length === 3 &&
+      deployInputs.operation.options[0] === "deploy" &&
+      deployInputs.operation.options[1] === "rollback" &&
+      deployInputs.operation.options[2] === "reconcile" &&
+      deployInputs.image_revision?.required === true &&
+      deployInputs.image_revision?.type === "string" &&
+      deployWorkflow.concurrency?.group === "capstone-chat-production-app-spec" &&
+      deployWorkflow.concurrency?.["cancel-in-progress"] === false &&
+      deployWorkflow.permissions?.actions === "read" &&
+      deployWorkflow.permissions?.contents === "read" &&
+      deployWorkflow.permissions?.deployments === "write" &&
+      deployWorkflow.permissions?.packages === "read" &&
+      deployJob.environment === "production" &&
+      deployJob.if?.includes("refs/heads/main") &&
+      deployCommands.includes("node deploy/app-platform/deploy.mjs deploy") &&
+      deployCommands.includes("node deploy/app-platform/rollback.mjs") &&
+      deployCommands.includes("docker buildx imagetools inspect") &&
+      deployCommands.includes("$IMAGE_REPOSITORY@$digest") &&
+      !deployCommands.includes(":latest"),
+    configurationWorkflowBound:
+      configureWorkflow.on?.workflow_dispatch !== undefined &&
+      configureWorkflow.concurrency?.group === "capstone-chat-production-app-spec" &&
+      configureWorkflow.concurrency?.["cancel-in-progress"] === false &&
+      configureWorkflow.permissions?.contents === "read" &&
+      configureWorkflow.permissions?.deployments === "read" &&
+      configureJob.environment === "production" &&
+      configureJob.if?.includes("refs/heads/main") &&
+      configureCommands.includes("node deploy/app-platform/configure.mjs") &&
+      configureCommands.includes("CAPSTONE_CONFIGURATION_BASE_DEPLOYMENT_ID") &&
+      !configureCommands.includes("ROTATION") &&
+      !configureCommands.includes("rotate-"),
+    domainAndEdgeBoundary:
+      live.domain.domain === "chat.capstone.com.ec" &&
+      live.domain.type === "PRIMARY" &&
+      live.domain.minimum_tls_version === "1.2" &&
+      live.edge.disable_edge_cache === true &&
+      live.edge.disable_email_obfuscation === true &&
+      live.edge.enhanced_threat_control_enabled === false,
+    imageBoundary:
+      !dockerfile.includes("ENV CAPSTONE_SECRET_SOURCE=") &&
+      !dockerfile.includes("ENV CLIENT_ADDRESS_SOURCE=") &&
+      !dockerfile.includes("ENV DEPLOYMENT_TARGET=") &&
+      !dockerfile.includes("ENV HOST=") &&
+      !dockerfile.includes("ENV NODE_ENV=") &&
+      !dockerfile.includes("ENV PORT=") &&
+      dockerfile.includes("ENV DEPLOYMENT_REVISION=$DEPLOYMENT_REVISION") &&
+      dockerfile.includes("USER node") &&
+      dockerfile.includes('org.opencontainers.image.revision="$DEPLOYMENT_REVISION"') &&
       dockerfile.includes(
         'org.opencontainers.image.source="https://github.com/jmjalil96/capstone-chat"',
       ) &&
-      deploy.includes("org.opencontainers.image.source") &&
-      operator.includes("org.opencontainers.image.source") &&
-      requestDeploy.includes("capstone-chat$"),
-    incomingRuleCount: firewallAllows.length,
-    loadEmployees: hasText(amendment, /20-employee\/40-stream/u) ? 20 : null,
-    loadResponseStartMilliseconds: hasText(amendment, /500 ms response-start/u) ? 500 : null,
-    loadStreams: hasText(amendment, /20-employee\/40-stream/u) ? 40 : null,
-    loggingCacheDisabled: applicationService.includes("cache-disabled=true"),
-    loggingNonBlocking: applicationService.includes("mode=non-blocking"),
-    operatorBoundary:
-      operatorService.includes("CAPSTONE_OPERATOR_SUPERVISED=1") &&
-      operatorService.includes("ProtectSystem=strict") &&
-      operatorService.includes("TimeoutStartSec=1800s") &&
-      operatorService.includes("TimeoutStopSec=210s") &&
-      operatorService.includes("KillMode=mixed") &&
-      operator.includes("flock --exclusive --nonblock") &&
-      operator.includes("CAPSTONE_MIGRATION_SECRET_PATH") &&
-      operator.includes("BETTER_AUTH_SECRET: $runtime.BETTER_AUTH_SECRET") &&
-      operator.includes("RESEND_API_KEY: $runtime.RESEND_API_KEY") &&
-      operator.includes("OPENROUTER_API_KEY: $runtime.OPENROUTER_API_KEY") &&
-      operator.includes("--user 1000:1000") &&
-      operator.includes("--read-only") &&
-      operator.includes("--log-driver none") &&
-      operator.includes("timeout --signal=TERM --kill-after=30s 180s") &&
-      operator.includes("timeout --signal=TERM --kill-after=30s 300s") &&
-      operator.includes("timeout --signal=TERM --kill-after=30s 540s") &&
-      operatorEntrypoint.includes("apps/api/dist/entrypoint.js") &&
-      requestOperator.includes("/dev/tty"),
-    remoteRetentionFenced:
-      requestOperator.includes("ghcr-retention-plan") &&
-      requestOperator.includes("ghcr-retention-show") &&
-      requestOperator.includes("ghcr-retention-delete") &&
-      requestOperator.includes("candidateVersions: .core.candidateVersions") &&
-      requestOperator.includes("Short-lived classic PAT") &&
-      retentionProgram.includes('"recent-five"') &&
-      retentionProgram.includes('"recovery-pin"') &&
-      retentionProgram.includes("unknownVersionsLeftUntouched") &&
-      retentionProgram.includes("GHCR or local protection state changed after the dry run") &&
-      retentionProgram.includes("--token-file"),
-    previousDigestProtected:
-      requestDeploy.includes("prune") &&
-      deploy.includes("previousRelease") &&
-      deploy.includes("recovery-pins") &&
-      deploy.includes("five newest plus active, previous, and recovery-pinned releases") &&
-      /docker ps --all --quiet --filter "label=io\.capstone\.revision=\$\{revision\}"/u.test(
-        deploy,
+      !/caddy/iu.test(dockerfile),
+    initializationBoundary:
+      initialization.service.environment.secret_keys.length === 0 &&
+      initialization.job.name === "capstone-initialize" &&
+      initialization.job.environment.secret_keys.length === 4 &&
+      initialization.job.environment.secret_keys.includes("CAPSTONE_INITIALIZATION_DOCUMENT") &&
+      initialization.job.environment.secret_keys.includes("CAPSTONE_BOOTSTRAP_DATABASE_URL") &&
+      initialization.job.environment.secret_keys.includes(
+        "CAPSTONE_BOOTSTRAP_MIGRATION_DATABASE_URL",
       ) &&
-      deploy.includes("docker image ls --digests --no-trunc --format") &&
-      deploy.search(/docker image rm "\$\{image\}"/u) <
-        deploy.search(/find "\$\{release\}" -depth -delete/u),
-    migrationSurvivorCleanup:
-      migrationCleanup.includes('io.capstone.migration"] == "true"') &&
-      migrationCleanup.includes("acquire_cleanup_lock") &&
-      deployService.includes("cleanup-migrations.sh post-stop") &&
-      operatorService.includes("cleanup-migrations.sh post-stop"),
-    productionSecretFileEnforced:
-      apiConfig.includes("source === process.env && !hasLoadedSecretEnvironment(source)") &&
-      apiConfig.includes("CAPSTONE_SECRET_FILE must be the exclusive source") &&
-      entrypoint.includes("loadEntrypoint(") &&
-      entrypoint.includes("loadEnvironmentFile,") &&
-      !entrypoint.includes('from "./server.js"') &&
-      secretEnvironment.includes("loadedSecretEnvironments.set(source") &&
-      secretEnvironment.includes("source.CAPSTONE_SECRET_FILE?.trim() === loaded.configuredPath"),
-    publicPorts,
+      !initialization.job.environment.secret_keys.includes("BETTER_AUTH_SECRET") &&
+      !initialization.job.environment.secret_keys.includes("RESEND_API_KEY"),
+    initializationCommandsBounded:
+      apiConfig.includes("initializationDocumentMaximumBytes") &&
+      initializationCommand.includes("loadInitializationOperatorConfig") &&
+      initializationCommand.includes("parseProductionInitializationDocument") &&
+      identityCommand.includes("readBoundedStdinDocument") &&
+      identityCommand.includes("sendInvitationEmail") &&
+      !initializationCommand.includes("sendInvitationEmail"),
+    legacyDropletArtifactsAbsent:
+      !existsSync(legacyDeploymentDirectory) || readdirSync(legacyDeploymentDirectory).length === 0,
+    liveTopology:
+      live.region === "ric" &&
+      live.service.instance_size_slug === "apps-s-1vcpu-1gb-fixed" &&
+      live.service.instance_count === 1 &&
+      live.service.http_port === 3_000 &&
+      live.service.drain_seconds === 110 &&
+      live.service.grace_period_seconds === 300 &&
+      live.egress.type === "DEDICATED_IP" &&
+      live.job.kind === "PRE_DEPLOY" &&
+      live.job.instance_size_slug === "apps-s-1vcpu-0.5gb" &&
+      live.job.instance_count === 1,
+    managedRehearsalBoundary:
+      rehearsal.region === "ric" &&
+      rehearsal.domain.domain === "rehearsal.chat.capstone.com.ec" &&
+      rehearsal.egress.type === "DEDICATED_IP" &&
+      rehearsal.service.run_command.endsWith("load-server --confirm-isolated-load-rehearsal") &&
+      rehearsal.service.environment.general.CAPSTONE_DEPLOYMENT_PROFILE === "managed-rehearsal" &&
+      rehearsal.service.environment.general.NODE_ENV === "test" &&
+      rehearsal.service.environment.general.EMAIL_DELIVERY === "disabled" &&
+      rehearsal.service.environment.secret_keys.includes("CAPSTONE_LOAD_DIAGNOSTICS_SECRET") &&
+      !rehearsal.service.environment.secret_keys.includes("OPENROUTER_API_KEY") &&
+      !rehearsal.service.environment.secret_keys.includes("RESEND_API_KEY") &&
+      rehearsal.job.name === "capstone-migrate" &&
+      deployTool.includes('operation === "history-eviction-rehearsal"'),
+    loadEmployees: hasText(roadmap, /20 simultaneously signed-in employees/u) ? 20 : null,
+    managedLoadOperatorBoundary:
+      amendment.includes("`pscale role create ... --ttl 24h`") &&
+      amendment.includes("force-closes its database pool") &&
+      amendment.includes("removes the generator `/32`") &&
+      amendment.includes("CAPSTONE_LOAD_AUTH_SECRET") &&
+      hasText(provisioning, /provider-enforced[\n ]+24-hour TTL/u) &&
+      hasText(provisioning, /never place its URL in an App[\n ]+spec/u) &&
+      provisioning.includes("prove connection denial again"),
+    loadResponseStartMilliseconds: hasText(
+      roadmap,
+      /response\.started` targets p95 at or below 500 ms/u,
+    )
+      ? 500
+      : null,
+    loadStreams: hasText(roadmap, /40 active[\n ]+employee streams/u) ? 40 : null,
+    newRelicMirrorBoundary:
+      logMirror.includes('return "https://log-api.newrelic.com/log/v1"') &&
+      logMirror.includes('return "https://log-api.eu.newrelic.com/log/v1"') &&
+      logMirror.includes("logApiEndpointFor(options.otlpEndpoint)") &&
+      logMirror.includes("batchMaximumBytes: 128 * 1_024") &&
+      logMirror.includes("batchMaximumRecords: 64") &&
+      logMirror.includes("deliveryAttempts: 3") &&
+      logMirror.includes("flushIntervalMs: 1_000") &&
+      logMirror.includes("maximumRecordBytes: 2_048") &&
+      logMirror.includes("queueMaximumBytes: 1_024 * 1_024") &&
+      logMirror.includes("queueMaximumRecords: 1_024") &&
+      logMirror.includes("requestTimeoutMs: 3_000") &&
+      logMirror.includes("shutdownTimeoutMs: 5_000") &&
+      logMirror.includes("queue.shift()") &&
+      telemetry.includes("recordLogMirrorDrop"),
+    operationsAuthorityDocumented:
+      operationsReadme.includes("one active provisional Phase 8 path") &&
+      operationsReadme.includes("Dedicated Egress") &&
+      hasText(operationsReadme, /external[\n ]+mutation/u) &&
+      provisioning.includes("health-only bootstrap App") &&
+      provisioning.includes("document-hash latch") &&
+      provisioning.includes("Send the initial invitation after readiness") &&
+      deploymentRunbook.includes("native rollback action is prohibited") &&
+      deploymentRunbook.includes("capstone-chat-production-app-spec") &&
+      deploymentRunbook.includes("GHCR retention") &&
+      recoveryRunbook.includes("Recovery must not receive the original") &&
+      recoveryRunbook.includes("both new `/32`s") &&
+      recoveryRunbook.includes("detach `chat.capstone.com.ec`") &&
+      domainRunbook.includes("DNSSEC") &&
+      domainRunbook.includes("CAA") &&
+      domainRunbook.includes("do-connecting-ip") &&
+      domainRunbook.includes("Cloudflare-backed edge") &&
+      secretsRunbook.includes("component-scoped encrypted `SECRET`") &&
+      secretsRunbook.includes("recovery role is") &&
+      secretsRunbook.includes("GHCR pull credential"),
+    productionRuntimeBoundary:
+      apiConfig.includes('const appPlatformDeploymentTarget = "digitalocean-app-platform"') &&
+      apiConfig.includes('const platformEnvironmentSecretSource = "platform-environment"') &&
+      apiConfig.includes("HOST must be 0.0.0.0 in production") &&
+      apiConfig.includes("CLIENT_ADDRESS_SOURCE must be digitalocean-app-platform in production") &&
+      apiConfig.includes(
+        "CAPSTONE_SECRET_FILE is prohibited for the production application and migration job",
+      ),
     recoveryRetentionHours: hasText(roadmap, /retained for 84 hours/u) ? 84 : null,
-    sshRestricted,
-    volumeGiB: hasText(roadmap, /encrypted 1 GiB DigitalOcean Volume/u) ? 1 : null,
+    retentionToolBoundaries:
+      retentionTool.includes('"active-serving"') &&
+      retentionTool.includes('"desired-spec"') &&
+      retentionTool.includes('"in-progress"') &&
+      retentionTool.includes('"recent-five"') &&
+      retentionTool.includes('"recovery-pin"') &&
+      retentionTool.includes("unknownVersionsLeftUntouched") &&
+      retentionTool.includes("Provider or recovery protection state changed after the dry run") &&
+      retentionTool.includes("--plan-hash"),
+    recoveryPinsFixturePresent: existsSync(
+      path.join(deploymentDirectory, "fixtures/recovery-pins.example.json"),
+    ),
+    retentionWorkflowBound:
+      retentionWorkflow.on?.workflow_dispatch !== undefined &&
+      retentionWorkflow.concurrency?.group === "capstone-chat-production-app-spec" &&
+      retentionWorkflow.concurrency?.["cancel-in-progress"] === false &&
+      retentionWorkflow.permissions?.actions === "read" &&
+      retentionWorkflow.permissions?.contents === "read" &&
+      retentionWorkflow.permissions?.deployments === "read" &&
+      retentionJob.environment === "production" &&
+      retentionJob.if?.includes("refs/heads/main") &&
+      retentionCommands.includes("python3 deploy/app-platform/ghcr-retention.py") &&
+      retentionCommands.includes("--plan-hash") &&
+      retentionCommands.includes("GHCR_RETENTION_TOKEN") &&
+      (Array.isArray(retentionJob.steps) ? retentionJob.steps : []).some(
+        (step) => step?.uses === "actions/upload-artifact@v5",
+      ) &&
+      retentionCommands.includes('rm -rf -- "$CAPSTONE_PROTECTED_DIRECTORY"') &&
+      !retentionCommands.includes(":latest"),
+    secretSourceBoundary:
+      secretEnvironment.includes("active App Platform") &&
+      secretEnvironment.includes(
+        'source.DEPLOYMENT_TARGET?.trim() === "digitalocean-app-platform"',
+      ) &&
+      secretEnvironment.includes("readSecretEnvironmentFile") &&
+      live.service.environment.secret_keys.length === 5 &&
+      live.service.environment.general_keys.length === 1 &&
+      live.service.environment.general_keys[0] === "OTEL_EXPORTER_OTLP_ENDPOINT" &&
+      !live.service.environment.secret_keys.includes("CAPSTONE_SECRET_FILE") &&
+      !live.job.environment.secret_keys.includes("CAPSTONE_SECRET_FILE"),
   };
 }
 
 function validateOperationsContract(contract) {
-  assert(contract.activeRenderConfigurationAbsent, "active render.yaml must be removed");
-  assert(contract.activeRenderInstructionsAbsent, "an active Render operator path remains");
-  assert(contract.artifactSetExact, "DigitalOcean artifact set changed or gained a second service");
-  assert(
-    contract.applicationServiceCount === 1,
-    "exactly one application service template is allowed",
+  const failures = [];
+  const check = (condition, message) => {
+    if (!condition) {
+      failures.push(message);
+    }
+  };
+  check(contract.appPlatformArtifactSetPresent, "required App Platform artifacts are missing");
+  check(contract.appPlatformHostArtifactsAbsent, "a host-era artifact entered deploy/app-platform");
+  check(contract.legacyDropletArtifactsAbsent, "the obsolete deploy/digitalocean path remains");
+  check(contract.activeRenderConfigurationAbsent, "active render.yaml must remain absent");
+  check(contract.activeRenderInstructionsAbsent, "an active Render operator path remains");
+  check(contract.activeHostInstructionsAbsent, "an active host-era operator instruction remains");
+  check(contract.contractReleaseValuesAbsent, "App contracts must remain digest- and secret-free");
+  check(contract.bootstrapBoundary, "health-only bootstrap authority drifted");
+  check(contract.stagedProvisioningBoundary, "egress/domain provisioning stages drifted");
+  check(contract.initializationBoundary, "temporary initialization secret or job scope drifted");
+  check(
+    contract.initializationCommandsBounded,
+    "initialization or invitation command scope drifted",
   );
-  assert(
-    contract.dropletCpu === 1 &&
-      contract.dropletRamMiB === 1_024 &&
-      contract.dropletRegion === "ric1" &&
-      contract.volumeGiB === 1,
-    "Droplet or encrypted-Volume topology drifted",
+  check(contract.liveTopology, "App Platform region, service, job, drain, or egress drifted");
+  check(contract.managedRehearsalBoundary, "managed rehearsal contract drifted");
+  check(contract.domainAndEdgeBoundary, "managed domain, TLS, or edge policy drifted");
+  check(contract.deploymentToolBoundaries, "exact-digest deploy/rollback mutation fences drifted");
+  check(contract.deploymentWorkflowBound, "protected production deployment workflow drifted");
+  check(contract.configurationWorkflowBound, "protected configuration workflow drifted");
+  check(contract.retentionToolBoundaries, "GHCR retention protection boundaries drifted");
+  check(contract.recoveryPinsFixturePresent, "bounded recovery-pin fixture is missing");
+  check(contract.retentionWorkflowBound, "protected GHCR retention workflow drifted");
+  check(contract.imageBoundary, "production image or App Platform runtime defaults drifted");
+  check(contract.productionRuntimeBoundary, "production runtime configuration authority drifted");
+  check(contract.clientAddressBoundary, "App Platform client-address trust boundary drifted");
+  check(contract.secretSourceBoundary, "platform secret scope or offline recovery seam drifted");
+  check(contract.newRelicMirrorBoundary, "bounded New Relic log mirror contract drifted");
+  check(contract.applicationPoolSettingsLocked, "database pool safety settings drifted");
+  check(
+    !contract.applicationRunsMigrationsAtStartup,
+    "application startup must not run migrations",
   );
-  assert(
+  check(contract.databaseTlsVerifyFull, "database TLS must remain direct verify-full on port 5432");
+  check(contract.databaseIpRestricted, "PlanetScale must remain restricted to both egress /32s");
+  check(
     contract.databasePlan === "PS-5" &&
       contract.databaseArchitecture === "arm-single-node" &&
       contract.databaseRegion === "us-east-1" &&
-      contract.databasePostgresMajor === 18 &&
       contract.databaseInitialStorageGb === 10 &&
       contract.databaseMaximumStorageGb === 15,
     "PlanetScale topology or storage ceiling drifted",
   );
-  assert(
+  check(
     contract.backupHours === 12 && contract.recoveryRetentionHours === 84,
     "backup cadence or retention drifted",
   );
-  assert(
-    contract.incomingRuleCount === 3 &&
-      contract.publicPorts.length === 2 &&
-      contract.publicPorts[0] === 80 &&
-      contract.publicPorts[1] === 443 &&
-      contract.sshRestricted,
-    "incoming firewall rules must be exact and SSH must remain source-restricted",
+  check(contract.ciWiresOperationsAudit, "CI no longer executes the operations audit");
+  check(contract.ciPublicationNeedsAllGates, "GHCR publication must depend on all CI gates");
+  check(contract.ciPublishesImmutableRevision, "CI must publish only a full-revision image tag");
+  check(
+    contract.ciValidatesLatestMigration,
+    "CI/deployment image checks omit the latest migration",
   );
-  assert(contract.dnsOnly, "the public origin must remain direct DNS-only IPv4");
-  assert(contract.applicationLoopbackOnly, "application slots must remain loopback-only");
-  assert(contract.databaseIpRestricted, "PlanetScale must remain restricted to the Droplet /32");
-  assert(contract.caddyAdminUnix, "Caddy admin must remain a Unix socket");
-  assert(contract.caddyHeaderStripCount === 4, "Caddy must strip every public forwarding claim");
-  assert(contract.caddyHeaderOverwrite, "Caddy must overwrite the private client address");
-  assert(!contract.caddyHasNegativeFlush, "negative Caddy flush is prohibited");
-  assert(!contract.caddyHasAccessLog, "Caddy access logging is prohibited");
-  assert(!contract.caddyTransformsStreams, "Caddy response transformation is prohibited");
-  assert(!contract.caddyPersistsApiConfig, "Caddy API configuration persistence is prohibited");
-  assert(contract.caddyEncryptedState, "Caddy state must remain on the encrypted Volume");
-  assert(contract.caddyUser === "caddy", "Caddy must remain an unprivileged host service");
-  assert(contract.caddyLeastPrivilege, "Caddy capability, secret, or HSTS boundary drifted");
-  assert(
-    contract.containerUser === "1000:1000" &&
-      contract.containerReadOnly &&
-      contract.containerCapabilitiesDropped &&
-      contract.containerPids === 256 &&
-      contract.containerMemoryMiB === 640 &&
-      contract.containerCoreDumpsDisabled,
-    "application container restrictions drifted",
+  check(contract.operationsAuthorityDocumented, "active runbook authority is incomplete");
+  check(
+    contract.managedLoadOperatorBoundary,
+    "managed rehearsal load-operator or cleanup authority drifted",
   );
-  assert(contract.hostCoreDumpsDisabled, "host-wide core-dump denial is missing");
-  assert(contract.fluentBitUser === "capstone-fluent-bit", "Fluent Bit must be unprivileged");
-  assert(
-    contract.fluentBitSecretLauncher,
-    "Fluent Bit must load one exact data-only secret through its least-privilege launcher",
-  );
-  assert(
-    contract.freshHostStartOrder,
-    "fresh-host units must be enabled without starting, then start Fluent Bit, Caddy, and boot only after their prerequisites",
-  );
-  assert(
-    contract.fluentBitFieldAllowlist,
-    "Fluent Bit must drop unreviewed fields and reject oversized raw records",
-  );
-  assert(
-    contract.fluentBitInput === "unix" &&
-      contract.fluentBitOutput === "builtin-http" &&
-      contract.fluentBitMemoryMiB === 8 &&
-      contract.fluentBitRetryLimit === 10 &&
-      !contract.fluentBitDiskBuffer,
-    "Fluent Bit must remain built-in, Unix-only, bounded, and memory-only",
-  );
-  assert(
-    contract.loggingCacheDisabled && contract.loggingNonBlocking,
-    "Docker logging must remain non-blocking without a dual-log cache",
-  );
-  assert(contract.deploymentDigestOnly, "deployment must use an immutable image digest");
-  assert(contract.deploymentAtomicAuthority, "active release authority must change atomically");
-  assert(
-    contract.deploymentActivationEvidence,
-    "final activation evidence must bind UTC time to revision and digest outside release authority",
-  );
-  assert(contract.deploymentIsSupervised, "deployment must remain systemd-supervised");
-  assert(
-    contract.deploymentRegionModeBound,
-    "production must remain in RIC1 and only the managed test rehearsal may use NYC3",
-  );
-  assert(
-    contract.deploymentRequestsAreLifecycleBound,
-    "request replacement must reject an activating unit or queued systemd job",
-  );
-  assert(
-    contract.deploymentDockerCallsAreBounded,
-    "Docker authority probes and post-stop migration cleanup must remain bounded",
-  );
-  assert(contract.deploymentBootBudget, "boot reconciliation must enclose two bounded slot stops");
-  assert(
-    contract.deploymentCleanShutdown,
-    "forced container or systemd shutdown must not be accepted as clean",
-  );
-  assert(
-    contract.deploymentFailureConvergence,
-    "failed activation must restore durable traffic before candidate cleanup",
-  );
-  assert(
-    contract.deploymentCredentialFreeSmoke,
-    "activation must run direct and public credential-free smoke",
-  );
-  assert(
-    contract.deploymentExternalSourceGated,
-    "deploy and rollback must verify the externally observed reserved IPv4",
-  );
-  assert(
-    contract.operatorBoundary,
-    "operator commands must remain supervised, least-privilege, and strict-entrypoint routed",
-  );
-  assert(
-    contract.remoteRetentionFenced,
-    "GHCR retention must retain its explicit dry-run and protected-digest fences",
-  );
-  assert(
-    contract.deploymentRunsMigrationBeforeStart,
-    "migration must precede candidate activation",
-  );
-  assert(
-    contract.migrationSecretSchemaExact,
-    "migration container secret must reject every key except DATABASE_URL",
-  );
-  assert(
-    contract.initialPolicyBootstrap,
-    "first-release identity, migrations, and model policy need an ordered CI-evidenced pre-activation path",
-  );
-  assert(
-    contract.managedRehearsalBoundaries,
-    "managed rehearsal hostname, secrets, synthetic identity, or simulated readiness drifted",
-  );
-  assert(
-    !contract.applicationRunsMigrationsAtStartup,
-    "application startup must not run migrations",
-  );
-  assert(contract.previousDigestProtected, "rollback and protected-digest retention drifted");
-  assert(contract.migrationSurvivorCleanup, "migration survivor cleanup or lock deferral drifted");
-  assert(contract.hostVolumeEncryptedBoundary, "secret state must remain on the encrypted Volume");
-  assert(
-    contract.hostVolumeDeviceBoundary,
-    "deploy, operator, and host verification must reject a root-device bind mount",
-  );
-  assert(
-    contract.hostSecretDirectoriesExact,
-    "secure directory ownership/modes or cross-read denial drifted",
-  );
-  assert(
-    contract.hostNegativeEvidenceFailsClosed,
-    "host negative-evidence probes, network allowlists, or all-state inventory drifted",
-  );
-  assert(
-    contract.hostRegionMetadataBound,
-    "host verification must compare metadata with the exact rendered region contract",
-  );
-  assert(
-    contract.hostRuntimeContractBound,
-    "host verification must independently bind providers and region to production or rehearsal mode",
-  );
-  assert(contract.imageOriginExact, "GHCR package or OCI source repository drifted");
-  assert(contract.credentialPathsSeparated, "runtime, migration, and registry credentials crossed");
-  assert(
-    contract.productionSecretFileEnforced,
-    "production credentials must come from the strict file",
-  );
-  assert(contract.ciPublicationNeedsAllGates, "GHCR publication must depend on all CI jobs");
-  assert(contract.ciPublishesImmutableRevision, "CI must publish only the full-revision image tag");
-  assert(
-    contract.imageRequiresFullRevision,
-    "the production image must reject an invalid revision",
-  );
-  assert(contract.databaseTlsVerifyFull, "database TLS must remain direct verify-full");
-  assert(
-    contract.applicationRoleSeparated,
-    "application and migration/recovery roles must be separate",
-  );
-  assert(contract.applicationPoolSettingsLocked, "database pool safety settings drifted");
-  assert(
+  check(
     contract.loadEmployees === 20 &&
       contract.loadStreams === 40 &&
       contract.loadResponseStartMilliseconds === 500,
     "managed workload or response-start objective was relaxed",
   );
+  assert(failures.length === 0, failures.join("\n"));
+}
+
+function runCommand(command, arguments_, label) {
+  const result = spawnSync(command, arguments_, {
+    cwd: repositoryRoot,
+    encoding: "utf8",
+    env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },
+  });
+  if (result.status !== 0) {
+    fail(result.stderr.trim() || result.stdout.trim() || `${label} failed`);
+  }
 }
 
 function runArtifactVerification() {
-  const result = spawnSync("bash", [path.join(deploymentDirectory, "verify-artifacts.sh")], {
-    cwd: repositoryRoot,
-    encoding: "utf8",
-  });
-  if (result.status !== 0) {
-    fail(
-      result.stderr.trim() || result.stdout.trim() || "DigitalOcean artifact verification failed",
+  for (const file of [
+    "configuration.mjs",
+    "configure.mjs",
+    "consumable-input.mjs",
+    "console.mjs",
+    "contract.mjs",
+    "deploy.mjs",
+    "github-api.mjs",
+    "http-json.mjs",
+    "live-contract.mjs",
+    "mutate-app.mjs",
+    "operator-console.mjs",
+    "provision.mjs",
+    "provisioning.mjs",
+    "provider-api.mjs",
+    "release.mjs",
+    "rollback.mjs",
+  ]) {
+    runCommand(
+      process.execPath,
+      ["--check", path.join(deploymentDirectory, file)],
+      `${file} syntax`,
     );
   }
+  runCommand(
+    process.execPath,
+    [path.join(deploymentDirectory, "consumable-input.test.mjs")],
+    "App Platform consumable input fixtures",
+  );
+  runCommand(
+    process.execPath,
+    [path.join(deploymentDirectory, "contract.test.mjs")],
+    "App Platform contract fixtures",
+  );
+  runCommand(
+    process.execPath,
+    [path.join(deploymentDirectory, "mutate-app.test.mjs")],
+    "App Platform mutation fixtures",
+  );
+  runCommand(
+    process.execPath,
+    [path.join(deploymentDirectory, "github-api.test.mjs")],
+    "App Platform GitHub authority fixtures",
+  );
+  runCommand(
+    process.execPath,
+    [path.join(deploymentDirectory, "provider-api.test.mjs")],
+    "App Platform provider API fixtures",
+  );
+  runCommand(
+    process.execPath,
+    [path.join(deploymentDirectory, "release.test.mjs")],
+    "App Platform release authority fixtures",
+  );
+  runCommand(
+    process.execPath,
+    [path.join(deploymentDirectory, "configuration.test.mjs")],
+    "App Platform configuration fixtures",
+  );
+  runCommand(
+    process.execPath,
+    [path.join(deploymentDirectory, "operator-console.test.mjs")],
+    "App Platform operator console fixtures",
+  );
+  runCommand(
+    process.execPath,
+    [path.join(deploymentDirectory, "provisioning.test.mjs")],
+    "App Platform provisioning fixtures",
+  );
+  runCommand(
+    process.execPath,
+    [path.join(deploymentDirectory, "workflow.test.mjs")],
+    "App Platform workflow fixtures",
+  );
+  runCommand(
+    "python3",
+    [path.join(deploymentDirectory, "ghcr-retention.test.py")],
+    "App Platform GHCR retention fixtures",
+  );
 }
 
 function workspacePackages() {
@@ -890,16 +862,6 @@ function utcMilliseconds(value, label) {
   return milliseconds;
 }
 
-function latestMigration() {
-  const migrations = readdirSync(path.join(repositoryRoot, "apps/api/migrations"))
-    .map((file) => /^(\d{4})_.+\.sql$/u.exec(file)?.[1])
-    .filter(Boolean)
-    .sort();
-  const latest = migrations.at(-1);
-  assert(latest !== undefined, "at least one database migration must exist");
-  return latest;
-}
-
 function validateReleaseAndMigration(evidence) {
   assertExactKeys(evidence.release, ["expected", "observed"], "recovery evidence release");
   assert(
@@ -923,7 +885,7 @@ function validateReleaseAndMigration(evidence) {
 }
 
 function validateOperatorAndStatus(evidence) {
-  assert(evidence.schemaVersion === 2, "recovery evidence schemaVersion must equal 2");
+  assert(evidence.schemaVersion === 3, "recovery evidence schemaVersion must equal 3");
   assert(evidence.status === "accepted", "recovery evidence must be accepted");
   assert(
     typeof evidence.operatorRole === "string" &&
@@ -982,8 +944,9 @@ function validatePitrEvidence(evidence) {
   assertExactKeys(
     evidence.isolation,
     [
+      "applicationProvidersContacted",
       "databaseIpRestricted",
-      "externalProvidersContacted",
+      "dedicatedEgressAddressCount",
       "rolesSeparated",
       "sourceUntouched",
       "verifyFullTls",
@@ -991,12 +954,16 @@ function validatePitrEvidence(evidence) {
     "PlanetScale recovery isolation",
   );
   assert(
+    evidence.isolation.applicationProvidersContacted === false,
+    "validation must not contact application providers",
+  );
+  assert(
     evidence.isolation.databaseIpRestricted === true,
     "recovery database must be IP-restricted",
   );
   assert(
-    evidence.isolation.externalProvidersContacted === false,
-    "validation must not contact app providers",
+    evidence.isolation.dedicatedEgressAddressCount === 2,
+    "recovery database must restrict both dedicated egress addresses",
   );
   assert(evidence.isolation.rolesSeparated === true, "recovery roles must remain separate");
   assert(evidence.isolation.sourceUntouched === true, "the source database must remain untouched");
@@ -1041,11 +1008,13 @@ function validatePitrEvidence(evidence) {
   assertExactKeys(
     evidence.cleanup,
     [
+      "dedicatedEgressRulesRemoved",
       "evidenceAccepted",
-      "ipRuleRemoved",
       "recoveryBranchRemoved",
-      "temporaryRoleRemoved",
-      "validationApplicationRemoved",
+      "temporaryCredentialsRevoked",
+      "temporaryDomainRemoved",
+      "temporaryRolesRemoved",
+      "validationAppRemoved",
     ],
     "PlanetScale recovery cleanup",
   );
@@ -1054,7 +1023,7 @@ function validatePitrEvidence(evidence) {
   }
 }
 
-function validateColdRebuildEvidence(evidence) {
+function validateColdRecreationEvidence(evidence) {
   assertExactKeys(
     evidence,
     [
@@ -1069,30 +1038,39 @@ function validateColdRebuildEvidence(evidence) {
       "timing",
       "topology",
     ],
-    "DigitalOcean cold-rebuild evidence",
+    "DigitalOcean App recreation evidence",
   );
   validateOperatorAndStatus(evidence);
   validateReleaseAndMigration(evidence);
   assertExactKeys(
     evidence.topology,
-    ["cpu", "ramMiB", "region", "volumeGiB"],
-    "DigitalOcean cold-rebuild topology",
+    [
+      "autoscaling",
+      "dedicatedEgressAddressCount",
+      "instanceCount",
+      "jobSize",
+      "region",
+      "serviceSize",
+    ],
+    "DigitalOcean App recreation topology",
   );
   assert(
-    evidence.topology.cpu === 1 &&
-      evidence.topology.ramMiB === 1_024 &&
-      evidence.topology.region === "nyc3" &&
-      evidence.topology.volumeGiB === 1,
-    "cold-rebuild topology does not match the approved managed rehearsal",
+    evidence.topology.region === "ric" &&
+      evidence.topology.serviceSize === "apps-s-1vcpu-1gb-fixed" &&
+      evidence.topology.jobSize === "apps-s-1vcpu-0.5gb" &&
+      evidence.topology.instanceCount === 1 &&
+      evidence.topology.autoscaling === false &&
+      evidence.topology.dedicatedEgressAddressCount === 2,
+    "cold App recreation topology does not match the approved candidate",
   );
-  assertExactKeys(evidence.integrity, coldRebuildIntegrityKeys, "cold-rebuild integrity");
-  for (const key of coldRebuildIntegrityKeys) {
-    assert(evidence.integrity[key] === true, `cold-rebuild integrity check ${key} must pass`);
+  assertExactKeys(evidence.integrity, coldRecreationIntegrityKeys, "cold App recreation integrity");
+  for (const key of coldRecreationIntegrityKeys) {
+    assert(evidence.integrity[key] === true, `cold App recreation check ${key} must pass`);
   }
   assertExactKeys(
     evidence.timing,
     ["incidentAt", "rehearsalStartedAt", "validationCompletedAt"],
-    "cold-rebuild timing",
+    "cold App recreation timing",
   );
   const startedAt = utcMilliseconds(evidence.timing.rehearsalStartedAt, "rehearsalStartedAt");
   const incidentAt = utcMilliseconds(evidence.timing.incidentAt, "incidentAt");
@@ -1102,16 +1080,21 @@ function validateColdRebuildEvidence(evidence) {
   );
   assert(
     startedAt <= incidentAt && incidentAt <= completedAt,
-    "cold-rebuild timing order is invalid",
+    "cold App recreation timing order is invalid",
   );
-  assert((completedAt - incidentAt) / 60_000 <= 240, "cold-rebuild RTO exceeds four hours");
+  assert((completedAt - incidentAt) / 60_000 <= 240, "cold App recreation RTO exceeds four hours");
   assertExactKeys(
     evidence.cleanup,
-    ["dropletRemoved", "evidenceAccepted", "volumeRemoved"],
-    "cold-rebuild cleanup",
+    [
+      "evidenceAccepted",
+      "supersededAppRemoved",
+      "supersededEgressRulesRemoved",
+      "temporaryCredentialsRevoked",
+    ],
+    "cold App recreation cleanup",
   );
   for (const value of Object.values(evidence.cleanup)) {
-    assert(value === true, "every cold-rebuild cleanup gate must pass");
+    assert(value === true, "every cold App recreation cleanup gate must pass");
   }
 }
 
@@ -1121,8 +1104,8 @@ function validateRecoveryEvidence(value) {
     validatePitrEvidence(evidence);
     return;
   }
-  if (evidence.kind === "digitalocean-cold-rebuild-rehearsal") {
-    validateColdRebuildEvidence(evidence);
+  if (evidence.kind === "digitalocean-app-platform-controlled-recreation") {
+    validateColdRecreationEvidence(evidence);
     return;
   }
   fail("recovery evidence kind is unexpected");
@@ -1131,16 +1114,19 @@ function validateRecoveryEvidence(value) {
 function safePitrExample() {
   return {
     cleanup: {
+      dedicatedEgressRulesRemoved: true,
       evidenceAccepted: true,
-      ipRuleRemoved: true,
       recoveryBranchRemoved: true,
-      temporaryRoleRemoved: true,
-      validationApplicationRemoved: true,
+      temporaryCredentialsRevoked: true,
+      temporaryDomainRemoved: true,
+      temporaryRolesRemoved: true,
+      validationAppRemoved: true,
     },
     integrity: Object.fromEntries(pitrIntegrityKeys.map((key) => [key, true])),
     isolation: {
+      applicationProvidersContacted: false,
       databaseIpRestricted: true,
-      externalProvidersContacted: false,
+      dedicatedEgressAddressCount: 2,
       rolesSeparated: true,
       sourceUntouched: true,
       verifyFullTls: true,
@@ -1152,14 +1138,14 @@ function safePitrExample() {
       expected: "0123456789abcdef0123456789abcdef01234567",
       observed: "0123456789abcdef0123456789abcdef01234567",
     },
-    schemaVersion: 2,
+    schemaVersion: 3,
     status: "accepted",
     timing: {
-      incidentAt: "2026-08-10T12:15:00.000Z",
-      latestRecoveredMarkerAt: "2026-08-10T12:05:00.000Z",
-      rehearsalStartedAt: "2026-08-10T12:00:00.000Z",
-      selectedRestoreAt: "2026-08-10T12:10:00.000Z",
-      validationCompletedAt: "2026-08-10T13:00:00.000Z",
+      incidentAt: "2026-08-11T12:15:00.000Z",
+      latestRecoveredMarkerAt: "2026-08-11T12:05:00.000Z",
+      rehearsalStartedAt: "2026-08-11T12:00:00.000Z",
+      selectedRestoreAt: "2026-08-11T12:10:00.000Z",
+      validationCompletedAt: "2026-08-11T13:00:00.000Z",
     },
     topology: {
       architecture: "arm",
@@ -1175,25 +1161,37 @@ function safePitrExample() {
   };
 }
 
-function safeColdRebuildExample() {
+function safeColdRecreationExample() {
   return {
-    cleanup: { dropletRemoved: true, evidenceAccepted: true, volumeRemoved: true },
-    integrity: Object.fromEntries(coldRebuildIntegrityKeys.map((key) => [key, true])),
-    kind: "digitalocean-cold-rebuild-rehearsal",
+    cleanup: {
+      evidenceAccepted: true,
+      supersededAppRemoved: true,
+      supersededEgressRulesRemoved: true,
+      temporaryCredentialsRevoked: true,
+    },
+    integrity: Object.fromEntries(coldRecreationIntegrityKeys.map((key) => [key, true])),
+    kind: "digitalocean-app-platform-controlled-recreation",
     migration: { expected: latestMigration(), observed: latestMigration() },
     operatorRole: "recovery-operator",
     release: {
       expected: "0123456789abcdef0123456789abcdef01234567",
       observed: "0123456789abcdef0123456789abcdef01234567",
     },
-    schemaVersion: 2,
+    schemaVersion: 3,
     status: "accepted",
     timing: {
-      incidentAt: "2026-08-10T12:05:00.000Z",
-      rehearsalStartedAt: "2026-08-10T12:00:00.000Z",
-      validationCompletedAt: "2026-08-10T13:00:00.000Z",
+      incidentAt: "2026-08-11T12:05:00.000Z",
+      rehearsalStartedAt: "2026-08-11T12:00:00.000Z",
+      validationCompletedAt: "2026-08-11T13:00:00.000Z",
     },
-    topology: { cpu: 1, ramMiB: 1_024, region: "nyc3", volumeGiB: 1 },
+    topology: {
+      autoscaling: false,
+      dedicatedEgressAddressCount: 2,
+      instanceCount: 1,
+      jobSize: "apps-s-1vcpu-0.5gb",
+      region: "ric",
+      serviceSize: "apps-s-1vcpu-1gb-fixed",
+    },
   };
 }
 
@@ -1210,136 +1208,54 @@ function expectRejected(makeUnsafe, safe, label, validator) {
 }
 
 function runSelfTest(contract) {
-  const contractMutations = [
+  for (const mutation of [
     (value) => {
-      value.applicationServiceCount = 2;
+      value.legacyDropletArtifactsAbsent = false;
     },
     (value) => {
-      value.publicPorts.push(3_000);
-      value.incomingRuleCount += 1;
+      value.appPlatformHostArtifactsAbsent = false;
     },
     (value) => {
-      value.sshRestricted = false;
+      value.activeHostInstructionsAbsent = false;
     },
     (value) => {
-      value.dnsOnly = false;
+      value.contractReleaseValuesAbsent = false;
+    },
+    (value) => {
+      value.bootstrapBoundary = false;
+    },
+    (value) => {
+      value.initializationBoundary = false;
+    },
+    (value) => {
+      value.liveTopology = false;
+    },
+    (value) => {
+      value.domainAndEdgeBoundary = false;
+    },
+    (value) => {
+      value.deploymentToolBoundaries = false;
+    },
+    (value) => {
+      value.deploymentWorkflowBound = false;
+    },
+    (value) => {
+      value.retentionWorkflowBound = false;
+    },
+    (value) => {
+      value.recoveryPinsFixturePresent = false;
+    },
+    (value) => {
+      value.clientAddressBoundary = false;
+    },
+    (value) => {
+      value.secretSourceBoundary = false;
+    },
+    (value) => {
+      value.newRelicMirrorBoundary = false;
     },
     (value) => {
       value.databaseIpRestricted = false;
-    },
-    (value) => {
-      value.caddyAdminUnix = false;
-    },
-    (value) => {
-      value.caddyHeaderStripCount = 3;
-    },
-    (value) => {
-      value.caddyHasNegativeFlush = true;
-    },
-    (value) => {
-      value.caddyHasAccessLog = true;
-    },
-    (value) => {
-      value.caddyTransformsStreams = true;
-    },
-    (value) => {
-      value.caddyPersistsApiConfig = true;
-    },
-    (value) => {
-      value.containerUser = "root";
-    },
-    (value) => {
-      value.caddyUser = "root";
-    },
-    (value) => {
-      value.caddyLeastPrivilege = false;
-    },
-    (value) => {
-      value.fluentBitUser = "root";
-    },
-    (value) => {
-      value.fluentBitSecretLauncher = false;
-    },
-    (value) => {
-      value.freshHostStartOrder = false;
-    },
-    (value) => {
-      value.deploymentDigestOnly = false;
-    },
-    (value) => {
-      value.deploymentAtomicAuthority = false;
-    },
-    (value) => {
-      value.deploymentRequestsAreLifecycleBound = false;
-    },
-    (value) => {
-      value.deploymentDockerCallsAreBounded = false;
-    },
-    (value) => {
-      value.deploymentRunsMigrationBeforeStart = false;
-    },
-    (value) => {
-      value.managedRehearsalBoundaries = false;
-    },
-    (value) => {
-      value.deploymentRegionModeBound = false;
-    },
-    (value) => {
-      value.applicationRunsMigrationsAtStartup = true;
-    },
-    (value) => {
-      value.hostVolumeEncryptedBoundary = false;
-    },
-    (value) => {
-      value.hostSecretDirectoriesExact = false;
-    },
-    (value) => {
-      value.hostRegionMetadataBound = false;
-    },
-    (value) => {
-      value.hostRuntimeContractBound = false;
-    },
-    (value) => {
-      value.imageOriginExact = false;
-    },
-    (value) => {
-      value.caddyEncryptedState = false;
-    },
-    (value) => {
-      value.credentialPathsSeparated = false;
-    },
-    (value) => {
-      value.productionSecretFileEnforced = false;
-    },
-    (value) => {
-      value.hostCoreDumpsDisabled = false;
-    },
-    (value) => {
-      value.loggingCacheDisabled = false;
-    },
-    (value) => {
-      value.loggingNonBlocking = false;
-    },
-    (value) => {
-      value.fluentBitInput = "tcp";
-    },
-    (value) => {
-      value.fluentBitDiskBuffer = true;
-    },
-    (value) => {
-      value.fluentBitRetryLimit = null;
-    },
-    (value) => {
-      value.fluentBitOutput = "external-plugin";
-    },
-    (value) => {
-      value.databaseTlsVerifyFull = false;
-    },
-    (value) => {
-      value.applicationRoleSeparated = false;
-    },
-    (value) => {
-      value.applicationPoolSettingsLocked = false;
     },
     (value) => {
       value.databaseMaximumStorageGb = 20;
@@ -1348,35 +1264,19 @@ function runSelfTest(contract) {
       value.backupHours = 24;
     },
     (value) => {
-      value.recoveryRetentionHours = 48;
+      value.ciPublicationNeedsAllGates = false;
+    },
+    (value) => {
+      value.ciValidatesLatestMigration = false;
     },
     (value) => {
       value.loadEmployees = 10;
       value.loadStreams = 20;
     },
     (value) => {
-      value.loadResponseStartMilliseconds = 750;
+      value.managedLoadOperatorBoundary = false;
     },
-    (value) => {
-      value.previousDigestProtected = false;
-    },
-    (value) => {
-      value.migrationSurvivorCleanup = false;
-    },
-    (value) => {
-      value.ciPublicationNeedsAllGates = false;
-    },
-    (value) => {
-      value.imageRequiresFullRevision = false;
-    },
-    (value) => {
-      value.activeRenderConfigurationAbsent = false;
-    },
-    (value) => {
-      value.activeRenderInstructionsAbsent = false;
-    },
-  ];
-  for (const mutation of contractMutations) {
+  ]) {
     expectRejected(mutation, contract, "operations contract", validateOperationsContract);
   }
 
@@ -1387,16 +1287,19 @@ function runSelfTest(contract) {
       value.isolation.sourceUntouched = false;
     },
     (value) => {
-      value.isolation.databaseIpRestricted = false;
+      value.isolation.dedicatedEgressAddressCount = 1;
+    },
+    (value) => {
+      value.integrity.initializationNotRepeated = false;
     },
     (value) => {
       value.topology.maximumStorageGb = 20;
     },
     (value) => {
-      value.timing.latestRecoveredMarkerAt = "2026-08-10T11:59:00.000Z";
+      value.timing.latestRecoveredMarkerAt = "2026-08-11T11:59:00.000Z";
     },
     (value) => {
-      value.timing.validationCompletedAt = "2026-08-10T16:16:00.000Z";
+      value.timing.validationCompletedAt = "2026-08-11T16:16:00.000Z";
     },
     (value) => {
       value.notes = "unexpected free-form evidence";
@@ -1405,26 +1308,34 @@ function runSelfTest(contract) {
     expectRejected(mutation, pitr, "PlanetScale recovery evidence", validateRecoveryEvidence);
   }
 
-  const cold = safeColdRebuildExample();
+  const cold = safeColdRecreationExample();
   validateRecoveryEvidence(cold);
   for (const mutation of [
     (value) => {
       value.integrity.databaseSourceUntouched = false;
     },
     (value) => {
-      value.topology.ramMiB = 512;
+      value.integrity.domainDetachedBeforeDelete = false;
     },
     (value) => {
-      value.topology.region = "ric1";
+      value.topology.dedicatedEgressAddressCount = 1;
     },
     (value) => {
-      value.timing.validationCompletedAt = "2026-08-10T16:06:00.000Z";
+      value.topology.region = "nyc3";
     },
     (value) => {
-      value.cleanup.volumeRemoved = false;
+      value.timing.validationCompletedAt = "2026-08-11T16:06:00.000Z";
+    },
+    (value) => {
+      value.cleanup.temporaryCredentialsRevoked = false;
     },
   ]) {
-    expectRejected(mutation, cold, "DigitalOcean cold-rebuild evidence", validateRecoveryEvidence);
+    expectRejected(
+      mutation,
+      cold,
+      "DigitalOcean App recreation evidence",
+      validateRecoveryEvidence,
+    );
   }
 }
 
@@ -1445,7 +1356,7 @@ try {
   if (mode === "--self-test") {
     runSelfTest(contract);
     process.stdout.write(
-      "DigitalOcean, PlanetScale, runbook, and recovery-evidence validators passed.\n",
+      "App Platform, PlanetScale, runbook, and recovery-evidence validators passed.\n",
     );
   } else if (mode === "--recovery-evidence") {
     const candidate = evidencePath(arguments_);

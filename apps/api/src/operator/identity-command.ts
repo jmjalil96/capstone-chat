@@ -10,8 +10,6 @@ import {
   EmployeeAdministrationNotFoundError,
 } from "../identity/administration.js";
 import { createEmailSender } from "../identity/email.js";
-import { createInvitationEmail } from "../identity/email-templates.js";
-import { ResendEmailError } from "../identity/resend-email.js";
 import {
   createIdentityService,
   IdentityConflictError,
@@ -23,27 +21,13 @@ import {
   rejectUnknownOperatorArguments,
   requiredOperatorArgument,
 } from "./arguments.js";
+import { invitationDeliveryFailureMetadata, sendInvitationEmail } from "./invitation.js";
 
 type Command = "approve" | "bootstrap" | "deactivate";
 
 const bootstrapArguments = new Set(["--email", "--invitation-delivery", "--name", "--workspace"]);
 const approvalArguments = new Set(["--email", "--role", "--workspace"]);
 const deactivationArguments = new Set(["--email", "--workspace"]);
-
-function deliveryFailureMetadata(error: unknown): Readonly<Record<string, unknown>> {
-  return Object.freeze({
-    errorName: error instanceof Error ? error.name : "UnknownError",
-    ...(error instanceof ResendEmailError
-      ? {
-          category: error.category,
-          durationMs: error.durationMs,
-          ...(error.providerStatus === undefined ? {} : { providerStatus: error.providerStatus }),
-        }
-      : {}),
-    outcome: "approval-committed",
-    retrySafe: true,
-  });
-}
 
 function workspaceIdentity(argumentsMap: ReadonlyMap<string, string>): string {
   const identity = requiredOperatorArgument(argumentsMap, "--workspace");
@@ -73,15 +57,6 @@ function syntheticRehearsalEmail(value: string): string {
     throw new Error("The managed rehearsal administrator email must use the reserved .test TLD");
   }
   return value;
-}
-
-async function sendInvitation(
-  sender: ReturnType<typeof createEmailSender>,
-  publicOrigin: string,
-  normalizedEmail: string,
-): Promise<void> {
-  const signUpUrl = new URL("/sign-up", publicOrigin).href;
-  await sender.send(createInvitationEmail(normalizedEmail, signUpUrl));
 }
 
 async function run(): Promise<void> {
@@ -129,9 +104,9 @@ async function run(): Promise<void> {
 
       if (!invitationDisabled) {
         try {
-          await sendInvitation(emailSender, config.publicOrigin, result.normalizedEmail);
+          await sendInvitationEmail(emailSender, config.publicOrigin, result.normalizedEmail);
         } catch (error: unknown) {
-          process.stderr.write(`${JSON.stringify(deliveryFailureMetadata(error))}\n`);
+          process.stderr.write(`${JSON.stringify(invitationDeliveryFailureMetadata(error))}\n`);
           process.exitCode = 1;
           return;
         }
@@ -151,9 +126,9 @@ async function run(): Promise<void> {
       });
 
       try {
-        await sendInvitation(emailSender, config.publicOrigin, result.normalizedEmail);
+        await sendInvitationEmail(emailSender, config.publicOrigin, result.normalizedEmail);
       } catch (error: unknown) {
-        process.stderr.write(`${JSON.stringify(deliveryFailureMetadata(error))}\n`);
+        process.stderr.write(`${JSON.stringify(invitationDeliveryFailureMetadata(error))}\n`);
         process.exitCode = 1;
         return;
       }

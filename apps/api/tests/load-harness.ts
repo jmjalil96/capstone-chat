@@ -16,18 +16,18 @@ import { createDatabasePool } from "../src/database/pool.js";
 import { createIdentityService } from "../src/identity/service.js";
 import {
   BoundedNdjsonDecoder,
+  diagnosticsAuthorization,
   hasMonotonicMemoryGrowth,
+  type LoadOptions,
   parseLoadOptions,
   StreamLifecycleGuard,
 } from "../src/load/harness-safety.js";
-import { createBudgetService } from "../src/model-policy/budget-service.js";
 import {
-  type CatalogModelSnapshot,
-  initialTierModels,
-  type ModelTier,
-  modelTiers,
-  verifyPrivacyAttestation,
-} from "../src/model-policy/catalog.js";
+  createLoadRehearsalCatalog,
+  managedRehearsalAdministratorEmail,
+} from "../src/load/managed-rehearsal.js";
+import { createBudgetService } from "../src/model-policy/budget-service.js";
+import { modelTiers, verifyPrivacyAttestation } from "../src/model-policy/catalog.js";
 import { createModelPolicyService } from "../src/model-policy/service.js";
 import { costControlTuning } from "../src/model-policy/settings.js";
 
@@ -140,35 +140,11 @@ class LoadMeasurementError extends Error {
   }
 }
 
-function loadCatalog(validatedAt: Date): Readonly<Record<ModelTier, CatalogModelSnapshot>> {
-  const maximumOutputTokens = { balanced: 8_192, fast: 4_096, pro: 16_384 } as const;
-  return Object.freeze(
-    Object.fromEntries(
-      modelTiers.map((tier) => [
-        tier,
-        Object.freeze({
-          available: true,
-          canonicalSlug: initialTierModels[tier],
-          completionPricePerToken: "0.000002",
-          contextLength: 1_000_000,
-          displayName: `Load rehearsal ${tier}`,
-          inputModalities: Object.freeze(["text"]),
-          maximumOutputTokens: maximumOutputTokens[tier],
-          metadataSource: "openrouter",
-          modelId: initialTierModels[tier],
-          outputModalities: Object.freeze(["text"]),
-          promptPricePerToken: "0.000001",
-          requestPriceUsd: "0",
-          supportedParameters: Object.freeze(["max_tokens", "reasoning"]),
-          validatedAt,
-        }),
-      ]),
-    ) as Record<ModelTier, CatalogModelSnapshot>,
-  );
-}
-
 function requiredEnvironment(
-  name: "CAPSTONE_LOAD_AUTH_SECRET" | "CAPSTONE_LOAD_DATABASE_URL",
+  name:
+    | "CAPSTONE_LOAD_AUTH_SECRET"
+    | "CAPSTONE_LOAD_DATABASE_URL"
+    | "CAPSTONE_LOAD_DIAGNOSTICS_SECRET",
 ): string {
   const value = process.env[name]?.trim();
   if (!value) {
@@ -177,12 +153,7 @@ function requiredEnvironment(
   return value;
 }
 
-function loadOptions(): {
-  readonly employees: number;
-  readonly responseStartedP95ObjectiveMilliseconds: 500 | 750;
-  readonly target: URL;
-  readonly waves: number;
-} {
+function loadOptions(): LoadOptions {
   return parseLoadOptions(process.argv.slice(2));
 }
 
@@ -231,6 +202,7 @@ function loadDiagnosticsSnapshot(value: unknown): value is LoadDiagnosticsSnapsh
 async function diagnosticsRequest(
   target: URL,
   action: "idle" | "read" | "reset",
+  authorization: Readonly<Record<string, string>>,
 ): Promise<LoadDiagnosticsSnapshot> {
   const path =
     action === "read"
@@ -243,6 +215,7 @@ async function diagnosticsRequest(
     ...(mutation ? { body: "{}" } : {}),
     headers: {
       accept: "application/json",
+      ...authorization,
       origin: target.origin,
       ...(mutation ? { "content-type": "application/json" } : {}),
     },
@@ -290,7 +263,54 @@ async function assertEmptyLoadDatabase(databaseUrl: string): Promise<void> {
   }
 }
 
-async function verifyTargetDatabase(target: URL, databaseUrl: string): Promise<void> {
+async function assertManagedRehearsalBaseline(databaseUrl: string): Promise<Date> {
+  const pool = createDatabasePool(databaseUrl);
+  try {
+    const result = await pool.query<{
+      readonly approval_count: string;
+      readonly catalog_count: string;
+      readonly initialized: boolean;
+      readonly privacy_verified_at: Date;
+      readonly user_count: string;
+      readonly workspace_count: string;
+    }>(`
+      SELECT
+        (SELECT count(*) FROM "employee_approvals")::text AS approval_count,
+        (SELECT count(*) FROM "model_catalog" WHERE "metadata_source" = 'openrouter')::text AS catalog_count,
+        EXISTS (
+          SELECT 1 FROM "production_initialization"
+          WHERE "singleton_id" = 1 AND "phase" = 'complete'
+        ) AS initialized,
+        (SELECT "verified_at" FROM "openrouter_privacy_attestations" LIMIT 1) AS privacy_verified_at,
+        (SELECT count(*) FROM "user")::text AS user_count,
+        (SELECT count(*) FROM "workspaces")::text AS workspace_count
+    `);
+    const row = result.rows[0];
+    if (
+      row === undefined ||
+      row.initialized !== true ||
+      row.workspace_count !== "1" ||
+      row.approval_count !== "1" ||
+      row.catalog_count !== "3" ||
+      row.user_count !== "0" ||
+      !(row.privacy_verified_at instanceof Date) ||
+      !Number.isFinite(row.privacy_verified_at.getTime())
+    ) {
+      throw new Error(
+        "The managed rehearsal database did not match its initialized clean baseline",
+      );
+    }
+    return row.privacy_verified_at;
+  } finally {
+    await pool.end();
+  }
+}
+
+async function verifyTargetDatabase(
+  target: URL,
+  databaseUrl: string,
+  authorization: Readonly<Record<string, string>>,
+): Promise<void> {
   const first = randomBytes(4).readInt32BE();
   const second = randomBytes(4).readInt32BE();
   const pool = createDatabasePool(databaseUrl);
@@ -303,6 +323,7 @@ async function verifyTargetDatabase(target: URL, databaseUrl: string): Promise<v
           body: JSON.stringify({ first, second }),
           headers: {
             accept: "application/json",
+            ...authorization,
             "content-type": "application/json",
             origin: target.origin,
           },
@@ -340,6 +361,8 @@ async function bootstrapEmployees(
   databaseUrl: string,
   authSecret: string,
   employeeCount: number,
+  managedRehearsal: boolean,
+  validatedAt = new Date(),
 ): Promise<readonly LoadEmployee[]> {
   const pool = createDatabasePool(databaseUrl);
   const database = createDatabase(pool);
@@ -347,14 +370,13 @@ async function bootstrapEmployees(
     const identity = createIdentityService(database);
     const modelPolicy = createModelPolicyService(database);
     const bootstrap = await identity.bootstrap({
-      adminEmail: "load-00@example.test",
-      displayName: "Capstone Load Rehearsal",
-      workspaceIdentity: "capstone-load",
+      adminEmail: managedRehearsal ? managedRehearsalAdministratorEmail : "load-00@example.test",
+      displayName: managedRehearsal ? "Capstone" : "Capstone Load Rehearsal",
+      workspaceIdentity: managedRehearsal ? "capstone" : "capstone-load",
     });
-    const validatedAt = new Date();
     const output = { balanced: 8_192, fast: 4_096, pro: 16_384 } as const;
     await modelPolicy.bootstrap({
-      catalog: loadCatalog(validatedAt),
+      catalog: createLoadRehearsalCatalog(validatedAt),
       employeeActiveGenerationLimit: 2,
       maximumOutputTokens: output,
       mode: "openrouter",
@@ -367,14 +389,21 @@ async function bootstrapEmployees(
         verifiedAt: validatedAt,
       }),
       reservationMarginBasisPoints: 2_000,
-      workspaceIdentity: "capstone-load",
+      workspaceIdentity: managedRehearsal ? "capstone" : "capstone-load",
     });
 
     const employees: LoadEmployee[] = [];
     for (let index = 0; index < employeeCount; index += 1) {
-      const email = `load-${index.toString().padStart(2, "0")}@example.test`;
+      const email =
+        managedRehearsal && index === 0
+          ? managedRehearsalAdministratorEmail
+          : `load-${index.toString().padStart(2, "0")}@example.test`;
       if (index > 0) {
-        await identity.approve({ email, role: "member", workspaceIdentity: "capstone-load" });
+        await identity.approve({
+          email,
+          role: "member",
+          workspaceIdentity: managedRehearsal ? "capstone" : "capstone-load",
+        });
       }
       const userId = randomUUID();
       const identityUser = { email, emailVerified: true, id: userId };
@@ -911,6 +940,7 @@ async function runWave(
   databaseUrl: string,
   runId: string,
   fixture: PreparedWave,
+  diagnosticsHeaders: Readonly<Record<string, string>>,
 ): Promise<{
   readonly apiMeasurements: readonly OrdinaryMeasurement[];
   readonly cancellationMilliseconds: readonly number[];
@@ -953,7 +983,7 @@ async function runWave(
 
   const starts = await Promise.all(controls.map(({ started }) => started));
   const peakState = await databaseState(databaseUrl);
-  const peakDiagnostics = await diagnosticsRequest(target, "read");
+  const peakDiagnostics = await diagnosticsRequest(target, "read", diagnosticsHeaders);
   if (
     peakState.activeChatWorkflows !== employees.length * 2 ||
     peakState.reservedChatAccounting !== employees.length * 2 ||
@@ -1334,10 +1364,25 @@ async function main(): Promise<void> {
   if (authSecret.length < 32) {
     throw new Error("CAPSTONE_LOAD_AUTH_SECRET must contain at least 32 characters");
   }
-  await diagnosticsRequest(options.target, "read");
-  await assertEmptyLoadDatabase(databaseUrl);
-  await verifyTargetDatabase(options.target, databaseUrl);
-  const employees = await bootstrapEmployees(databaseUrl, authSecret, options.employees);
+  const diagnosticsSecret = options.managedRehearsal
+    ? requiredEnvironment("CAPSTONE_LOAD_DIAGNOSTICS_SECRET")
+    : authSecret;
+  const diagnosticsHeaders = diagnosticsAuthorization(options, diagnosticsSecret);
+  await diagnosticsRequest(options.target, "read", diagnosticsHeaders);
+  const managedValidatedAt = options.managedRehearsal
+    ? await assertManagedRehearsalBaseline(databaseUrl)
+    : undefined;
+  if (!options.managedRehearsal) {
+    await assertEmptyLoadDatabase(databaseUrl);
+  }
+  await verifyTargetDatabase(options.target, databaseUrl, diagnosticsHeaders);
+  const employees = await bootstrapEmployees(
+    databaseUrl,
+    authSecret,
+    options.employees,
+    options.managedRehearsal,
+    managedValidatedAt,
+  );
   const runId = randomUUID();
   const compactionEmployee = employees[3];
   const warmEmployee = employees[0];
@@ -1383,7 +1428,7 @@ async function main(): Promise<void> {
   // The complete bounded workload warms lazy schema compilation and V8 tiering before heap/RSS
   // become leak evidence; simple health checks do not exercise those finite runtime caches.
   for (const fixture of warmupFixtures) {
-    await runWave(options.target, employees, databaseUrl, runId, fixture);
+    await runWave(options.target, employees, databaseUrl, runId, fixture, diagnosticsHeaders);
   }
   await pause(2_000);
   const warmedState = await databaseState(databaseUrl);
@@ -1395,7 +1440,11 @@ async function main(): Promise<void> {
   ) {
     throw new Error("The warmed load fixture left active work or unsettled reservations");
   }
-  const warmedPostIdleDiagnostics = await diagnosticsRequest(options.target, "idle");
+  const warmedPostIdleDiagnostics = await diagnosticsRequest(
+    options.target,
+    "idle",
+    diagnosticsHeaders,
+  );
   if (
     warmedPostIdleDiagnostics.streams.active !== 0 ||
     warmedPostIdleDiagnostics.pool.waiting !== 0 ||
@@ -1419,16 +1468,31 @@ async function main(): Promise<void> {
     ) {
       throw new Error("A measured wave began with active work or unsettled reservations");
     }
-    await diagnosticsRequest(options.target, "reset");
+    await diagnosticsRequest(options.target, "reset", diagnosticsHeaders);
     const fixture = preparedWaves[wave];
     if (fixture === undefined) {
       throw new Error("A measured wave fixture was missing");
     }
-    const result = await runWave(options.target, employees, databaseUrl, runId, fixture);
-    const activeWaveDiagnostics = await diagnosticsRequest(options.target, "read");
+    const result = await runWave(
+      options.target,
+      employees,
+      databaseUrl,
+      runId,
+      fixture,
+      diagnosticsHeaders,
+    );
+    const activeWaveDiagnostics = await diagnosticsRequest(
+      options.target,
+      "read",
+      diagnosticsHeaders,
+    );
     await pause(2_000);
     const durableState = await databaseState(databaseUrl);
-    const postIdleDiagnostics = await diagnosticsRequest(options.target, "idle");
+    const postIdleDiagnostics = await diagnosticsRequest(
+      options.target,
+      "idle",
+      diagnosticsHeaders,
+    );
     if (
       durableState.activeChatWorkflows !== 0 ||
       durableState.activeCompactions !== 0 ||

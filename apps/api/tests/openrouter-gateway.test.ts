@@ -104,7 +104,13 @@ describe("OpenRouterGateway", () => {
   });
 
   it("sends the private route and normalizes split, multiline SSE without reasoning content", async () => {
-    const captured: { body?: unknown; headers?: Headers; method?: string; url?: string } = {};
+    const captured: {
+      body?: unknown;
+      headers?: Headers;
+      method?: string;
+      redirect?: RequestInit["redirect"];
+      url?: string;
+    } = {};
     const sse = [
       ": OPENROUTER PROCESSING\n\n",
       'data: {"id":"gen-synthetic","model":"resolved/model-v1",\n',
@@ -119,6 +125,7 @@ describe("OpenRouterGateway", () => {
         captured.method = init.method;
       }
       captured.headers = new Headers(init?.headers);
+      captured.redirect = init?.redirect;
       captured.body = JSON.parse(String(init?.body)) as unknown;
       return streamResponse(encodedChunks(sse, 5), {
         "x-generation-id": "gen-synthetic",
@@ -130,6 +137,7 @@ describe("OpenRouterGateway", () => {
 
     expect(captured.url).toBe("https://openrouter.ai/api/v1/chat/completions");
     expect(captured.method).toBe("POST");
+    expect(captured.redirect).toBe("error");
     expect(captured.headers?.get("authorization")).toBe("Bearer test-key-never-sent");
     expect(captured.body).toEqual({
       max_tokens: 512,
@@ -1248,6 +1256,7 @@ describe("OpenRouterGateway", () => {
       apiKey: "test-key-never-sent",
       fetch: async (_input, init) =>
         await new Promise<Response>((_resolve, reject) => {
+          expect(init?.redirect).toBe("error");
           init?.signal?.addEventListener(
             "abort",
             () => reject(init.signal?.reason ?? new DOMException("aborted", "AbortError")),

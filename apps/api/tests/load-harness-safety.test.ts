@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   BoundedNdjsonDecoder,
+  diagnosticsAuthorization,
   hasMonotonicMemoryGrowth,
   parseLoadOptions,
   StreamLifecycleGuard,
@@ -12,7 +13,12 @@ describe("load harness safety", () => {
   it("requires an explicit isolated non-production target and bounded wave count", () => {
     expect(
       parseLoadOptions(["--target", "http://127.0.0.1:3015", "--waves", "5", ...confirmations]),
-    ).toMatchObject({ employees: 20, responseStartedP95ObjectiveMilliseconds: 500, waves: 5 });
+    ).toMatchObject({
+      employees: 20,
+      managedRehearsal: false,
+      responseStartedP95ObjectiveMilliseconds: 500,
+      waves: 5,
+    });
     expect(
       parseLoadOptions([
         "--target",
@@ -51,6 +57,39 @@ describe("load harness safety", () => {
         ]),
       ).toThrow("--employees");
     }
+  });
+
+  it("fences managed diagnostics credentials to the exact HTTPS rehearsal origin", () => {
+    const secret = "managed-diagnostics-secret-with-at-least-32-characters";
+    const options = parseLoadOptions([
+      "--target",
+      "https://rehearsal.chat.capstone.com.ec",
+      "--managed-rehearsal",
+      ...confirmations,
+    ]);
+    expect(diagnosticsAuthorization(options, secret)).toEqual({
+      authorization: `Bearer ${secret}`,
+    });
+    expect(() =>
+      diagnosticsAuthorization(
+        { managedRehearsal: true, target: new URL("https://evil.example") },
+        secret,
+      ),
+    ).toThrow("not safe to send");
+
+    for (const target of [
+      "http://rehearsal.chat.capstone.com.ec",
+      "https://rehearsal.chat.capstone.com.ec.evil.example",
+      "https://rehearsal.chat.capstone.com.ec:444",
+      "https://evil.example",
+    ]) {
+      expect(() =>
+        parseLoadOptions(["--target", target, "--managed-rehearsal", ...confirmations]),
+      ).toThrow("exact https://rehearsal.chat.capstone.com.ec origin");
+    }
+    expect(() =>
+      parseLoadOptions(["--target", "https://rehearsal.chat.capstone.com.ec", ...confirmations]),
+    ).toThrow("--managed-rehearsal");
   });
 
   it("accepts only the allowlisted response-start p95 objectives", () => {

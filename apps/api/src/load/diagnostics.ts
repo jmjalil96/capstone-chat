@@ -1,3 +1,4 @@
+import { createHash, timingSafeEqual } from "node:crypto";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import type { FastifyInstance } from "fastify";
 import type { DatabasePool } from "../database/pool.js";
@@ -84,6 +85,7 @@ export function registerLoadDiagnostics(
   server: FastifyInstance,
   pool: DatabasePool,
   streams: ActiveStreamRegistry,
+  bearerSecret: string,
 ): void {
   const observedPool = pool as ObservedPool;
   const eventLoop = monitorEventLoopDelay({ resolution: 10 });
@@ -155,19 +157,52 @@ export function registerLoadDiagnostics(
   const sampleTimer = setInterval(sample, sampleIntervalMilliseconds);
   sampleTimer.unref();
 
-  server.get("/__load/metrics", (_request, reply) => {
+  const expectedAuthorization = createHash("sha256")
+    .update(`Bearer ${bearerSecret}`, "utf8")
+    .digest();
+  function authorize(authorization: string | undefined): boolean {
+    if (authorization === undefined) {
+      return false;
+    }
+    const candidate = createHash("sha256").update(authorization, "utf8").digest();
+    return timingSafeEqual(candidate, expectedAuthorization);
+  }
+  function hideUnauthorized(
+    authorization: string | undefined,
+    reply: { code(statusCode: number): { send(payload: unknown): unknown } },
+  ): boolean {
+    if (authorize(authorization)) {
+      return false;
+    }
+    reply.code(404).send({ error: "Not Found" });
+    return true;
+  }
+
+  server.get("/__load/metrics", (request, reply) => {
+    if (hideUnauthorized(request.headers.authorization, reply)) {
+      return;
+    }
     void reply.header("cache-control", "no-store");
     return snapshot();
   });
-  server.post("/__load/metrics/idle", (_request, reply) => {
+  server.post("/__load/metrics/idle", (request, reply) => {
+    if (hideUnauthorized(request.headers.authorization, reply)) {
+      return;
+    }
     void reply.header("cache-control", "no-store");
     return snapshot(true);
   });
-  server.post("/__load/metrics/reset", (_request, reply) => {
+  server.post("/__load/metrics/reset", (request, reply) => {
+    if (hideUnauthorized(request.headers.authorization, reply)) {
+      return;
+    }
     void reply.header("cache-control", "no-store");
     return reset();
   });
   server.post("/__load/database-challenge", async (request, reply) => {
+    if (hideUnauthorized(request.headers.authorization, reply)) {
+      return;
+    }
     void reply.header("cache-control", "no-store");
     const challenge = databaseChallenge(request.body);
     if (challenge === null) {
