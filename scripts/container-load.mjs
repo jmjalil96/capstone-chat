@@ -6,7 +6,7 @@ const authSecret = process.env.CAPSTONE_LOAD_AUTH_SECRET;
 const portValue = process.env.CAPSTONE_LOAD_PORT ?? "3015";
 const port = Number(portValue);
 const candidateCpu = "1";
-const candidateMemory = "2g";
+const candidateMemory = "1g";
 
 function assert(condition, message) {
   if (!condition) {
@@ -154,8 +154,8 @@ try {
     containerName,
   ]);
   assert(
-    limits === "1000000000 2147483648 2147483648 256 node",
-    "Docker did not apply the selected Standard limits",
+    limits === "1000000000 1073741824 1073741824 256 node",
+    "Docker did not apply the selected App Platform candidate limits",
   );
   await waitForReadiness();
 

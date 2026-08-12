@@ -1,74 +1,91 @@
 # Employee access
 
 Administrators use `/admin/employees` for ordinary employee lifecycle work. Fastify remains the
-authorization boundary; an administrator cannot read another employee's conversations. App
-Platform console commands are a rare recovery seam, not the routine administration interface.
+authorization boundary; administrators cannot read another employee's conversations. App
+Platform console commands are a rare separately authorized recovery seam, not a routine interface.
 
-There is no SSH or persistent operator filesystem. A separately authorized console operation must
-resolve exactly one ready service instance, verify its deployment ID, immutable GHCR digest,
-image-owned full revision, non-root UID 1000, and current database authority, then accept bounded
-private input only through standard input with shell tracing/history disabled. The service has only
-the application database role; it cannot run migrations or read recovery credentials.
+## Bounded production console
+
+The old repository console wrapper is intentionally gone. For either approved command below, use
+DigitalOcean's native console directly and do not improvise a second tunnel or helper:
+
+1. Obtain separate, short-lived authorization for the named command. Mint a custom DigitalOcean
+   token with exactly `app:access_console` and its required `app:read`, `regions:read`,
+   `sizes:read`, and `actions:read` scopes. Do not add `app:update`, create, delete, database,
+   registry, or account-wide write scope. Store it only in a temporary `doctl` context by running
+   `doctl auth init --context capstone-production-console` and entering the token at the prompt;
+   never pass the token as a command argument.
+2. Resolve the accepted App and active deployment IDs through the dashboard or read-only provider
+   evidence. Confirm the deployment is `ACTIVE`, both components report the accepted full source
+   commit, and public `/api/health/ready` reports that same revision.
+3. Open the service component from the exact deployment:
+
+   ```sh
+   doctl apps console "$DIGITALOCEAN_APP_ID" capstone-chat \
+     --deployment "$EXPECTED_DEPLOYMENT_ID" \
+     --context capstone-production-console
+   ```
+
+4. In the remote shell, first run `set +x` and `unset HISTFILE`. Run `id -u` and require exactly
+   `1000`. Run `printf '%s\n' "$DEPLOYMENT_REVISION"` and require the accepted full source commit.
+   Do not run `env`, `printenv`, shell tracing, a database client, or any command that prints
+   credentials.
+5. Require fresh accepted live-contract evidence for this deployment and fresh PlanetScale
+   evidence that its `DATABASE_URL` role is the application role: not superuser, database creator,
+   role creator, replication, or row-security bypass; no database or `public`-schema `CREATE`;
+   restricted to both current Dedicated Egress `/32`s; and no migration or recovery authority. If
+   that evidence is absent or predates the deployment or role change, stop. Do not inspect or print
+   the URL to recreate the check from the console.
+6. Run only the approved command below using the echo-safe wrapper shown there. The wrapper turns
+   PTY echo off before Node reads the private JSON, restores it when Node exits, and reports only
+   the exit status. Paste the JSON only after Node is waiting, then finish it with Control-D. If
+   the command or connection is interrupted and the prompt remains visually blank, type
+   `stty echo` and press Return even though those characters are not visible. Do not capture the
+   terminal or copy its scrollback into evidence.
+7. Type `exit`, revoke the DigitalOcean token immediately, run
+   `doctl auth remove --context capstone-production-console`, and record only UTC time, deployment
+   ID, source commit, command name, safe outcome, and operator.
+
+The console is ephemeral and is never a place to create files or modify the running instance.
 
 ## Approve, invite, or resend
 
 Use `/admin/employees` with a session authenticated within the last 15 minutes:
 
-1. Approve the normalized company email as `member`; use `admin` only under explicit authorization.
-2. Send or resend deliberately through the configured Resend boundary. There is no background retry
-   or delivery queue. A timeout with ambiguous provider outcome can make a deliberate retry send a
-   duplicate message, but cannot duplicate approval or membership authority.
-3. Record only role, safe outcome, UTC time, release revision, and operator. Never retain email,
-   provider response, or the fragment-bearing action URL.
-
-Approval is idempotent for the same pending state. A pending role can be corrected through the
-approved flow; active/deactivated conflicts fail rather than silently changing access.
+1. Approve the normalized company email as `member`; use `admin` only with explicit authorization.
+2. Send or resend deliberately. There is no queue or background retry. An ambiguous timeout can
+   cause duplicate mail on a deliberate retry, but cannot duplicate approval authority.
+3. Record only role, safe outcome, UTC time, source revision, and operator. Never retain the email,
+   provider body, or fragment-bearing action URL.
 
 ## First administrator invitation
 
-Empty-database first provisioning deliberately creates the canonical pending administrator
-approval without email while the health-only bootstrap still returns 404 for product routes. Only
-after the final exact service is ready may a bounded application-role console command send the
-initial invitation:
+First initialization creates one canonical pending administrator approval without sending email.
+Only after the final service is ready may the bounded application-role command send the invitation.
+It re-resolves existing authority, accepts at most 32 KiB through standard input, cannot create or
+change membership, and emits only a content-free outcome. The temporary initialization job must be
+absent and its roles/key revoked. Recovery never repeats initialization or this invitation.
 
-- it re-resolves the existing approval and never creates or changes authority;
-- it accepts its at-most-32-KiB input through standard input;
-- it uses only the final application role, Better Auth secret, public origin, sender, and Resend
-  key; and
-- it emits only a content-free sent/retry-safe outcome.
+After completing the bounded-console checks above, run this exact single line in the remote shell:
 
-The temporary initialization job cannot send email and must already be absent, with its roles/key
-revoked. Recovery or cold recreation of an initialized database never repeats initialization or
-sends this initial invitation.
+```sh
+stty -echo; trap 'stty echo' EXIT HUP INT TERM; node apps/api/dist/entrypoint.js invite-initial; capstone_status=$?; stty echo; trap - EXIT HUP INT TERM; printf '\ncommand-exit:%s\n' "$capstone_status"
+```
 
-## Deactivate and revoke
+Paste the same canonical production initialization JSON used by the completed initialization job,
+then press Control-D. Require `command-exit:0`; the only successful application outcome is
+`{"command":"invite-initial","outcome":"sent","retrySafe":true}`. A failure is not permission
+to change membership or retry blindly; retain only its content-free error category and diagnose the
+bounded cause.
 
-Use the administrator UI. Deactivation blocks authorization first, refuses self-deactivation and
-removal of the final active administrator, then durably cancels chat/compaction work and revokes
-sessions. Verify access is blocked, work is terminal, reservations are settled/reconcilable, and
-sessions are absent. Content and accounting retain their existing policies; conversation deletion
-is not an access-control shortcut.
+## Deactivate and recover
 
-If the operation reports `access-blocked-cleanup-incomplete`, access is already blocked. Correct
-the bounded database/provider problem and deliberately repeat until cleanup completes. Never use
-direct SQL to bypass final-administrator protection.
+Deactivation blocks authorization first, refuses self-deactivation and removal of the final active
+administrator, then cancels work and revokes sessions. If cleanup is incomplete, access is already
+blocked; correct the bounded failure and repeat. Never bypass the guard with direct SQL.
 
-## Administrator recovery
-
-1. Recover the administrator mailbox and company Bitwarden owner through independent offline
-   methods. Record the one-owner risk if the ordinary owner is unavailable.
-2. If another active application administrator exists, use the ordinary UI to approve the
-   authorized replacement.
-3. If none can act, stop for action-specific authorization of the reviewed bounded identity
-   recovery command on one verified ready App Platform instance. Do not rerun the first-
-   initialization contract, alter the initialization latch, add an initialization job, or open
-   PlanetScale to an operator laptop.
-4. The recovery command may use only application identity/email authority required by its reviewed
-   contract. It receives no migration, recovery, model, telemetry, GHCR, or DigitalOcean token and
-   cannot perform DDL.
-5. Verify sign-up, fragment verification, sign-in, fresh-session administration, and the canonical
-   administrator count. Record only safe outcome, role, UTC time, deployment ID, revision/digest,
-   and operator.
-
-If no source-controlled command satisfies this boundary, recovery is blocked pending a reviewed
-repository change; console improvisation or direct database mutation is prohibited.
+For administrator recovery, recover the mailbox and Bitwarden owner first. Prefer another active
+administrator using the UI. If none can act, stop for explicit authorization of a reviewed bounded
+identity command on one verified ready instance. Do not rerun initialization, alter its latch, add
+an initialization job, or open PlanetScale to an operator laptop. If no source-controlled command
+fits, recovery is blocked pending a reviewed repository change.

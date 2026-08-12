@@ -96,9 +96,6 @@ importers:
       drizzle-kit:
         specifier: 0.31.10
         version: 0.31.10
-      testcontainers:
-        specifier: 12.1.0
-        version: 12.1.0
       tsx:
         specifier: 4.23.9
         version: 4.23.9

@@ -28,9 +28,10 @@ resources, and model use. OpenRouter spend is separate and remains hard-capped b
 at USD 100 per workspace month.
 The deferred second Bitwarden recovery owner remains a visible launch risk. The topology remains
 unaccepted until the separately authorized managed rehearsal passes every locked gate, including
-the full 20-employee/40-stream workload twice. Production acceptance is also blocked until the
-documented accidental-App-deletion/domain-binding conflict with the four-hour RTO is resolved by a
-supported provider path or an explicit owner amendment.
+the full 20-employee/40-stream workload twice. Production also requires an explicit decision on
+DigitalOcean's current feature-preview label for the selected compute sizes. The owner accepted a
+best-effort maximum 24-hour domain-binding exception for accidental App deletion; controlled
+recovery keeps the four-hour RTO.
 
 Earlier Render, raw-Droplet, RIC1/NYC3 host, Caddy, systemd, UFW, Volume, and Fluent Bit records are
 historical evidence only. They are not alternate production instructions.
@@ -452,9 +453,7 @@ candidate image:
 export CAPSTONE_LOAD_DATABASE_URL='<isolated PostgreSQL URL>'
 export CAPSTONE_LOAD_AUTH_SECRET='<generated test-only value of at least 32 characters>'
 DATABASE_URL="$CAPSTONE_LOAD_DATABASE_URL" pnpm db:migrate
-docker build --file apps/api/Dockerfile \
-  --build-arg DEPLOYMENT_REVISION="$(git rev-parse HEAD)" \
-  --tag capstone-chat:phase8-load .
+docker build --file apps/api/Dockerfile --tag capstone-chat:phase8-load .
 ```
 
 Run the unchanged five measured waves. Before their warmed heap/RSS baseline, the harness runs ten
@@ -488,19 +487,15 @@ gates. No local or historical host result substitutes for that evidence.
 
 GitHub Actions runs formatting/linting, repository and operations validation, type checking, clean
 migrations, unit/PostgreSQL integration tests, production builds, the bundle report, dependency
-audit, and a non-root built-image startup/static/API smoke as named steps in one quality job.
-Playwright remains a separate job so browser failures and artifacts are isolated. CI uses only
-synthetic identities, a test-only auth secret, fake application providers, and the job-local
-PostgreSQL service while executing tests. After both exact-commit jobs pass on `main`, the separate
-publish job uses `GITHUB_TOKEN` to push only that full-revision image to GitHub Container Registry;
-it does not contact Resend, OpenRouter, New Relic, DigitalOcean, or PlanetScale.
+audit, and a non-root container startup/static/API smoke as named steps in one quality job.
+Playwright remains separate. CI uses only synthetic identities, a test auth secret, fake providers,
+and job-local PostgreSQL. It builds but does not publish the production Dockerfile.
 
-A distinct manual workflow may deploy only the current protected `main` release after the production
-environment approves it. That path is serialized with rollback and every other App-spec writer,
-uses the pinned App ID plus least-privilege update/read token, verifies the immutable digest and live
-fingerprint before mutation, and preserves current encrypted variables and both Dedicated Egress
-addresses. First provisioning, initialization, teardown, paid smoke, and recovery are separate
-operator grants; the steady deployment credential cannot perform them.
+The protected manual deployment workflow accepts only the current green `main` commit. It advances
+`app-platform-production` by non-force fast-forward, asks App Platform to build that source with
+autodeploy disabled, and accepts the release only when the service, migration job, and public
+readiness report the authorized commit. First provisioning, initialization, configuration,
+teardown, paid smoke, and recovery remain separately authorized.
 
 ## Auth schema regeneration
 
@@ -582,37 +577,36 @@ responses are not stored as immutable content.
 
 ## Production artifact and acceptance boundary
 
-Build both applications and the revision-labeled API image from the repository root:
+Build both applications and the source-deployable API image from the repository root:
 
 ```sh
 pnpm build
 docker build --file apps/api/Dockerfile \
-  --build-arg DEPLOYMENT_REVISION="$(git rev-parse HEAD)" \
   --tag capstone-chat-api .
 ```
 
 The API image runs as the non-root `node` user and includes the compiled runtime, migrations, and
 `apps/web/dist`. Fastify serves the SPA and API from the same origin with explicit API-404, fallback,
 cache, security-header, and streaming boundaries. The committed
-[`deploy/app-platform`](./deploy/app-platform/) artifacts define digest-free health-bootstrap,
-temporary-initialization, and steady-state contracts plus protected rendering, drift audit,
-strict-forward deployment, compatible forward rollback, and GHCR-retention controls. App Platform
-pulls the exact accepted AMD64 digest and runs one non-root service plus one non-root `PRE_DEPLOY`
-migration job. PlanetScale remains the only authoritative application data store.
+[`deploy/app-platform`](./deploy/app-platform/) contains four source contracts and one read-only
+live-state validator. App Platform builds the protected release-pointer commit with
+`apps/api/Dockerfile` for one non-root service and one non-root `PRE_DEPLOY` migration job.
+`DEPLOYMENT_REVISION=${_self.COMMIT_HASH}` is injected at runtime; component source hashes and
+public readiness must agree. PlanetScale remains the only authoritative application data store.
 
 Production secrets originate in Bitwarden and enter only encrypted, component-scoped App Platform
 variables. The service receives the application database role and runtime-provider credentials; the
 steady migration job receives only its distinct migration `DATABASE_URL`; the recovery role is
 never installed. API startup never applies migrations. Protected deployment may select only the
-current checked `main` release. Compatible rollback is a new deployment of the immediately previous
-exact digest through the **current** validated spec; DigitalOcean's native rollback action is not a
-production authority.
+current checked `main` release. Compatible rollback is a reviewed `git revert`, green CI, and
+normal forward source deployment through the **current** App configuration; DigitalOcean's native
+rollback action is not production authority.
 
 Empty-database provisioning first runs a secret-free health-only service to acquire the two stable
 Dedicated Egress addresses. After PlanetScale restrictions are installed, a temporary job performs
 ordered migration, database-only identity bootstrap, catalog validation, and model-policy bootstrap
 behind a durable initialization-document hash latch. Operators then remove its configuration,
-revoke every temporary role/key, evict unsafe bootstrap history, deploy the steady service, and send
+revoke every temporary role/key, deploy the steady service, and send
 the one initial administrator invitation only after final readiness. Cold recreation against an
 initialized or restored database must verify the existing latch and authority; it must never reuse
 the initialization document/job/key or resend that invitation.
@@ -634,8 +628,8 @@ Repository implementation does not authorize or perform deployment. Follow the i
 provider/budget setup, employee access, incidents, secret rotation, and isolated PITR recovery.
 Those runbooks require content-free evidence and fresh approval before external mutation, paid
 inference, disposable DigitalOcean/PlanetScale resources, or recovery-resource creation. Repository
-implementation and CI do not authorize a DigitalOcean spec update, GHCR deletion, DNS change,
-credential installation, invitation, or provider recovery action.
+implementation and CI do not authorize a DigitalOcean configuration update, historical GHCR
+deletion, DNS change, credential installation, invitation, or provider recovery action.
 
 ## Workspace boundaries
 

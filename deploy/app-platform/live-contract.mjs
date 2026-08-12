@@ -1,20 +1,15 @@
 #!/usr/bin/env node
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  assertProvisioningTransition,
-  assertSafeRollbackHistory,
-  DIGEST_PATTERN,
-  liveFingerprint,
-  REVISION_PATTERN,
-  readContract,
-  readProtectedJson,
-  renderSpec,
-  validateApp,
-  writeProtectedJson,
-} from "./contract.mjs";
+import { REVISION_PATTERN, readContract, readProtectedJson, validateApp } from "./contract.mjs";
 
-const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
+const directory = path.dirname(fileURLToPath(import.meta.url));
+const CONTRACTS = {
+  bootstrap: "bootstrap.contract.yaml",
+  live: "app.contract.yaml",
+  rehearsal: "rehearsal.contract.yaml",
+  "rehearsal-bootstrap": "rehearsal-bootstrap.contract.yaml",
+};
 
 function fail(message) {
   throw new Error(message);
@@ -22,6 +17,9 @@ function fail(message) {
 
 function parseArguments(values) {
   const [operation, ...rest] = values;
+  if (operation !== "validate") {
+    fail("App contract operation must be validate");
+  }
   const options = {};
   for (let index = 0; index < rest.length; index += 2) {
     const key = rest[index];
@@ -35,7 +33,12 @@ function parseArguments(values) {
     }
     options[name] = value;
   }
-  return { operation, options };
+  for (const key of Object.keys(options)) {
+    if (!["app-id", "contract", "live-file", "mode", "revision"].includes(key)) {
+      fail(`Unexpected --${key} argument`);
+    }
+  }
+  return options;
 }
 
 function required(options, name, pattern) {
@@ -46,141 +49,18 @@ function required(options, name, pattern) {
   return value;
 }
 
-function optionalProtectedJson(options, name, label) {
-  const value = options[name];
-  return value === undefined ? undefined : readProtectedJson(value, label);
-}
-
-function contractPath(mode, explicit) {
-  if (explicit !== undefined) {
-    return explicit;
-  }
-  const names = {
-    bootstrap: "bootstrap.contract.yaml",
-    domain: "domain.contract.yaml",
-    egress: "egress.contract.yaml",
-    initialization: "initialization.contract.yaml",
-    live: "app.contract.yaml",
-    rehearsal: "rehearsal.contract.yaml",
-    "rehearsal-bootstrap": "rehearsal-bootstrap.contract.yaml",
-    "rehearsal-domain": "rehearsal-domain.contract.yaml",
-    "rehearsal-egress": "rehearsal-egress.contract.yaml",
-    "rehearsal-initialization": "rehearsal-initialization.contract.yaml",
-  };
-  const name = names[mode];
-  if (name === undefined) {
-    fail("--mode is invalid");
-  }
-  return path.join(scriptDirectory, name);
-}
-
-function assertOnly(options, allowed) {
-  for (const key of Object.keys(options)) {
-    if (!allowed.includes(key)) {
-      fail(`Unexpected --${key} argument`);
-    }
-  }
-}
-
-function runRender(options) {
-  assertOnly(options, [
-    "contract",
-    "digest",
-    "general-input-file",
-    "general-mode",
-    "live-file",
-    "mode",
-    "output",
-    "registry-input-file",
-    "registry-mode",
-    "revision",
-    "secret-input-file",
-    "secret-mode",
-    "source-mode",
-  ]);
-  const mode = required(
-    options,
-    "mode",
-    /^(?:bootstrap|egress|domain|initialization|live|rehearsal(?:-bootstrap|-domain|-egress|-initialization)?)$/u,
-  );
-  const contract = readContract(contractPath(mode, options.contract), mode);
-  const digest = required(options, "digest", DIGEST_PATTERN);
-  const revision = required(options, "revision", REVISION_PATTERN);
-  const output = required(options, "output");
-  const liveApp = optionalProtectedJson(options, "live-file", "Live App input");
-  const sourceMode = options["source-mode"];
-  assertProvisioningTransition(sourceMode, mode);
-  if (["bootstrap", "rehearsal-bootstrap"].includes(mode)) {
-    if (liveApp !== undefined) {
-      fail("Bootstrap does not accept an existing Live App input");
-    }
-  } else {
-    if (liveApp === undefined) {
-      fail("A fetched Live App input is required for this transition");
-    }
-    const sourceContract = readContract(contractPath(sourceMode), sourceMode);
-    validateApp({ app: liveApp, contract: sourceContract, digest });
-  }
-  const spec = renderSpec({
-    contract,
-    digest,
-    generalInput: optionalProtectedJson(options, "general-input-file", "Runtime general input"),
-    generalMode: options["general-mode"] ?? "preserve",
-    liveApp,
-    registryInput: optionalProtectedJson(
-      options,
-      "registry-input-file",
-      "Registry credential input",
-    ),
-    registryMode: options["registry-mode"] ?? "preserve",
-    revision,
-    secretInput: optionalProtectedJson(options, "secret-input-file", "Runtime secret input"),
-    secretMode: options["secret-mode"] ?? "preserve",
-  });
-  writeProtectedJson(output, { spec });
-  return { digest, mode, operation: "render", revision, schema: 1 };
-}
-
-function runValidate(options) {
-  assertOnly(options, ["app-id", "contract", "digest", "history-file", "live-file", "mode"]);
-  const mode = options.mode ?? "live";
-  const contract = readContract(contractPath(mode, options.contract), mode);
-  const live = readProtectedJson(required(options, "live-file"), "Live App input");
+try {
+  const options = parseArguments(process.argv.slice(2));
+  const mode = required(options, "mode", /^(?:bootstrap|live|rehearsal|rehearsal-bootstrap)$/u);
+  const contractName = CONTRACTS[mode];
+  const contract = readContract(options.contract ?? path.join(directory, contractName), mode);
   const result = validateApp({
-    app: live,
+    app: readProtectedJson(required(options, "live-file"), "Live App input"),
     appId: options["app-id"],
     contract,
-    digest: required(options, "digest", DIGEST_PATTERN),
+    expectedRevision: required(options, "revision", REVISION_PATTERN),
   });
-  if (options["history-file"] !== undefined) {
-    if (mode !== "live") {
-      fail("Rollback history is valid only for the live contract");
-    }
-    const history = readProtectedJson(options["history-file"], "Deployment history input");
-    assertSafeRollbackHistory(history.deployments);
-  }
-  return { ...result, operation: "validate", schema: 1 };
-}
-
-function runFingerprint(options) {
-  assertOnly(options, ["live-file"]);
-  const live = readProtectedJson(required(options, "live-file"), "Live App input");
-  return { fingerprint: liveFingerprint(live), operation: "fingerprint", schema: 1 };
-}
-
-try {
-  const { operation, options } = parseArguments(process.argv.slice(2));
-  let result;
-  if (operation === "render") {
-    result = runRender(options);
-  } else if (operation === "validate") {
-    result = runValidate(options);
-  } else if (operation === "fingerprint") {
-    result = runFingerprint(options);
-  } else {
-    fail("App contract operation is invalid");
-  }
-  process.stdout.write(`${JSON.stringify(result)}\n`);
+  process.stdout.write(`${JSON.stringify({ ...result, operation: "validate", schema: 1 })}\n`);
 } catch (error) {
   process.stderr.write(
     `${JSON.stringify({ errorName: error instanceof Error ? error.name : "Error", outcome: "failed" })}\n`,

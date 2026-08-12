@@ -2,10 +2,13 @@ schema: 1
 mode: rehearsal
 name: capstone-chat-rehearsal
 region: ric
-image:
-  registry_type: GHCR
-  registry: jmjalil96
-  repository: capstone-chat
+source:
+  github:
+    repo: jmjalil96/capstone-chat
+    branch: app-platform-rehearsal
+    deploy_on_push: false
+  source_dir: /
+  dockerfile_path: apps/api/Dockerfile
 egress:
   type: DEDICATED_IP
 edge:
@@ -32,6 +35,7 @@ service:
       CAPSTONE_SECRET_SOURCE: platform-environment
       CLIENT_ADDRESS_SOURCE: digitalocean-app-platform
       DEPLOYMENT_TARGET: digitalocean-app-platform
+      DEPLOYMENT_REVISION: ${_self.COMMIT_HASH}
       EMAIL_DELIVERY: disabled
       HOST: 0.0.0.0
       LOG_LEVEL: info
@@ -59,6 +63,7 @@ job:
       CAPSTONE_DEPLOYMENT_PROFILE: managed-rehearsal
       CAPSTONE_SECRET_SOURCE: platform-environment
       DEPLOYMENT_TARGET: digitalocean-app-platform
+      DEPLOYMENT_REVISION: ${_self.COMMIT_HASH}
       NODE_ENV: test
     secret_keys:
       - DATABASE_URL

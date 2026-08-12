@@ -47,7 +47,8 @@ The initial system does not introduce microservices, Redis, or a separate queue.
 
 The approved production launch candidate is one DigitalOcean App Platform
 `apps-s-1vcpu-1gb-fixed` dynamic service with one instance in the managed `ric` region, one 512 MiB
-`PRE_DEPLOY` migration job using the same immutable image digest, paid Dedicated Egress, and one
+`PRE_DEPLOY` migration job built from the same verified Git source commit and Dockerfile, paid
+Dedicated Egress, and one
 USD 5 PlanetScale Postgres PS-5 ARM Single Node cluster in AWS `us-east-1`. App Platform's
 Cloudflare-backed edge serves the one public origin and terminates TLS. PlanetScale accepts direct
 PostgreSQL `verify-full` connections only from both exclusive Dedicated Egress IPv4 `/32`s, with
@@ -57,9 +58,10 @@ read replica, or automatic failover.
 
 The database starts with 10 GB included storage, may grow once to an enforced 15 GB ceiling, and
 uses backups every 12 hours retained for 84 hours. App Platform's filesystem is ephemeral and
-contains no authoritative application data. Recovery uses source-controlled non-secret App
-contracts, exact immutable OCI digests, Bitwarden source credentials, managed PostgreSQL recovery,
-and provider ownership. The owner accepted the App Platform/Cloudflare plaintext-processing
+contains no authoritative application data. Recovery uses protected Git history, an exact source
+commit, the source-controlled App contracts and Dockerfile, an offline repository bundle,
+Bitwarden source credentials, managed PostgreSQL recovery, and provider ownership. The owner
+accepted the App Platform/Cloudflare plaintext-processing
 boundary and its documented residual logging/access uncertainty on August 12, 2026. Controlled App
 recreation must meet the four-hour RTO. As an explicit exception approved the same day, accidental
 App deletion while a custom domain remains attached is best-effort with a maximum 24-hour domain-
@@ -132,10 +134,11 @@ Shared executable TypeScript is limited to transport contracts. The brand packag
 - Playwright runs in a separate CI job so browser failures and artifacts remain easy to inspect.
 - CI does not receive an OpenRouter key and never calls real models.
 - Dependency caching may improve CI speed, but generated build output is not committed.
-- GitHub Actions remains the authoritative validation gate for production deployment. It publishes
-  an immutable GHCR image only after the approved checks pass; a protected named-operator workflow
-  deploys that exact digest through the current validated App Platform specification after
-  verifying the matching protected-main commit and green result.
+- GitHub Actions remains the authoritative validation gate for production deployment. It builds
+  and smokes the production Dockerfile but does not publish a registry artifact. A protected
+  named-operator workflow advances a non-force release-pointer branch to the exact green
+  protected-main commit, asks App Platform to build that source with automatic deploys disabled,
+  and accepts the release only when the service and migration job report that same source commit.
 - A task orchestrator is added only if measured build time or dependency ordering requires it.
 
 ## Local development

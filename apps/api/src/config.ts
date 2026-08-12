@@ -12,7 +12,7 @@ export type RuntimeMode = (typeof runtimeModes)[number];
 export type LogLevel = (typeof logLevels)[number];
 export type EmailDelivery = "disabled" | "fake" | "resend";
 export type ModelGatewayMode = "fake" | "openrouter";
-export type ClientAddressSource = "caddy" | "digitalocean-app-platform" | "socket";
+export type ClientAddressSource = "digitalocean-app-platform" | "socket";
 export type DeploymentTarget = "digitalocean-app-platform";
 export type DeploymentProfile = "managed-rehearsal";
 export type SecretSource = "platform-environment";
@@ -379,10 +379,10 @@ function readClientAddressSource(
   mode: RuntimeMode,
 ): ClientAddressSource {
   const source = value?.trim() || (mode === "production" ? undefined : "socket");
-  if (source !== "caddy" && source !== "digitalocean-app-platform" && source !== "socket") {
+  if (source !== "digitalocean-app-platform" && source !== "socket") {
     throw new ConfigurationError(
       "CLIENT_ADDRESS_SOURCE",
-      "CLIENT_ADDRESS_SOURCE must be caddy, digitalocean-app-platform, or socket",
+      "CLIENT_ADDRESS_SOURCE must be digitalocean-app-platform or socket",
     );
   }
   if (mode === "production" && source !== "digitalocean-app-platform") {

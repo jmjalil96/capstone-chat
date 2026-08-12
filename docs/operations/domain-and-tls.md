@@ -23,7 +23,7 @@ challenges, credentials, full provider responses, employee content, or identity-
 3. Fetch the current App spec and provider-generated `.ondigitalocean.app` target. Confirm the App
    ID, managed `ric` region, Dedicated Egress, health-only maintenance or ready service state, and
    absence of any conflicting domain. Never copy a historical target.
-4. Through the serialized source-controlled spec writer, attach exactly
+4. With the release pointer frozen to the accepted source commit, attach exactly
    `chat.capstone.com.ec` as `PRIMARY` with `minimum_tls_version: "1.2"` and no App-managed DNS
    `zone`. Preserve the provider `DEFAULT` starter domain returned by the live spec.
 5. At Hostinger authoritative DNS, remove conflicting `A`/`AAAA` records and publish a DNS-only
@@ -32,9 +32,11 @@ challenges, credentials, full provider responses, employee content, or identity-
 6. Preserve the authority-specific ingress rule that redirects exactly the fetched starter domain
    over HTTPS with status 308 to `chat.capstone.com.ec`, without a replacement URI so path and query
    survive. The starter domain must not establish an independent authenticated origin.
-7. Disable App Platform edge caching, email obfuscation, and enhanced threat control for this
-   authenticated streaming service. A future threat-control change requires measured auth,
-   cancellation, and streaming evidence.
+7. With the custom domain attached, introduce the custom-domain-only edge controls together:
+   disable App Platform edge caching and email obfuscation, and leave enhanced threat control
+   disabled for this authenticated streaming service. These fields are unavailable and remain
+   absent during bootstrap/egress while only the starter domain exists. A future threat-control
+   change requires measured auth, cancellation, and streaming evidence.
 8. Wait for managed certificate issuance. Verify public chain, hostname, validity, renewal state,
    minimum TLS, HTTP-to-primary HTTPS redirect, and the provider domain's redirect externally.
 9. At the final origin verify the SPA shell, fingerprinted asset, unknown API handling,
@@ -67,8 +69,10 @@ that accidental-deletion failure mode on August 12, 2026. Controlled replacement
 recovery retain the four-hour target.
 
 Delete authority is short-lived, separate from deploy/console/provisioning authority, and granted
-only after domain release. A failed domain operation restores the last approved App spec and DNS
-state; it never changes `PUBLIC_ORIGIN` or introduces an alternate authenticated origin.
+only after domain release. A failed domain operation restores the last approved App configuration
+and DNS state; it never changes `PUBLIC_ORIGIN` or introduces an alternate authenticated origin.
+Because a configuration change can rebuild source, verify the resulting component source commit
+before proceeding.
 
 ## Email domain
 

@@ -1,6 +1,6 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 
-FROM node:24.13.0-alpine AS base
+FROM node:24.13.0-alpine@sha256:cd6fb7efa6490f039f3471a189214d5f548c11df1ff9e5b181aa49e22c14383e AS base
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
 RUN corepack enable && corepack prepare pnpm@11.20.0 --activate
@@ -14,25 +14,20 @@ COPY packages/brand/package.json ./packages/brand/package.json
 COPY packages/protocol/package.json ./packages/protocol/package.json
 
 FROM manifests AS build
-ARG DEPLOYMENT_REVISION
-RUN printf '%s\n' "$DEPLOYMENT_REVISION" | grep -Eq '^[0-9a-f]{40}$'
 RUN pnpm install --frozen-lockfile --filter @capstone/api... --filter @capstone/web...
 COPY tsconfig.base.json ./tsconfig.base.json
 COPY apps/api ./apps/api
 COPY apps/web ./apps/web
 COPY packages/brand ./packages/brand
 COPY packages/protocol ./packages/protocol
-RUN DEPLOYMENT_REVISION="$DEPLOYMENT_REVISION" pnpm build \
+RUN pnpm build \
   && find apps/api/dist packages/protocol/dist apps/web/dist -type f -name '*.map' -delete
 
 FROM manifests AS production-dependencies
 RUN pnpm install --frozen-lockfile --prod --filter @capstone/api...
 
-FROM node:24.13.0-alpine AS runtime
-ARG DEPLOYMENT_REVISION
-LABEL org.opencontainers.image.revision="$DEPLOYMENT_REVISION"
+FROM node:24.13.0-alpine@sha256:cd6fb7efa6490f039f3471a189214d5f548c11df1ff9e5b181aa49e22c14383e AS runtime
 LABEL org.opencontainers.image.source="https://github.com/jmjalil96/capstone-chat"
-ENV DEPLOYMENT_REVISION=$DEPLOYMENT_REVISION
 WORKDIR /app
 
 COPY --from=production-dependencies --chown=node:node /workspace/node_modules ./node_modules

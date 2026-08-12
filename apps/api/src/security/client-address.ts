@@ -68,7 +68,6 @@ export function captureTrustedClientAddress(
   request: FastifyRequest,
   source: ClientAddressSource,
 ): void {
-  const caddyAddress = request.headers["x-capstone-client-ip"];
   const appPlatformAddress = request.headers["do-connecting-ip"];
   stripForwardingHeaders(request);
 
@@ -89,15 +88,7 @@ export function captureTrustedClientAddress(
     return;
   }
 
-  const socketAddress = normalizedEdgeAddress(request.raw.socket.remoteAddress);
-  capturedAddresses.set(
-    request,
-    source === "caddy"
-      ? socketAddress === "127.0.0.1"
-        ? normalizedEdgeAddress(caddyAddress)
-        : null
-      : normalizedEdgeAddress(request.ip),
-  );
+  capturedAddresses.set(request, normalizedEdgeAddress(request.ip));
 }
 
 export function resolveTrustedClientAddress(

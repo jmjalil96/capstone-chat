@@ -71,7 +71,8 @@ Complete observability, cross-browser and accessibility verification, performanc
 - The production candidate is one DigitalOcean App Platform `apps-s-1vcpu-1gb-fixed` dynamic
   service with one instance in the managed `ric` region, paid Dedicated Egress, and one PlanetScale
   Postgres PS-5 ARM Single Node cluster in AWS `us-east-1`. One 512 MiB `PRE_DEPLOY` migration job
-  uses the exact service image. Launch has no autoscaling, scale-to-zero, second service, worker,
+  is built from the same verified Git source commit and Dockerfile as the service. Launch has no
+  autoscaling, scale-to-zero, second service, worker,
   application high availability, database high availability, read replica, or automatic failover.
   Two managed rehearsal passes must qualify scheduling, capacity, edge streaming, deployment,
   rollback, egress, database, and Ecuador latency before acceptance.
@@ -84,12 +85,13 @@ Complete observability, cross-browser and accessibility verification, performanc
   `/32`s. Production uses direct port 5432, `verify-full` TLS, a least-privilege application role,
   a separate migration role, and a recovery-only provider credential. The database starts at 10 GB
   with a hard 15 GB storage ceiling.
-- GitHub Actions remains the authoritative gate. It publishes an immutable exact-revision GHCR
-  image only after checks pass. A protected named-operator workflow validates the current live App
-  contract, preserves encrypted values and Dedicated Egress, and runs the exact-image pre-deploy
-  migration before readiness-gated replacement. Rollback is a reviewed forward deployment of the
-  immediately previous compatible digest through the current specification; native provider
-  rollback is prohibited in production.
+- GitHub Actions remains the authoritative gate. It builds and smokes the production Dockerfile
+  without publishing a registry artifact. A protected named-operator workflow advances a
+  non-force release-pointer branch to the exact green protected-main commit, triggers the native
+  App Platform source build with automatic deploys disabled, and accepts it only when the service
+  and pre-deploy job report that same commit. Rollback is a reviewed `git revert`, green CI, and
+  normal forward source deployment through the current configuration; native provider rollback is
+  prohibited in production.
 - PlanetScale backups run every 12 hours and are retained for 84 hours, preserving at least three
   continuously accessible days of point-in-time recovery. Production retains an RPO of at most 15
   minutes and an RTO of at most four hours. An isolated database restore and a source-controlled
@@ -108,7 +110,8 @@ Complete observability, cross-browser and accessibility verification, performanc
   browser agent, infrastructure collector, second telemetry backend, or employee content export.
 - Production secret source copies live in the Capstone Bitwarden Teams organization. Runtime copies
   are component-scoped App Platform encrypted environment variables; migration, service,
-  initialization, registry, and recovery authority remain distinct. The initial one-owner setup has
+  initialization, source-integration, and recovery authority remain distinct. The initial
+  one-owner setup has
   MFA and a sealed offline recovery kit; adding a second recovery owner is deferred and remains a
   visible launch risk.
 - The approved starting infrastructure baseline is USD 40–41/month: USD 10 for the application

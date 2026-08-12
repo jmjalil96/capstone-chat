@@ -6,11 +6,22 @@
    category, reservations, and reconciliation without inspecting content or raw payloads.
 2. Never route around `zdr: true`, `data_collection: "deny"`, approved models, price ceilings, or
    the selected tier.
-3. Run catalog refresh from the existing administrator model-policy screen. Use the reviewed
-   bounded application-role console helper only for privacy re-attestation on one verified ready
-   App Platform instance. Its input arrives through standard input; the helper verifies deployment
-   ID, digest/revision, non-root user, readiness, and current database authority. There is no SSH,
-   persistent operator file, or migration/recovery credential.
+3. Run catalog refresh from the existing administrator model-policy screen. Privacy
+   re-attestation is the only console operation here: obtain its separate authorization and follow
+   the exact [bounded production console](./employee-access.md#bounded-production-console)
+   procedure on one verified ready service instance. In that remote shell run this exact single
+   line, which applies the required PTY echo guard:
+
+   ```sh
+   stty -echo; trap 'stty echo' EXIT HUP INT TERM; (unset BETTER_AUTH_SECRET OPENROUTER_API_KEY OTEL_EXPORTER_OTLP_HEADERS RESEND_API_KEY; node apps/api/dist/entrypoint.js model attest --workspace capstone --privacy-attestation -); capstone_status=$?; stty echo; trap - EXIT HUP INT TERM; printf '\ncommand-exit:%s\n' "$capstone_status"
+   ```
+
+   Paste the reviewed, still-fresh privacy-attestation JSON and press Control-D. Require
+   `command-exit:0` and a content-free `{"command":"attest",...}` success result. If interrupted,
+   use the linked procedure's `stty echo` recovery instruction. There is no SSH, helper,
+   persistent operator file, or migration/recovery credential. The subshell removes unrelated
+   application secrets only from that child process; it preserves the application `DATABASE_URL`
+   and production platform/source authority required by the bounded database command.
 4. A failed metadata refresh preserves last valid state; confirmed ineligibility or a stale
    30-day attestation keeps the tier unavailable. Do not infer privacy compliance from a successful
    generation.

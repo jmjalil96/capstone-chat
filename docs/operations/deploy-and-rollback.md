@@ -1,109 +1,108 @@
 # Deploy and rollback
 
-The active release authority is the accepted full Git revision plus immutable GHCR digest recorded
-by GitHub production Deployment evidence and confirmed by App Platform readiness. The fetched live
-App spec is current configuration authority. Display names, mutable image tags, control-panel state,
-and DigitalOcean's native rollback list are not competing authorities.
+The release authority is one full protected-main Git commit that passed CI and was advanced
+without force to `app-platform-production`. DigitalOcean builds that pointer with automatic
+deploys disabled. A release is accepted only when the service and `PRE_DEPLOY` job report the
+authorized `source_commit_hash` and public readiness reports the same runtime revision.
 
-Every App-spec writer uses the protected `capstone-chat-production-app-spec` concurrency group with
-`cancel-in-progress: false` and the mutation boundary documented in `deploy/app-platform/README.md`.
-The DigitalOcean control panel is read-only for App configuration after acceptance.
+The release pointer has no direct human writers and does not accept force pushes. The protected
+workflow is the only steady deployment writer. App Platform's native rollback action is
+prohibited because it can restore historical secrets, pre-egress configuration, or initialization
+authority.
 
-## Normal forward deployment
+## One-time GitHub release setup
 
-1. Identify the full 40-character protected `main` HEAD, current accepted release, exact candidate
-   GHCR digest, and immediately previous compatible accepted digest. The candidate must equal the
-   current protected HEAD, differ from the active revision, and strictly descend from it. Require
-   every named GitHub check and image-publication gate.
-2. Verify the candidate image is AMD64, runs as UID 1000, contains the expected migrations and web
-   assets, and has matching OCI label, runtime revision, and embedded web revision. Never deploy a
-   mutable tag, an equal/old/divergent commit, or a dirty tree.
-3. Confirm the migration is expand/contract compatible with the active and immediately previous
-   web/API builds. Protect both digests in GHCR before mutation.
-4. Inspect App Platform CPU/memory/restarts/requests/latency, deployment/job/domain state, the
-   independent Uptime check, PlanetScale connections/locks/storage/backups, New Relic application
-   signals, and the current absence of an in-progress deployment.
-5. Fetch the complete live spec without printing it. Work only in a fresh mode-0600 temporary
-   directory with tracing disabled and guaranteed cleanup. Verify the pinned App ID, active
-   deployment, region `ric`, one service/job, sizes, instance count, health, termination, domain,
-   edge settings, both dedicated egress addresses, and exact component secret-key sets. Preserve
-   every provider-encrypted value byte-for-byte.
-6. Resolve the candidate full-SHA GHCR tag to its immutable digest and render the source-controlled
-   digest-free contract. Patch only the service and migration-job image digest. Both components must
-   use the same artifact; `DEPLOYMENT_REVISION` remains image-owned and cannot be overridden.
-7. Immediately before submission, re-resolve protected `main` and re-fetch the App/deployment/spec/
-   egress fingerprint. Abort on any movement, drift, control-panel edit, or in-progress deployment.
-8. Submit through the protected production deployment workflow. Its steady token is pinned to the
-   recorded App ID and has only `app:update`, `app:read`, `regions:read`, `sizes:read`, and
-   `actions:read`. It cannot create, delete, or open a console.
-9. Observe the exact-digest `PRE_DEPLOY` migration job. It receives only the migration role, uses
-   direct 5432 with `verify-full`, and exits nonzero on configuration or migration failure. A failed
-   job must leave the current service authoritative; API startup never runs migrations.
-10. Observe readiness-gated rolling replacement. The candidate must pass liveness, database/policy
-    readiness, release identity, static/API smoke, and telemetry startup. App Platform allows 110
-    seconds of edge drain before `SIGTERM` and 300 seconds for the application's bounded shutdown.
-    A readiness failure must preserve the old release.
-11. Fetch state again and prove the live spec equals the prior fingerprint plus only the reviewed
-    digest patch, Dedicated Egress is unchanged, the expected deployment ID succeeded, and public
-    readiness reports the candidate revision. Treat any unexpected difference as an incident.
-12. Run the separately authorized credentialed smoke: origin/session, owned conversation, one
-    permitted response, Stop and canonical partial recovery, administration authorization, email
-    category, and content-free telemetry. Record only UTC times, deployment ID, revision, digest,
-    migration, status, duration, safe counts, and resource peaks.
+1. In repository Actions settings, allow the repository `GITHUB_TOKEN` read/write workflow
+   permissions. This workflow narrows its own token to `actions: read` and `contents: write`; no
+   other production permission is granted.
+2. Create a branch rule or ruleset matching `app-platform-production` before the branch exists.
+   Block force pushes and deletion and require linear history. Do not require pull requests on
+   this machine-written pointer. Repository-admin authority cannot be eliminated in a personal
+   repository, so direct human updates remain prohibited by procedure and are checked against the
+   recorded release evidence.
+3. Create the protected GitHub environment `production`, restrict it to `main`, add the owner as
+   required reviewer, and do not permit an unreviewed administrator bypass.
+4. After the App exists, store its UUID as the environment variable `DIGITALOCEAN_APP_ID`. Store a
+   dedicated DigitalOcean token as `DIGITALOCEAN_DEPLOY_TOKEN`. Its custom scopes are exactly
+   `app:update` plus DigitalOcean's required `app:read`, `regions:read`, `sizes:read`, and
+   `actions:read`; omit `app:create`, `app:delete`, `app:access_console`, database, registry, and
+   account-wide write scopes.
+5. Before the first App exists, copy the exact full SHA from the green `main` CI run and dispatch
+   `Deploy production` with `operation=prepare-source` and that SHA as `release_revision`. The run
+   creates an absent `app-platform-production` pointer (or confirms it is already at that SHA) and
+   records that no App was contacted. Verify the remote pointer equals the SHA, then connect that
+   branch in App Platform with autodeploy disabled.
 
-A DigitalOcean maintenance restart of the same digest is a platform lifecycle event, not a new
-Capstone release. Evidence must distinguish it from an approved revision change.
+The App ID and DigitalOcean token are intentionally unnecessary for `prepare-source`. That mode is
+one-time/idempotent-only: it creates an absent pointer or confirms the existing pointer already
+equals the requested SHA; it cannot advance an existing pointer. Every later production run uses
+`operation=deploy`. A full SHA can also be obtained from a clean local clone with
+`git fetch origin main && git rev-parse origin/main`; it must equal the current green push run.
+
+## Normal deployment
+
+1. Confirm the candidate is the exact current protected `main` HEAD, every required CI check is
+   green, the tree is clean, and no App deployment or configuration change is in progress.
+2. Review migration compatibility with the active release and a forward-revert candidate. CI must
+   have built and smoked `apps/api/Dockerfile`, verified UID 1000, required runtime files and the
+   latest migration, and exercised readiness with the candidate runtime revision.
+3. Inspect App Platform service/job/domain/egress/health/alerts, the independent Uptime check,
+   PlanetScale connections/locks/storage/backups, and New Relic application signals.
+4. Run the protected `Deploy production` workflow from `main` with `operation=deploy` and the exact
+   40-character green `main` SHA as `release_revision`. Its non-cancelling concurrency group
+   checks the current App topology/source and autodeploy-off state before it advances
+   `app-platform-production` by non-force fast-forward, then requests one App Platform deployment
+   and waits for a terminal result.
+5. Observe the `PRE_DEPLOY` migration job. It receives only the migration `DATABASE_URL`, connects
+   directly on port 5432 with `verify-full`, and exits nonzero on configuration or migration
+   failure. API startup never runs migrations. A failed build/job/replacement must leave the
+   current ready release serving.
+   The workflow records the provider deployment ID immediately, then polls that exact deployment
+   for up to DigitalOcean's one-hour build limit; it does not rely on `doctl --wait`'s shorter
+   timeout. If the workflow becomes red or loses connectivity after recording the ID, freeze the
+   release pointer and all App configuration, inspect that exact ID in App Platform, and resume
+   only after its terminal state is known. Never request a second deployment to resolve ambiguity.
+6. Require exactly one service and one migration job built from the authorized source commit.
+   Verify region, sizes, instance count, domain, edge policy, two Dedicated Egress addresses,
+   health checks, drain/grace budgets, secret scopes, and active deployment ID using the read-only
+   live validator.
+7. Verify public readiness returns the authorized revision, then exercise origin/session, an owned
+   conversation, one response, Stop and canonical recovery, authorization, email category, and
+   content-free telemetry under separate smoke authorization.
+8. Record only UTC times, source revision, deployment/build IDs, migration, status, duration, safe
+   counts, and resource peaks.
+
+The workflow uses the production environment's pinned App ID and least-privilege DigitalOcean
+token. It cannot create or delete an App or open a console. A repository source build is not a
+byte-identical rebuild guarantee; accepted release evidence is the source commit, CI build/smoke,
+provider source hashes, and runtime readiness revision.
+
+## Configuration changes
+
+App Platform configuration changes can rebuild the source. Freeze deployments, confirm
+`app-platform-production` points to the accepted commit, and record the active deployment before a
+domain, maintenance, secret, size, or other authorized dashboard change. Afterward, rerun the
+read-only live validator and require all component source hashes and public readiness to remain on
+that commit. Never combine an unrelated configuration change with a release.
 
 ## Compatible forward rollback
 
-DigitalOcean's native rollback action is prohibited in production because it can restore stale App
-configuration, encrypted variables, and a pre-egress spec. Retained deployment history is discovery
-evidence only.
+Rollback is a new forward release:
 
-1. Identify the immediately previous compatible accepted revision/digest from GitHub release
-   evidence. Confirm it supports the current expanded schema and current database authority. A
-   migration reversal or PITR is not an application rollback shortcut.
-2. Fetch and validate the **current** live spec and its complete fingerprint. Preserve current
-   domain, egress pair, encrypted GHCR/runtime variables, health, termination, and alerts.
-3. Invoke the reviewed `deploy/app-platform/rollback.mjs` path through the same protected
-   environment and concurrency group. It may patch only the service/job digest to that one prior
-   artifact; it may not select any arbitrary historical deployment.
-4. Re-run the idempotent pre-deploy migration and readiness-gated replacement. Verify release,
-   database readiness, authentication, chat/Stop, settlement/reconciliation, and telemetry.
-5. Preserve the rejected candidate and content-free evidence until the incident closes. If the
-   forward rollback fails, keep or enable the reviewed maintenance spec mutation and follow
-   `incident-response.md`; never click native rollback.
+1. Identify the last compatible accepted commit and prove it supports the current schema and
+   database authority.
+2. Create a normal reviewed `git revert` on `main`; do not move a pointer backward or force-push.
+3. Let the new descendant commit pass every CI gate.
+4. Deploy it through the normal workflow and current App configuration.
+5. Re-run migration, readiness, source-identity, authentication, chat/Stop,
+   settlement/reconciliation, and telemetry checks.
 
 Rollback never reverses a database migration or crosses an incompatible schema. After a database
-authority change, every artifact bearing the old credential is non-rollbackable even if its code is
-otherwise compatible.
+credential/authority change, source compatibility alone is insufficient.
 
-## Bootstrap-history eviction
+## Recovery material
 
-The successful health-only pre-egress deployment can omit Dedicated Egress; the initialization
-deployment can retain revoked encrypted bootstrap values. Before installing steady deployment
-authority, use only exact-final-spec same-digest deployments until neither is present among the ten
-rollbackable successful deployments. Verify history structurally after every bounded attempt.
-
-These `bootstrap-history-eviction` events are not accepted releases, do not change the spec, and do
-not enter recent-release retention. A separately authorized disposable rehearsal must attempt the
-unsafe historical rollback once and record whether the provider blocks it, preserves egress, or
-releases/replaces the pair. Production proceeds only after the unsafe entries are proven absent.
-
-## GHCR retention
-
-The planner in `deploy/app-platform/ghcr-retention.py` is a separate protected two-step workflow,
-serialized with deployment:
-
-1. Fetch the complete bounded package inventory and protect the active-serving, desired-spec, and
-   in-progress digest; the immediately previous compatible release; five recent distinct accepted
-   releases; and every sealed recovery pin. Unknown, malformed, beyond-bound, or conflicting state
-   is never deleted.
-2. Produce a content-free dry-run plan and SHA-256 plan hash, then stop for human review.
-3. A separate authorized delete invocation re-fetches App state, GitHub Deployment evidence,
-   recovery pins, and GHCR inventory. It deletes only if the plan is byte-for-byte identical and the
-   hash matches. Any authority drift aborts all deletion.
-
-The package-delete credential is distinct from the App's read-only GHCR pull credential and is
-never installed in DigitalOcean. Partial deletion and API errors remain visible safe evidence; they
-never cause broader retry/deletion.
+After every accepted production release, refresh the encrypted offline Git bundle containing
+protected `main`, `app-platform-production`, and accepted release commits. Test that it can produce
+the exact source tree without GitHub. The bundle contains no secret. Historical GHCR packages are
+unused and are not recovery authority; their cleanup requires separate destructive authorization.

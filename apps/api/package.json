@@ -23,15 +23,12 @@
     "identity:invite-initial": "tsx src/entrypoint.ts invite-initial",
     "load:test": "tsx tests/load-harness.ts",
     "load:server": "node --expose-gc --import tsx src/entrypoint.ts load-server --confirm-isolated-load-rehearsal",
-    "migrate:production": "node dist/entrypoint.js migrate",
     "model-catalog:refresh": "tsx src/entrypoint.ts model refresh",
     "model-policy:attest": "tsx src/entrypoint.ts model attest",
     "model-policy:bootstrap": "tsx src/entrypoint.ts model bootstrap",
     "production:initialize": "tsx src/entrypoint.ts initialize",
-    "production:initialize:container": "node dist/entrypoint.js initialize",
     "recovery-marker": "tsx src/entrypoint.ts recovery-marker",
     "recovery:prepare": "tsx src/entrypoint.ts recovery-prepare",
-    "recovery:prepare:production": "node dist/entrypoint.js recovery-prepare",
     "start": "node dist/entrypoint.js server",
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json"
@@ -63,7 +60,6 @@
     "@types/pg": "8.20.4",
     "auth": "1.6.26",
     "drizzle-kit": "0.31.10",
-    "testcontainers": "12.1.0",
     "tsx": "4.23.9",
     "typebox": "1.3.11",
     "vitest": "4.1.10"

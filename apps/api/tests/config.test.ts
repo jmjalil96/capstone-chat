@@ -108,7 +108,7 @@ describe("loadConfig", () => {
   it("accepts explicit test configuration", () => {
     const config = loadConfig({
       DATABASE_URL: "postgres://tester:tester@localhost:6543/test_database",
-      CLIENT_ADDRESS_SOURCE: "caddy",
+      CLIENT_ADDRESS_SOURCE: "socket",
       DEPLOYMENT_REVISION: "test-release.12",
       HOST: "0.0.0.0",
       LOG_LEVEL: "debug",
@@ -119,7 +119,7 @@ describe("loadConfig", () => {
 
     expect(config).toMatchObject({
       deploymentRevision: "test-release.12",
-      clientAddressSource: "caddy",
+      clientAddressSource: "socket",
       emailDelivery: "fake",
       host: "0.0.0.0",
       logLevel: "debug",
@@ -224,6 +224,27 @@ describe("loadConfig", () => {
         OPENROUTER_API_KEY: productionEnvironment.OPENROUTER_API_KEY,
       }),
     ).toThrow("migration job cannot receive application");
+  });
+
+  it("loads database operator configuration after the documented service-secret isolation", () => {
+    const operatorEnvironment: NodeJS.ProcessEnv = { ...productionEnvironment };
+    for (const key of [
+      "BETTER_AUTH_SECRET",
+      "OPENROUTER_API_KEY",
+      "OTEL_EXPORTER_OTLP_HEADERS",
+      "RESEND_API_KEY",
+    ]) {
+      delete operatorEnvironment[key];
+    }
+
+    expect(loadDatabaseConfig(operatorEnvironment)).toEqual({
+      databaseUrl: productionEnvironment.DATABASE_URL,
+    });
+    expect(operatorEnvironment.DEPLOYMENT_REVISION).toBe(productionEnvironment.DEPLOYMENT_REVISION);
+    expect(operatorEnvironment.DEPLOYMENT_TARGET).toBe(productionEnvironment.DEPLOYMENT_TARGET);
+    expect(operatorEnvironment.CAPSTONE_SECRET_SOURCE).toBe(
+      productionEnvironment.CAPSTONE_SECRET_SOURCE,
+    );
   });
 
   it("loads identity operator configuration without model or telemetry credentials", () => {
@@ -500,12 +521,12 @@ describe("loadConfig", () => {
     [{ ...productionEnvironment, HOST: "127.0.0.1" }, "0.0.0.0"],
     [{ ...productionEnvironment, CLIENT_ADDRESS_SOURCE: undefined }, "CLIENT_ADDRESS_SOURCE"],
     [
-      { ...productionEnvironment, CLIENT_ADDRESS_SOURCE: "caddy" },
+      { ...productionEnvironment, CLIENT_ADDRESS_SOURCE: "legacy-proxy" },
       "must be digitalocean-app-platform",
     ],
     [{ ...productionEnvironment, DEPLOYMENT_TARGET: undefined }, "DEPLOYMENT_TARGET"],
     [
-      { ...productionEnvironment, DEPLOYMENT_TARGET: "digitalocean-droplet" },
+      { ...productionEnvironment, DEPLOYMENT_TARGET: "unsupported-target" },
       "digitalocean-app-platform",
     ],
     [{ ...productionEnvironment, CAPSTONE_SECRET_SOURCE: undefined }, "CAPSTONE_SECRET_SOURCE"],

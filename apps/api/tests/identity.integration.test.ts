@@ -104,16 +104,10 @@ describe.sequential("identity integration", () => {
     await container.stop();
   });
 
-  function startApplication(
-    sender: EmailSender = new FakeEmailSender(),
-    clientAddressSource?: "caddy" | "socket",
-  ): ApiApplication {
+  function startApplication(sender: EmailSender = new FakeEmailSender()): ApiApplication {
     const started = createApplication(
       loadConfig({
         BETTER_AUTH_SECRET: "capstone-chat-test-secret-with-more-than-thirty-two-characters",
-        ...(clientAddressSource === undefined
-          ? {}
-          : { CLIENT_ADDRESS_SOURCE: clientAddressSource }),
         DATABASE_URL: databaseUrl,
         EMAIL_DELIVERY: "fake",
         LOG_LEVEL: "silent",
@@ -453,36 +447,6 @@ describe.sequential("identity integration", () => {
     expect(wrongContentType.statusCode).toBe(415);
     expect(wrongContentType.json()).toMatchObject({ code: "JSON_REQUIRED" });
     expect(allowedBoundary.statusCode).toBe(404);
-  });
-
-  it("supports the supervised anonymous-session smoke through the Caddy address boundary", async () => {
-    const app = startApplication(new FakeEmailSender(), "caddy");
-
-    const missingPrivateHeader = await app.server.inject({
-      method: "GET",
-      url: "/api/session",
-      remoteAddress: "127.0.0.1",
-    });
-    const trustedLoopback = await app.server.inject({
-      method: "GET",
-      url: "/api/session",
-      headers: { "x-capstone-client-ip": "192.0.2.1" },
-      remoteAddress: "127.0.0.1",
-    });
-    const untrustedSocket = await app.server.inject({
-      method: "GET",
-      url: "/api/session",
-      headers: { "x-capstone-client-ip": "192.0.2.1" },
-      remoteAddress: "198.51.100.10",
-    });
-
-    expect(missingPrivateHeader.statusCode).toBe(400);
-    expect(missingPrivateHeader.json()).toMatchObject({ code: "BAD_REQUEST" });
-    expect(trustedLoopback.statusCode).toBe(401);
-    expect(trustedLoopback.headers["cache-control"]).toBe("no-store");
-    expect(trustedLoopback.json()).toMatchObject({ code: "AUTHENTICATION_REQUIRED" });
-    expect(untrustedSocket.statusCode).toBe(400);
-    expect(untrustedSocket.json()).toMatchObject({ code: "BAD_REQUEST" });
   });
 
   it("accepts verification credentials only through the bounded same-origin JSON wrapper", async () => {
