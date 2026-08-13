@@ -2,6 +2,8 @@ schema: 1
 mode: bootstrap
 name: capstone-chat-production
 region: ric
+features:
+  - buildpack-stack=ubuntu-22
 source:
   github:
     repo: jmjalil96/capstone-chat

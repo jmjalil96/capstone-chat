@@ -51,6 +51,10 @@ secret to be returned as a provider-encrypted `EV[...]` value, forbids App-level
 variables and extra components, and verifies environment scope, source identity, health checks,
 termination policy, alerts, ingress, domain, edge settings, and Dedicated Egress.
 
+DigitalOcean canonically returns the top-level feature `buildpack-stack=ubuntu-22`, including for
+Dockerfile builds. All four contracts require that exact singleton value in both desired and
+active deployment specs; missing, additional, or changed features fail closed.
+
 Validation covers both the outer desired App spec and `active_deployment.spec`. A dashboard change
 that has not become the active deployment, or an active deployment with an extra component, cannot
 pass merely because the desired spec is correct. During first provisioning, the operator makes one

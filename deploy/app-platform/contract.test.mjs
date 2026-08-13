@@ -114,6 +114,7 @@ function appFixture(contract) {
   }
   const spec = {
     alerts: contract.alerts.app.map((rule) => ({ rule })),
+    features: [...contract.features],
     ingress: final
       ? {
           rules: [
@@ -265,6 +266,32 @@ for (const [name, mode] of [
   assert.throws(
     () => validateApp({ app: fixture, contract, expectedRevision: revision }),
     /edge setting/u,
+  );
+}
+
+{
+  const contract = readContract(
+    path.join(directory, "rehearsal-bootstrap.contract.yaml"),
+    "rehearsal-bootstrap",
+  );
+  for (const features of [
+    undefined,
+    [],
+    ["buildpack-stack=ubuntu-24"],
+    [...contract.features, "unexpected"],
+  ]) {
+    const fixture = appFixture(contract);
+    fixture.spec.features = features;
+    assert.throws(
+      () => validateApp({ app: fixture, contract, expectedRevision: revision }),
+      /features/u,
+    );
+  }
+  const activeMismatch = appFixture(contract);
+  activeMismatch.active_deployment.spec.features = ["buildpack-stack=ubuntu-24"];
+  assert.throws(
+    () => validateApp({ app: activeMismatch, contract, expectedRevision: revision }),
+    /features/u,
   );
 }
 

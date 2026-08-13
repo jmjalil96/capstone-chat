@@ -244,6 +244,12 @@ function inspectOperationsContract() {
       expectedSource(live, "app-platform-production") &&
       expectedSource(rehearsalBootstrap, "app-platform-rehearsal") &&
       expectedSource(rehearsal, "app-platform-rehearsal") &&
+      [bootstrap, live, rehearsalBootstrap, rehearsal].every(
+        (contract) =>
+          Array.isArray(contract.features) &&
+          contract.features.length === 1 &&
+          contract.features[0] === "buildpack-stack=ubuntu-22",
+      ) &&
       contractSources.includes(`DEPLOYMENT_REVISION: ${deploymentRevisionBinding}`) &&
       !forbiddenActiveRelease.test(contractSources),
     liveTopology:

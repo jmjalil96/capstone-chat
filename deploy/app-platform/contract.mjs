@@ -173,6 +173,7 @@ function expectedAlerts(mode) {
 function expectedContract(mode) {
   const value = {
     alerts: expectedAlerts(mode),
+    features: ["buildpack-stack=ubuntu-22"],
     mode,
     name: rehearsalMode(mode) ? "capstone-chat-rehearsal" : "capstone-chat-production",
     region: "ric",
@@ -631,7 +632,15 @@ function validateDedicatedIps(app, final) {
 
 function validateAppSpec(value, app, contract, label) {
   const spec = record(value, `${label} spec`);
-  const allowedKeys = ["alerts", "ingress", "maintenance", "name", "region", "services"];
+  const allowedKeys = [
+    "alerts",
+    "features",
+    "ingress",
+    "maintenance",
+    "name",
+    "region",
+    "services",
+  ];
   if (spec.domains !== undefined) {
     allowedKeys.push("domains");
   }
@@ -653,6 +662,7 @@ function validateAppSpec(value, app, contract, label) {
   exactKeys(spec, allowedKeys, `${label} spec`);
   equal(spec.name, contract.name, `${label} name`);
   equal(spec.region, contract.region, `${label} region`);
+  equal(spec.features, contract.features, `${label} features`);
   const maintenance = record(spec.maintenance, `${label} maintenance policy`);
   exactKeys(
     maintenance,

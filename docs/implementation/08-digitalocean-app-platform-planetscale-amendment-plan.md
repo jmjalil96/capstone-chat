@@ -312,7 +312,37 @@ Local verification passed:
 
 The final independent read-only review found no remaining P1 or P2 repository findings.
 
+### Bootstrap source-build proof
+
+The owner separately authorized one disposable bootstrap-only rehearsal on August 12, 2026 with a
+USD 1 actual-spend ceiling, four-hour lifetime, and deletion in the same grant. The protected
+`app-platform-rehearsal` pointer was created non-force at green commit
+`080131854a001460140f02d1875e84485abe748f`. Its active branch rule blocks deletion and force
+pushes and requires linear history. The DigitalOcean GitHub installation was narrowed to only
+`jmjalil96/capstone-chat`, and automatic deploys remained disabled.
+
+DigitalOcean's provider-side proposal accepted the exact health-only spec in `ric` at USD 10 per
+month. App `85794e59-748e-488e-b3de-59ef0bcaf150` created deployment
+`3ae925c9-4782-4f56-b507-4a566f63672a` from the expected source commit. The Dockerfile build and
+deployment completed successfully, the desired and active specs contained exactly one
+one-container service, readiness and liveness returned 200, and a product route returned 404.
+No database, Dedicated Egress, custom domain, job, secret, telemetry, email, inference, or load
+traffic was introduced.
+
+The live capture exposed one provider canonicalization absent from the repository fixtures:
+DigitalOcean injects top-level `features: [buildpack-stack=ubuntu-22]` into both desired and active
+specs, including Dockerfile builds. The four contracts and validator now require that exact
+singleton value and reject missing, changed, or additional values. With only that fail-closed
+correction, the untouched live response passed the complete `rehearsal-bootstrap` validator.
+
+The App existed from 21:14:53 UTC until verified deletion at 21:23:21 UTC—eight minutes and 28
+seconds, well inside both caps. The provider API returns 404 for the deleted ID and the rehearsal
+token sees zero Apps. The repository-scoped GitHub installation and protected rehearsal pointer
+remain as authorized. This source-build proof is not either of the two full managed rehearsal
+passes; Dedicated Egress, PlanetScale, domain/TLS, initialization, migration, telemetry, load,
+PITR, and cold recreation remain unverified.
+
 No repository verification authorizes a DigitalOcean App, PlanetScale resource, domain, secret,
 email, model call, deployment, or billable action. The next external step requires a new grant for
-one disposable synthetic source-build rehearsal with a named maximum cost, lifetime, and cleanup
-scope.
+the first full synthetic managed rehearsal, naming its maximum cost, lifetime, data and credential
+boundaries, rollback, and mandatory cleanup scope.
