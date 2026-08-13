@@ -172,7 +172,11 @@ Native source builds do not weaken the security-sensitive ordering:
    not accepted or opened to employee traffic.
 10. Run the protected production workflow to establish the accepted source release, then repeat
     the active-contract, source-identity, readiness, and telemetry checks.
-11. Send the first administrator invitation only after final readiness.
+11. Keep the service closed while every pre-invitation launch gate runs, including bounded
+    production smokes, Ecuador/browser/accessibility, aged isolated PITR, controlled cold
+    recreation, and the pre-invitation review. Only then send the initial owner invitation as the
+    final controlled email gate. Prove invitation, verification, and password-reset delivery and
+    record final acceptance before inviting a second employee.
 
 Production repeats the same sequence under separate authorization and with production-owned
 credentials/data. A managed rehearsal may use only synthetic `.test` identities, fake model
@@ -249,13 +253,17 @@ summaries, titles, searches, recipient addresses, action URLs, cookies, authoriz
 database URLs, or raw provider bodies.
 
 On August 13, 2026, the owner explicitly replaced the two disposable managed rehearsals with
-direct staged production provisioning. The same two clean synthetic 20-employee/40-stream passes
-run on the empty, closed production topology before any invitation or real employee data. They
-retain the locked 500 ms p95 `response.started`, model-event, cancellation, bounded memory/pool,
-five-minute streaming, build/migration/readiness failure-preservation, forward-revert, egress,
-database, source-identity, secret-isolation, DNS/TLS, telemetry, and Ecuador checks. The earlier
-health-only proof and local one-CPU/one-GiB repetitions do not count as these managed passes. Aged
-PITR and controlled cold recreation also remain required before the first invitation.
+direct staged production provisioning. This explicitly waives the two managed synthetic
+20-employee/40-stream passes and accepts the two clean one-CPU/one-GiB container repetitions as
+capacity evidence. The test-only fake load server correctly refuses production mode and the
+production hostname; neither that server nor its diagnostic routes are introduced into the final
+production contract. Before any invitation or real employee data, the empty production stack must
+still pass bounded real-path model-event, cancellation, five-minute streaming,
+build/migration/readiness failure-preservation, forward-revert, egress, database, source-identity,
+secret-isolation, DNS/TLS, telemetry, and Ecuador checks. Aged PITR and controlled cold recreation
+also remain required before the first invitation. That initial owner invitation is the final
+controlled email gate; invitation, verification, and password-reset delivery plus final acceptance
+are required before any second employee is invited.
 
 Public-source acceptance, live provider terms, Ecuador latency/device/accessibility checks, paid
 OpenRouter smoke, Resend delivery, DNS/TLS, New Relic, PITR, and final security review remain
@@ -352,11 +360,11 @@ credential, rollback, and cleanup boundaries and stops when it needs broader aut
 
 On August 13, 2026, the owner ended the disposable managed-rehearsal path and directed the launch
 to the real production stack. This decision accepts the selected DigitalOcean feature-preview
-sizes and moves the two managed qualification passes onto the empty, closed production topology;
-it does not waive them. It does not change the approved USD 44–45 monthly operational baseline,
-the separate USD 100 workspace model ceiling, any data, privacy, secret-scope, database, egress,
-TLS, initialization, deployment, rollback, or recovery boundary, or the prohibition on employee
-traffic before the closed production checks above pass. Production resources are persistent rather
-than covered by the prior rehearsal cleanup grant; failed partial provisioning is removed or
-revoked before retry, while an accepted live release uses compatible forward recovery rather than
-provider-native rollback.
+sizes and explicitly waives the two managed qualification passes in favor of the two existing
+resource-capped container passes plus bounded production smokes. It does not change the approved
+USD 44–45 monthly operational baseline, the separate USD 100 workspace model ceiling, any data,
+privacy, secret-scope, database, egress, TLS, initialization, deployment, rollback, or recovery
+boundary, or the prohibition on employee traffic before the closed production checks above pass.
+Production resources are persistent rather than covered by the prior rehearsal cleanup grant;
+failed partial provisioning is removed or revoked before retry, while an accepted live release
+uses compatible forward recovery rather than provider-native rollback.

@@ -9,8 +9,9 @@ exact role being used.
 
 The service candidate is one `apps-s-1vcpu-1gb-fixed` instance; the job is
 `apps-s-1vcpu-0.5gb` and exists only during deployment. The live DigitalOcean account currently
-labels both slugs feature preview. Synthetic rehearsal is allowed; production requires explicit
-preview acceptance or a rehearsed generally available replacement size.
+labels both slugs feature preview. The owner explicitly accepted the selected slugs' current
+preview status for production on August 13, 2026; a later size change still requires a new
+capacity decision and evidence on that size.
 
 GitHub Actions validates every release. App Platform builds `apps/api/Dockerfile` from the
 protected `app-platform-production` pointer with autodeploy disabled. A release is authoritative

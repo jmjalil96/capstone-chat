@@ -80,6 +80,9 @@ before proceeding.
    records. Do not reuse the application CNAME or enable inbound mail.
 2. Confirm `Capstone Chat <no-reply@mail.capstone.com.ec>`, a send-only domain-restricted key, and
    disabled open/click tracking.
-3. Send controlled invitation, verification, and reset messages only after the final service is
-   ready. Verify production-origin fragment links, Spanish HTML, plain text, expiry, and current
-   desktop/mobile rendering without retaining recipients or action URLs in evidence.
+3. Final service readiness alone does not authorize an invitation. After every pre-invitation gate
+   in [Provision and deploy](./provision-and-deploy.md) passes, send the initial owner invitation as
+   the final controlled email gate. Verify invitation, verification, and reset delivery,
+   production-origin fragment links, Spanish HTML, plain text, expiry, and current desktop/mobile
+   rendering without retaining recipients or action URLs in evidence. Do not invite a second
+   employee until final acceptance is recorded.

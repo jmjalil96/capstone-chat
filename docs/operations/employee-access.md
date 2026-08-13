@@ -61,10 +61,15 @@ Use `/admin/employees` with a session authenticated within the last 15 minutes:
 ## First administrator invitation
 
 First initialization creates one canonical pending administrator approval without sending email.
-Only after the final service is ready may the bounded application-role command send the invitation.
-It re-resolves existing authority, accepts at most 32 KiB through standard input, cannot create or
-change membership, and emits only a content-free outcome. The temporary initialization job must be
-absent and its roles/key revoked. Recovery never repeats initialization or this invitation.
+Final service readiness alone is insufficient. Only after every pre-invitation gate in
+[Provision and deploy](./provision-and-deploy.md)—including the bounded production smokes,
+Ecuador/browser/accessibility, aged isolated PITR, controlled cold recreation, and final
+pre-invitation review—passes may the bounded application-role command send the owner invitation as
+the final controlled email gate. It re-resolves existing authority, accepts at most 32 KiB through
+standard input, cannot create or change membership, and emits only a content-free outcome. Prove
+invitation, verification, and password-reset delivery before inviting a second employee. The
+temporary initialization job must be absent and its roles/key revoked. Recovery never repeats
+initialization or this invitation.
 
 After completing the bounded-console checks above, run this exact single line in the remote shell:
 

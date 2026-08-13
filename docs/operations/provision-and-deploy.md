@@ -16,12 +16,14 @@ region, maximum/prorated cost, data/credential boundary, lifetime, rollback, and
   repository is already public and obtain explicit production acceptance of that state; public
   access is not a license grant.
 - The owner replaced the two disposable managed rehearsals with direct staged production
-  provisioning on August 13, 2026. Run the same two clean synthetic 20-employee/40-stream passes
-  on the empty production topology; the earlier health-only proof and local container repetitions
-  do not count. Keep the production App closed and free of real employee data until its source,
-  egress, database, TLS, migration, readiness, deployment-failure/forward-revert,
-  secret-isolation, telemetry, streaming/cancellation, Ecuador/browser/accessibility, aged PITR,
-  and controlled cold-recreation checks pass. Do not send the first invitation before then.
+  provisioning on August 13, 2026 and explicitly waived the two managed
+  20-employee/40-stream passes. The two clean one-CPU/one-GiB container repetitions are the
+  accepted capacity evidence; never run the fake load server or expose its diagnostics on the
+  production origin. Keep the production App closed and free of real employee data until its
+  source, egress, database, TLS, migration, readiness, deployment-failure/forward-revert,
+  secret-isolation, telemetry, real-path streaming/cancellation, Ecuador/browser/accessibility,
+  aged PITR, and controlled cold-recreation checks pass. Do not send the first invitation before
+  then.
 - Current provider sizes/regions/terms/costs are recorded. The owner accepted the current
   feature-preview status of the selected production sizes on August 13, 2026.
 - The App Platform/Cloudflare privacy boundary, domain-deletion exception, company ownership/MFA,
@@ -93,13 +95,17 @@ release pointer fixed and verify the resulting component source commit after eve
     readiness. Require the same source commit for service/job, successful migration, exact
     domain/redirect/edge policy, unchanged egress, and health/drain/grace settings. This one-time
     dashboard transition is not a steady release path; every later code release uses the workflow.
-12. **Send the first invitation.** Only after final readiness, use the bounded application-role
-    command for the existing administrator approval. It cannot create/change authority and records
-    no email or action URL.
-13. **Complete launch gates.** Verify App Platform/PlanetScale/New Relic/Resend/Uptime signals,
+12. **Complete pre-invitation launch gates.** Verify App Platform/PlanetScale/New
+    Relic/Uptime signals and Resend domain/key readiness,
     source identity, TLS/cookies/client address, application flows, long NDJSON/Stop/recovery,
-    Ecuador/device/accessibility, privacy sampling, capacity, paid inference authorization, PITR,
-    offline Git recovery, and final independent review.
+    Ecuador/device/accessibility, privacy sampling, accepted container capacity evidence, paid
+    inference authorization, aged PITR, controlled cold recreation, offline Git recovery, and final
+    pre-invitation review.
+13. **Complete the controlled email gate.** Only after step 12 passes, use the bounded
+    application-role command for the existing owner approval. It cannot create/change authority
+    and records no email or action URL. Prove invitation, verification, and password-reset delivery,
+    links, Spanish HTML/plain text, expiry, and current desktop/mobile rendering without retaining
+    recipients or action URLs. Record final acceptance before inviting a second employee.
 
 ## Managed rehearsal
 

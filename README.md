@@ -30,14 +30,17 @@ The deferred second Bitwarden recovery owner remains a visible launch risk. The 
 unaccepted until it passes the closed production-stack checks in the committed runbooks. On August
 13, 2026, the owner explicitly replaced the two disposable managed rehearsals with direct staged
 production provisioning and accepted DigitalOcean's current feature-preview label for the
-selected compute sizes. The complete synthetic 20-employee/40-stream qualification still runs
-twice on the empty, closed production topology before any invitation or real employee data; the
-earlier source-build proof and local container runs do not substitute for those passes. No
-employee is invited until the production source, egress, database, TLS, migration, readiness,
-secret-isolation, telemetry, streaming/cancellation, and Ecuador/browser/accessibility checks
-pass. Isolated aged PITR and controlled cold recreation remain required before the first
-invitation. The owner accepted a best-effort maximum 24-hour domain-binding exception for
-accidental App deletion; controlled recovery keeps the four-hour RTO.
+selected compute sizes. This explicitly waives the two managed 20-employee/40-stream passes; the
+two clean one-CPU/one-GiB container repetitions are the accepted capacity evidence because the
+fake load server correctly refuses production mode and the real production hostname. The empty,
+closed production service still requires bounded real-path smoke coverage for source identity,
+egress, database, TLS, migration, readiness, secret isolation, telemetry, streaming/cancellation,
+and Ecuador/browser/accessibility. No employee is invited until those checks plus isolated aged
+PITR and controlled cold recreation pass. The initial owner invitation is the final controlled
+email gate; no second employee is invited until invitation, verification, and password-reset
+delivery are proven and final acceptance is recorded. The owner accepted a best-effort maximum
+24-hour domain-binding exception for accidental App deletion; controlled recovery keeps the
+four-hour RTO.
 
 Earlier Render, raw-Droplet, RIC1/NYC3 host, Caddy, systemd, UFW, Volume, and Fluent Bit records are
 historical evidence only. They are not alternate production instructions.
@@ -424,7 +427,7 @@ report that the service is unavailable. Restart it with `docker compose start po
 | `pnpm identity:bootstrap …` | Create the initial workspace and pending administrator approval |
 | `pnpm identity:approve …` | Create an idempotent pending employee approval |
 | `pnpm identity:deactivate …` | Block an employee and revoke their sessions |
-| `pnpm identity:invite-initial` | Send the existing initial administrator approval after final production readiness; reads bounded input from standard input |
+| `pnpm identity:invite-initial` | Send the existing initial administrator approval only after every pre-invitation production gate passes; reads bounded input from standard input |
 | `pnpm model-policy:bootstrap …` | Create the explicit simulated or real workspace model/cost policy |
 | `pnpm model-policy:attest …` | Renew the content-free OpenRouter privacy attestation for an existing real policy |
 | `pnpm model-catalog:refresh` | Revalidate approved real OpenRouter models and print a metadata-only summary |
@@ -486,11 +489,12 @@ confirmations, a nonempty or mismatched fixture database, or an invalid NDJSON l
 contains only safe identifiers, counts, resource measurements, and latency percentiles. Delete the
 disposable database after the wrapper stops. A source/`tsx` load server can still aid debugging, but
 it is not managed capacity evidence. Historical Render and raw-Droplet constraints/results remain
-recorded in superseded implementation plans only. A managed production-candidate rehearsal must use
-one `ric` `apps-s-1vcpu-1gb-fixed` service, its 512 MiB `PRE_DEPLOY` job, Dedicated Egress, and an
-exact PS-5 database. It must pass the unchanged workload and 500 ms response-start gate twice from
-clean state, along with the managed-edge streaming, deployment, rollback, secret, and recovery
-gates. No local or historical host result substitutes for that evidence.
+recorded in superseded implementation plans only. On August 13, 2026, the owner explicitly waived
+a managed repetition of this synthetic load test and accepted the two clean one-CPU/one-GiB
+container runs as capacity evidence. The load server remains prohibited on the production origin
+and in production mode. The closed production service instead receives bounded real-path
+streaming, deployment, rollback, secret, edge, and recovery smokes without test-only endpoints or
+a fake gateway.
 
 GitHub Actions runs formatting/linting, repository and operations validation, type checking, clean
 migrations, unit/PostgreSQL integration tests, production builds, the bundle report, dependency
@@ -614,7 +618,7 @@ Dedicated Egress addresses. After PlanetScale restrictions are installed, a temp
 ordered migration, database-only identity bootstrap, catalog validation, and model-policy bootstrap
 behind a durable initialization-document hash latch. Operators then remove its configuration,
 revoke every temporary role/key, deploy the steady service, and send
-the one initial administrator invitation only after final readiness. Cold recreation against an
+the one initial administrator invitation only after every pre-invitation production gate passes. Cold recreation against an
 initialized or restored database must verify the existing latch and authority; it must never reuse
 the initialization document/job/key or resend that invitation.
 

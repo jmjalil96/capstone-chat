@@ -76,12 +76,16 @@ Complete observability, cross-browser and accessibility verification, performanc
   application high availability, database high availability, read replica, or automatic failover.
   On August 13, 2026, the owner explicitly replaced the two disposable managed rehearsal passes
   with direct staged validation on the closed production stack and accepted the selected sizes'
-  current DigitalOcean feature-preview status. Before any invitation or real employee data, the
-  empty production stack must complete the same two clean synthetic 20-employee/40-stream passes
-  and qualify scheduling, capacity, edge streaming, deployment failure, forward rollback, egress,
-  database, source identity, TLS, migration, readiness, secret isolation, telemetry,
-  cancellation, Ecuador latency/device/accessibility, and authorization. The earlier health-only
-  proof and local one-CPU/one-GiB repetitions do not count as those managed passes.
+  current DigitalOcean feature-preview status. This explicitly waives the two managed
+  20-employee/40-stream passes and accepts the two clean one-CPU/one-GiB container repetitions as
+  capacity evidence; the test-only fake load server remains prohibited on the production origin
+  and in production mode. Before any invitation or real employee data, the empty production stack
+  must still pass bounded real-path source-identity, egress, database, edge-streaming, TLS,
+  migration, readiness, secret-isolation, telemetry, cancellation, Ecuador
+  latency/device/accessibility, authorization, failure-preservation, and forward-revert checks.
+  The initial owner invitation is the final controlled email gate. No second employee is invited
+  until invitation, verification, and password-reset delivery pass and final acceptance is
+  recorded.
 - The public origin remains `https://chat.capstone.com.ec`. Hostinger publishes a DNS-only CNAME to
   the provider-displayed `.ondigitalocean.app` target. App Platform's Cloudflare-backed edge owns
   managed TLS, the custom domain is primary, and the starter domain redirects with HTTPS 308 while
