@@ -9,6 +9,7 @@ const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url))
 const deploymentDirectory = path.join(repositoryRoot, "deploy/app-platform");
 const operationsDirectory = path.join(repositoryRoot, "docs/operations");
 const deploymentRevisionBinding = ["$", "{_self.COMMIT_HASH}"].join("");
+const starterDomainBinding = ["$", "{STARTER_DOMAIN}"].join("");
 const releaseOperationBinding = ["$", "{{ inputs.operation }}"].join("");
 const deployTokenBinding = ["$", "{{ secrets.DIGITALOCEAN_DEPLOY_TOKEN }}"].join("");
 const requiredDeploymentFiles = [
@@ -421,6 +422,7 @@ function inspectOperationsContract() {
       recovery.includes("both new `/32`s") &&
       domain.includes("DNSSEC") &&
       domain.includes("CAA") &&
+      domain.includes(starterDomainBinding) &&
       domain.includes("do-connecting-ip") &&
       employeeAccess.includes("app:access_console") &&
       employeeAccess.includes('doctl apps console "$DIGITALOCEAN_APP_ID" capstone-chat') &&

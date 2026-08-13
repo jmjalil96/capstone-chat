@@ -45,6 +45,10 @@ values exactly. The validator also normalizes only DigitalOcean's probed safe om
 false/default fields; unknown keys and non-default values still fail closed.
 DigitalOcean may expose its generated `DEFAULT` hostname only through `default_ingress`; final
 validation therefore requires the exact PRIMARY and accepts at most one matching provider DEFAULT.
+DigitalOcean desired and active ingress specs must retain its literal `${STARTER_DOMAIN}` binding
+for the redirect authority. The validator independently verifies `default_ingress`, while the
+public launch check proves that the resolved starter hostname redirects without becoming another
+authenticated origin.
 
 Contracts declare secret names, never values. Final live validation requires every declared
 secret to be returned as a provider-encrypted `EV[...]` value, forbids App-level environment

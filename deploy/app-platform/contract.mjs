@@ -9,6 +9,7 @@ const IPV4_PATTERN = /^(?:0|[1-9]\d{0,2})(?:\.(?:0|[1-9]\d{0,2})){3}$/u;
 const MODES = new Set(["bootstrap", "live", "rehearsal-bootstrap", "rehearsal"]);
 const OTEL_ENDPOINTS = new Set(["https://otlp.nr-data.net", "https://otlp.eu01.nr-data.net"]);
 const DEPLOYMENT_REVISION_BINDING = ["$", "{_self.COMMIT_HASH}"].join("");
+const STARTER_DOMAIN_BINDING = ["$", "{STARTER_DOMAIN}"].join("");
 const EDGE_FIELDS = [
   "disable_edge_cache",
   "disable_email_obfuscation",
@@ -545,7 +546,7 @@ function expectedIngress(contract, defaultDomain) {
   return {
     rules: [
       {
-        match: { authority: { exact: defaultDomain }, path: { prefix: "/" } },
+        match: { authority: { exact: STARTER_DOMAIN_BINDING }, path: { prefix: "/" } },
         redirect: {
           authority: contract.domain.domain,
           redirect_code: 308,

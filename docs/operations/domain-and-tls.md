@@ -29,9 +29,11 @@ challenges, credentials, full provider responses, employee content, or identity-
 5. At Hostinger authoritative DNS, remove conflicting `A`/`AAAA` records and publish a DNS-only
    CNAME from `chat` to the current provider target. Do not add another CDN/proxy, wildcard,
    secondary authenticated origin, direct service address, or App-managed zone.
-6. Preserve the authority-specific ingress rule that redirects exactly the fetched starter domain
-   over HTTPS with status 308 to `chat.capstone.com.ec`, without a replacement URI so path and query
-   survive. The starter domain must not establish an independent authenticated origin.
+6. Preserve DigitalOcean's literal `${STARTER_DOMAIN}` authority binding in both the desired and
+   active ingress specs. It must redirect over HTTPS with status 308 to `chat.capstone.com.ec`,
+   without a replacement URI so path and query survive. Independently fetch `default_ingress` and
+   prove that resolved starter hostname follows this rule; never substitute the fetched hostname
+   into the App spec. The starter domain must not establish an independent authenticated origin.
 7. With the custom domain attached, introduce the custom-domain-only edge controls together:
    disable App Platform edge caching and email obfuscation, and leave enhanced threat control
    disabled for this authenticated streaming service. These fields are unavailable and remain

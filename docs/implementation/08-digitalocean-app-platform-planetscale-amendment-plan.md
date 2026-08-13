@@ -368,3 +368,26 @@ boundary, or the prohibition on employee traffic before the closed production ch
 Production resources are persistent rather than covered by the prior rehearsal cleanup grant;
 failed partial provisioning is removed or revoked before retry, while an accepted live release
 uses compatible forward recovery rather than provider-native rollback.
+
+### Production bootstrap evidence
+
+On August 13, 2026, the protected production source pointer referenced green commit
+`1ab0ec1573e04ccebb968db538e3abcaa6313143`. The owner authorized the production resource batch,
+and App `be7dd9a4-0f27-4f70-a0cd-7d4856283d4c` reached an active health-only deployment in `ric`
+with no database, model, email, telemetry, or employee-data secret installed. Its public readiness
+response carried the exact source revision, product routes remained unavailable, and two distinct
+Dedicated Egress addresses remained assigned across a forced rebuild.
+
+The production PlanetScale PostgreSQL 18 database was created with a 15 GiB hard maximum. Separate
+recovery, steady application/migration, and expiring initialization application/migration roles
+were stored in the approved vault. Direct TLS verification succeeded, application roles failed an
+actual DDL probe, migration roles passed it, and the database-wide network restriction contains
+only the two assigned egress IPv4 `/32`s. No unrestricted rule remains.
+
+Attaching `chat.capstone.com.ec` exposed a second provider representation absent from local
+fixtures: DigitalOcean retains its documented literal `${STARTER_DOMAIN}` static matcher in both
+desired and active ingress specs rather than replacing it with `default_ingress`. The validator
+now requires that exact binding while continuing to validate the actual generated hostname
+independently. A public request to that generated hostname returned the required 308 and preserved
+path and query. Custom-domain DNS, certificate issuance, application initialization, steady-state
+secrets, migration, and employee traffic remained pending at this checkpoint.

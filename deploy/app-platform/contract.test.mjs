@@ -8,6 +8,7 @@ import { readContract, readProtectedJson, validateApp, validateContract } from "
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
 const revision = "a".repeat(40);
+const starterDomainBinding = ["$", "{STARTER_DOMAIN}"].join("");
 const encrypted = (name) => `EV[1:${name.repeat(8)}]`;
 
 function source(contract) {
@@ -119,7 +120,7 @@ function appFixture(contract) {
       ? {
           rules: [
             {
-              match: { authority: { exact: defaultDomain }, path: { prefix: "/" } },
+              match: { authority: { exact: starterDomainBinding }, path: { prefix: "/" } },
               redirect: {
                 authority: contract.domain.domain,
                 redirect_code: 308,
@@ -302,6 +303,28 @@ for (const [name, mode] of [
   assert.throws(
     () => validateApp({ app: fixture, contract, expectedRevision: revision }),
     /Live App DEFAULT domain/u,
+  );
+}
+
+{
+  const contract = readContract(path.join(directory, "app.contract.yaml"), "live");
+  const fixture = appFixture(contract);
+  const defaultDomain = new URL(fixture.default_ingress).hostname;
+  fixture.spec.ingress.rules[0].match.authority.exact = defaultDomain;
+  assert.throws(
+    () => validateApp({ app: fixture, contract, expectedRevision: revision }),
+    /ingress/u,
+  );
+}
+
+{
+  const contract = readContract(path.join(directory, "app.contract.yaml"), "live");
+  const fixture = appFixture(contract);
+  const defaultDomain = new URL(fixture.default_ingress).hostname;
+  fixture.active_deployment.spec.ingress.rules[0].match.authority.exact = defaultDomain;
+  assert.throws(
+    () => validateApp({ app: fixture, contract, expectedRevision: revision }),
+    /ingress/u,
   );
 }
 
