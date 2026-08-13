@@ -27,11 +27,17 @@ it is approximately USD 44.63–45.63 before taxes, variable backup/network char
 resources, and model use. OpenRouter spend is separate and remains hard-capped by the application
 at USD 100 per workspace month.
 The deferred second Bitwarden recovery owner remains a visible launch risk. The topology remains
-unaccepted until the separately authorized managed rehearsal passes every locked gate, including
-the full 20-employee/40-stream workload twice. Production also requires an explicit decision on
-DigitalOcean's current feature-preview label for the selected compute sizes. The owner accepted a
-best-effort maximum 24-hour domain-binding exception for accidental App deletion; controlled
-recovery keeps the four-hour RTO.
+unaccepted until it passes the closed production-stack checks in the committed runbooks. On August
+13, 2026, the owner explicitly replaced the two disposable managed rehearsals with direct staged
+production provisioning and accepted DigitalOcean's current feature-preview label for the
+selected compute sizes. The complete synthetic 20-employee/40-stream qualification still runs
+twice on the empty, closed production topology before any invitation or real employee data; the
+earlier source-build proof and local container runs do not substitute for those passes. No
+employee is invited until the production source, egress, database, TLS, migration, readiness,
+secret-isolation, telemetry, streaming/cancellation, and Ecuador/browser/accessibility checks
+pass. Isolated aged PITR and controlled cold recreation remain required before the first
+invitation. The owner accepted a best-effort maximum 24-hour domain-binding exception for
+accidental App deletion; controlled recovery keeps the four-hour RTO.
 
 Earlier Render, raw-Droplet, RIC1/NYC3 host, Caddy, systemd, UFW, Volume, and Fluent Bit records are
 historical evidence only. They are not alternate production instructions.
@@ -40,8 +46,9 @@ Development and automated tests still default to the deterministic zero-cost `Fa
 Real inference is an explicit `MODEL_GATEWAY=openrouter` opt-in and requires a dedicated key, a live
 validated catalog, and a fresh privacy attestation. No DigitalOcean, PlanetScale, GitHub Package,
 Resend, New Relic, DNS, paid OpenRouter, or recovery resource is created by repository setup.
-Production acceptance remains a separate operator exercise with fresh authorization and evidence
-from the committed runbooks.
+Production acceptance remains a separate operator exercise with evidence from the committed
+runbooks; the direct-production decision authorizes the staged production target, not a bypass of
+its security-sensitive provisioning order.
 
 ## Prerequisites
 

@@ -74,8 +74,14 @@ Complete observability, cross-browser and accessibility verification, performanc
   is built from the same verified Git source commit and Dockerfile as the service. Launch has no
   autoscaling, scale-to-zero, second service, worker,
   application high availability, database high availability, read replica, or automatic failover.
-  Two managed rehearsal passes must qualify scheduling, capacity, edge streaming, deployment,
-  rollback, egress, database, and Ecuador latency before acceptance.
+  On August 13, 2026, the owner explicitly replaced the two disposable managed rehearsal passes
+  with direct staged validation on the closed production stack and accepted the selected sizes'
+  current DigitalOcean feature-preview status. Before any invitation or real employee data, the
+  empty production stack must complete the same two clean synthetic 20-employee/40-stream passes
+  and qualify scheduling, capacity, edge streaming, deployment failure, forward rollback, egress,
+  database, source identity, TLS, migration, readiness, secret isolation, telemetry,
+  cancellation, Ecuador latency/device/accessibility, and authorization. The earlier health-only
+  proof and local one-CPU/one-GiB repetitions do not count as those managed passes.
 - The public origin remains `https://chat.capstone.com.ec`. Hostinger publishes a DNS-only CNAME to
   the provider-displayed `.ondigitalocean.app` target. App Platform's Cloudflare-backed edge owns
   managed TLS, the custom domain is primary, and the starter domain redirects with HTTPS 308 while
@@ -95,7 +101,8 @@ Complete observability, cross-browser and accessibility verification, performanc
 - PlanetScale backups run every 12 hours and are retained for 84 hours, preserving at least three
   continuously accessible days of point-in-time recovery. Production retains an RPO of at most 15
   minutes and an RTO of at most four hours. An isolated database restore and a source-controlled
-  controlled cold App recreation are required before launch. The owner-approved exception for
+  controlled cold App recreation are required before the first employee invitation. The
+  owner-approved exception for
   accidental App deletion while the custom domain remains attached is best-effort with a maximum
   24-hour domain-binding recovery objective; every controlled recovery retains the four-hour RTO.
 - Resend Free sends transactional mail through direct HTTPS calls from Fastify. The verified sending

@@ -1,7 +1,7 @@
 # Phase 8 amendment: DigitalOcean App Platform source builds and PlanetScale
 
-Status: repository implementation complete; managed rehearsal and production acceptance are not
-granted.
+Status: repository implementation complete; direct staged production provisioning selected;
+production acceptance is not granted.
 
 Date: August 12, 2026.
 
@@ -41,9 +41,8 @@ does not grant an open-source license. Changing repository visibility or deletin
 package is a separate decision and, for deletion, separate destructive authorization.
 
 DigitalOcean's live catalog currently labels both selected fixed-size slugs as feature preview.
-They may be used for the already scoped synthetic rehearsal. Production requires a later explicit
-acceptance of that risk or a switch to a confirmed generally available size followed by the full
-load rehearsal on that exact size.
+On August 13, 2026, the owner explicitly accepted that provider-lifecycle risk for the selected
+production topology rather than switching to a different size.
 
 ## Why the release design changed
 
@@ -249,16 +248,18 @@ bounded content-free direct log mirror. No provider receives prompts, responses,
 summaries, titles, searches, recipient addresses, action URLs, cookies, authorization headers,
 database URLs, or raw provider bodies.
 
-The managed candidate is not accepted until two clean rehearsals pass on the exact final size and
-topology. Each proves 20 simultaneously signed-in employees, 40 active streams, the locked
-500 ms p95 `response.started` objective, model-event and cancellation gates, bounded memory and
-pool behavior, five-minute streaming, build/migration/readiness failure preservation, source
-identity, secret isolation, two-address egress, DNS/TLS, telemetry, forward revert, aged PITR, and
-controlled cold recreation.
+On August 13, 2026, the owner explicitly replaced the two disposable managed rehearsals with
+direct staged production provisioning. The same two clean synthetic 20-employee/40-stream passes
+run on the empty, closed production topology before any invitation or real employee data. They
+retain the locked 500 ms p95 `response.started`, model-event, cancellation, bounded memory/pool,
+five-minute streaming, build/migration/readiness failure-preservation, forward-revert, egress,
+database, source-identity, secret-isolation, DNS/TLS, telemetry, and Ecuador checks. The earlier
+health-only proof and local one-CPU/one-GiB repetitions do not count as these managed passes. Aged
+PITR and controlled cold recreation also remain required before the first invitation.
 
-The current feature-preview size label, public-source acceptance, live provider terms, Ecuador
-latency/device/accessibility checks, paid OpenRouter smoke, Resend delivery, DNS/TLS, New Relic,
-PITR, and final security review remain external gates.
+Public-source acceptance, live provider terms, Ecuador latency/device/accessibility checks, paid
+OpenRouter smoke, Resend delivery, DNS/TLS, New Relic, PITR, and final security review remain
+external gates. The feature-preview size risk was accepted on August 13, 2026.
 
 ## Repository simplification
 
@@ -342,7 +343,20 @@ remain as authorized. This source-build proof is not either of the two full mana
 passes; Dedicated Egress, PlanetScale, domain/TLS, initialization, migration, telemetry, load,
 PITR, and cold recreation remain unverified.
 
-No repository verification authorizes a DigitalOcean App, PlanetScale resource, domain, secret,
-email, model call, deployment, or billable action. The next external step requires a new grant for
-the first full synthetic managed rehearsal, naming its maximum cost, lifetime, data and credential
-boundaries, rollback, and mandatory cleanup scope.
+Repository verification alone authorizes no DigitalOcean App, PlanetScale resource, domain,
+secret, email, model call, deployment, or billable action. The owner supplied the production
+direction recorded below; every external batch still follows the approved target, cost, data,
+credential, rollback, and cleanup boundaries and stops when it needs broader authority.
+
+### Direct-production decision
+
+On August 13, 2026, the owner ended the disposable managed-rehearsal path and directed the launch
+to the real production stack. This decision accepts the selected DigitalOcean feature-preview
+sizes and moves the two managed qualification passes onto the empty, closed production topology;
+it does not waive them. It does not change the approved USD 44–45 monthly operational baseline,
+the separate USD 100 workspace model ceiling, any data, privacy, secret-scope, database, egress,
+TLS, initialization, deployment, rollback, or recovery boundary, or the prohibition on employee
+traffic before the closed production checks above pass. Production resources are persistent rather
+than covered by the prior rehearsal cleanup grant; failed partial provisioning is removed or
+revoked before retry, while an accepted live release uses compatible forward recovery rather than
+provider-native rollback.

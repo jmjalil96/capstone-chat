@@ -15,11 +15,15 @@ region, maximum/prorated cost, data/credential boundary, lifetime, rollback, and
 - DigitalOcean's GitHub integration is limited to `jmjalil96/capstone-chat`. Record that the
   repository is already public and obtain explicit production acceptance of that state; public
   access is not a license grant.
-- Two clean managed rehearsals pass on the exact final size with 20 signed-in employees, 40
-  streams, unchanged latency/correctness gates, managed TLS, deployment failures, forward revert,
-  egress, secret isolation, aged PITR, and cold recreation.
-- Current provider sizes/regions/terms/costs are recorded. Feature-preview sizes require explicit
-  production acceptance or replacement and re-rehearsal.
+- The owner replaced the two disposable managed rehearsals with direct staged production
+  provisioning on August 13, 2026. Run the same two clean synthetic 20-employee/40-stream passes
+  on the empty production topology; the earlier health-only proof and local container repetitions
+  do not count. Keep the production App closed and free of real employee data until its source,
+  egress, database, TLS, migration, readiness, deployment-failure/forward-revert,
+  secret-isolation, telemetry, streaming/cancellation, Ecuador/browser/accessibility, aged PITR,
+  and controlled cold-recreation checks pass. Do not send the first invitation before then.
+- Current provider sizes/regions/terms/costs are recorded. The owner accepted the current
+  feature-preview status of the selected production sizes on August 13, 2026.
 - The App Platform/Cloudflare privacy boundary, domain-deletion exception, company ownership/MFA,
   Bitwarden recovery, and revoked planning OpenRouter key are all current.
 
@@ -98,6 +102,9 @@ release pointer fixed and verify the resulting component source commit after eve
     offline Git recovery, and final independent review.
 
 ## Managed rehearsal
+
+This is retained as a future qualification procedure, not the active launch path after the
+owner's August 13, 2026 direct-production decision.
 
 A rehearsal requires a separate grant for one temporary `ric` App, Dedicated Egress, isolated
 PlanetScale branch/database, temporary hostname, fake model, disabled/fake email, synthetic `.test`
