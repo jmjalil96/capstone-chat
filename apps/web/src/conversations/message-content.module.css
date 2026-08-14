@@ -4,6 +4,7 @@
   font-family: var(--capstone-font-body);
   line-height: 1.65;
   overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .root > :first-child,
@@ -14,12 +15,6 @@
 .root > :last-child,
 .root > :last-child > :last-child {
   margin-block-end: 0;
-}
-
-.root p,
-.root li,
-.root blockquote {
-  white-space: pre-wrap;
 }
 
 .root p,
@@ -39,6 +34,22 @@
 
 .root li + li {
   margin-block-start: var(--capstone-space-2);
+}
+
+.root blockquote > :first-child,
+.root li > :first-child:not(:is(ul, ol)) {
+  margin-block-start: 0;
+}
+
+.root blockquote > :last-child,
+.root li > :last-child {
+  margin-block-end: 0;
+}
+
+.root li > p,
+.root li > ul,
+.root li > ol {
+  margin-block: var(--capstone-space-2);
 }
 
 .root blockquote {
@@ -100,6 +111,7 @@
 
 .suppressedMedia {
   font-style: italic;
+  white-space: pre-wrap;
 }
 
 .tableScroll,
@@ -208,13 +220,18 @@
 }
 
 .root :global(.task-list-item) {
-  display: flex;
-  align-items: baseline;
-  gap: var(--capstone-space-2);
+  position: relative;
+  padding-inline-start: calc(1em + var(--capstone-space-2));
 }
 
-.root :global(.task-list-item) > input {
-  flex: 0 0 auto;
+.root :global(.task-list-item) > input,
+.root :global(.task-list-item) > p:first-child > input:first-child {
+  position: absolute;
+  inset-block-start: 0.325em;
+  inset-inline-start: 0;
+  width: 1em;
+  height: 1em;
+  margin: 0;
   accent-color: var(--app-action);
 }
 

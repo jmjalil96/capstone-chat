@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import { copy } from "../src/copy";
 import { exerciseConversationControls } from "./support/phase5-controls-flow";
@@ -57,7 +57,7 @@ test("@critical-stream renders the fixed response gallery safely and copies orig
   ).toBeVisible();
   await expect(galleryContent.locator("table")).toHaveCount(2);
   await expect(galleryContent.locator("blockquote")).toHaveCount(1);
-  await expect(galleryContent.locator('input[type="checkbox"]')).toHaveCount(2);
+  await expect(galleryContent.locator('input[type="checkbox"]')).toHaveCount(5);
   expect(
     await galleryContent
       .locator('input[type="checkbox"]')
@@ -66,6 +66,10 @@ test("@critical-stream renders the fixed response gallery safely and copies orig
   await expect(galleryContent.locator("pre")).toHaveCount(5);
   await expect(galleryContent.locator(".hljs-keyword").first()).toBeVisible();
   expect(await galleryContent.locator("math").count()).toBeGreaterThanOrEqual(3);
+  await expectGalleryLineEndings(galleryContent);
+  await expectGalleryRhythm(galleryContent);
+  await expectTaskLayout(galleryContent);
+  await expectMessageContainment(galleryContent);
 
   const anchors = galleryContent.locator("a");
   await expect(anchors).toHaveCount(2);
@@ -97,7 +101,7 @@ test("@critical-stream renders the fixed response gallery safely and copies orig
   ).toHaveCount(0);
   await expect(galleryContent.locator("[style]")).toHaveCount(0);
   await expect(
-    galleryContent.getByText("Imagen que no debe cargarse", { exact: true }),
+    galleryContent.getByText("Imagen que no debe cargarse\nen una segunda línea", { exact: true }),
   ).toBeVisible();
   expect(
     requests.some((url) =>
@@ -172,11 +176,8 @@ test("@critical-stream renders the fixed response gallery safely and copies orig
     await page.setViewportSize({ width: 390, height: 844 });
   }
   await galleryMessage.locator('[data-message-overflow="table"]').last().scrollIntoViewIfNeeded();
-  expect(
-    await page.evaluate(
-      () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
-    ),
-  ).toBe(true);
+  await expectTaskLayout(galleryContent);
+  await expectMessageContainment(galleryContent);
   const overflowGeometry = await galleryContent
     .locator("[data-message-overflow]")
     .evaluateAll((elements) =>
@@ -213,10 +214,205 @@ test("@critical-stream renders the fixed response gallery safely and copies orig
   }
 });
 
-async function exerciseDeepSearchPositioning(
-  page: import("@playwright/test").Page,
-  isMobile: boolean,
-): Promise<void> {
+async function expectGalleryLineEndings(content: Locator): Promise<void> {
+  for (const [first, second] of [
+    ["formato en línea", "y continuación formateada"],
+    ["Tarea con corte duro", "continuación de tarea"],
+    ["Tarea anidada", "continuación anidada"],
+    ["Una cita sintética para comprobar el formato", "con una segunda línea"],
+    ["Imagen que no debe cargarse", "en una segunda línea"],
+    ["Primera línea suave", "segunda línea suave"],
+    ["Línea con corte duro", "continuación tras espacios"],
+    ["Línea con corte por barra", "continuación tras barra"],
+    ["Fuerte con corte duro", "continuación fuerte"],
+  ] as const) {
+    const { delta, lineHeight } = await textPairGeometry(content, first, second);
+    expect(Math.abs(delta - lineHeight), `${first} must have exactly one line break`).toBeLessThan(
+      2,
+    );
+  }
+}
+
+async function expectGalleryRhythm(content: Locator): Promise<void> {
+  const geometry = await content.evaluate((root) => {
+    const number = (value: string): number => Number.parseFloat(value) || 0;
+    const textNode = (value: string): Text => {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if (node.textContent?.includes(value)) return node as Text;
+      }
+      throw new Error(`Missing response-gallery text: ${value}`);
+    };
+    const textLastLineTop = (value: string): number => {
+      const node = textNode(value);
+      const start = node.data.indexOf(value);
+      const range = document.createRange();
+      range.setStart(node, start);
+      range.setEnd(node, start + value.length);
+      const rect = [...range.getClientRects()].at(-1);
+      if (!rect) throw new Error(`Response-gallery text has no line box: ${value}`);
+      return rect.top;
+    };
+    const element = (value: string, selector: string): HTMLElement => {
+      const found = textNode(value).parentElement?.closest<HTMLElement>(selector);
+      if (!found) throw new Error(`Missing ${selector} for response-gallery text: ${value}`);
+      return found;
+    };
+    const style = getComputedStyle(root);
+    const rem = number(getComputedStyle(document.documentElement).fontSize);
+    const space2 = number(style.getPropertyValue("--capstone-space-2")) * rem;
+    const space3 = number(style.getPropertyValue("--capstone-space-3")) * rem;
+    const space5 = number(style.getPropertyValue("--capstone-space-5")) * rem;
+    const lineHeight = number(style.lineHeight);
+    const firstHeading = element("Encabezado de nivel uno", "h2");
+    const secondHeading = element("Encabezado de nivel dos", "h3");
+    const nestedList = element("Elemento anidado", "ul");
+    const plainNestedList = element("Subelemento simple", "ul");
+    const quote = element("Una cita sintética", "blockquote");
+    const quoteParagraph = quote.querySelector<HTMLElement>(":scope > p");
+    const looseFirst = element("Tarea con párrafos", "p").getBoundingClientRect().bottom;
+    const looseSecond = element("Segundo párrafo de la tarea", "p").getBoundingClientRect().top;
+    const footnotes = root.querySelector<HTMLElement>("[data-footnotes]");
+    const footnoteList = footnotes?.querySelector<HTMLElement>(":scope > ol");
+    const actions = root.parentElement?.querySelector<HTMLElement>(":scope > .message-actions");
+    if (!quoteParagraph || !footnotes || !footnoteList || !actions)
+      throw new Error("Missing response-gallery quote, footnote, or actions");
+
+    return {
+      footnoteActionsGap:
+        actions.getBoundingClientRect().top - footnoteList.getBoundingClientRect().bottom,
+      headingGap:
+        secondHeading.getBoundingClientRect().top - firstHeading.getBoundingClientRect().bottom,
+      looseGap: looseSecond - looseFirst,
+      nestedGaps: [
+        nestedList.getBoundingClientRect().top - textLastLineTop("y continuación formateada"),
+        plainNestedList.getBoundingClientRect().top -
+          textLastLineTop("Elemento simple sin formato"),
+      ],
+      quoteInset:
+        quote.getBoundingClientRect().height - quoteParagraph.getBoundingClientRect().height,
+      expected: { lineHeight, space2, space3, space5 },
+    };
+  });
+
+  expect(Math.abs(geometry.headingGap - geometry.expected.space5)).toBeLessThan(2);
+  for (const nestedGap of geometry.nestedGaps) {
+    expect(
+      Math.abs(nestedGap - (geometry.expected.lineHeight + geometry.expected.space2)),
+    ).toBeLessThan(4);
+  }
+  expect(Math.abs(geometry.looseGap - geometry.expected.space2)).toBeLessThan(2);
+  expect(Math.abs(geometry.quoteInset - 2 * geometry.expected.space2)).toBeLessThan(2);
+  expect(Math.abs(geometry.footnoteActionsGap - geometry.expected.space3)).toBeLessThan(2);
+}
+
+async function expectTaskLayout(content: Locator): Promise<void> {
+  const labels = ["Etiqueta de tarea extensa", "Tarea con párrafos", "Tarea anidada"];
+  const geometries = await content.evaluate((root, taskLabels) => {
+    const space2 =
+      Number.parseFloat(getComputedStyle(root).getPropertyValue("--capstone-space-2")) *
+      Number.parseFloat(getComputedStyle(document.documentElement).fontSize);
+
+    return taskLabels.map((label) => {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      let node = walker.nextNode();
+      while (node && !node.textContent?.includes(label)) node = walker.nextNode();
+      const item = node?.parentElement?.closest<HTMLElement>(".task-list-item");
+      const input = item?.querySelector<HTMLInputElement>("input[type='checkbox']");
+      if (!(node instanceof Text) || !item || !input)
+        throw new Error(`Missing task fixture: ${label}`);
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      const lines = [...range.getClientRects()].filter((rect) => rect.width > 0);
+      const firstLine = lines[0];
+      const inputBox = input.getBoundingClientRect();
+      const itemBox = item.getBoundingClientRect();
+      if (!firstLine) throw new Error(`Task fixture has no rendered text: ${label}`);
+
+      return {
+        checkboxOnFirstLine:
+          inputBox.top <= firstLine.bottom + 1 && inputBox.bottom >= firstLine.top - 1,
+        contained: lines.every(
+          (line) => line.left >= inputBox.right + space2 - 2 && line.right <= itemBox.right + 1,
+        ),
+        label,
+        lineCount: lines.length,
+      };
+    });
+  }, labels);
+
+  for (const geometry of geometries) {
+    expect(geometry.checkboxOnFirstLine, `${geometry.label} checkbox alignment`).toBe(true);
+    expect(geometry.contained, `${geometry.label} continuation alignment`).toBe(true);
+  }
+  for (const label of labels.slice(0, 2)) {
+    expect(geometries.find((geometry) => geometry.label === label)?.lineCount).toBeGreaterThan(1);
+  }
+}
+
+async function textPairGeometry(
+  content: Locator,
+  first: string,
+  second: string,
+): Promise<{ delta: number; lineHeight: number }> {
+  return content.evaluate(
+    (root, values) => {
+      const lineTop = (
+        value: string,
+        edge: "first" | "last",
+      ): { lineHeight: number; top: number } => {
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          const start = node.textContent?.indexOf(value) ?? -1;
+          if (start < 0) continue;
+          const range = document.createRange();
+          range.setStart(node, start);
+          range.setEnd(node, start + value.length);
+          if (!node.parentElement) throw new Error(`Detached response-gallery text: ${value}`);
+          const rects = [...range.getClientRects()];
+          const rect = edge === "first" ? rects[0] : rects.at(-1);
+          if (!rect) throw new Error(`Response-gallery text has no line box: ${value}`);
+          return {
+            lineHeight: Number.parseFloat(getComputedStyle(node.parentElement).lineHeight),
+            top: rect.top,
+          };
+        }
+        throw new Error(`Missing response-gallery text: ${value}`);
+      };
+      const firstLine = lineTop(values.first, "last");
+      return {
+        delta: lineTop(values.second, "first").top - firstLine.top,
+        lineHeight: firstLine.lineHeight,
+      };
+    },
+    { first, second },
+  );
+}
+
+async function expectMessageContainment(content: Locator): Promise<void> {
+  const containment = await content.evaluate((root) => {
+    const rootBox = root.getBoundingClientRect();
+    const scroll = root.closest(".message-scroll");
+    const scrollBox = scroll?.getBoundingClientRect();
+
+    return {
+      contentFitsOwnBox: root.scrollWidth <= root.clientWidth,
+      documentFitsViewport:
+        document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+      insideScrollArea: Boolean(
+        scrollBox && rootBox.left >= scrollBox.left - 1 && rootBox.right <= scrollBox.right + 1,
+      ),
+    };
+  });
+
+  expect(containment).toEqual({
+    contentFitsOwnBox: true,
+    documentFitsViewport: true,
+    insideScrollArea: true,
+  });
+}
+
+async function exerciseDeepSearchPositioning(page: Page, isMobile: boolean): Promise<void> {
   if (!isMobile) {
     await page.setViewportSize({ width: 1_280, height: 800 });
   }
