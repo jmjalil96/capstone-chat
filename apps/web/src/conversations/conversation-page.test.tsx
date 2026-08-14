@@ -4,7 +4,7 @@ import type {
   SessionResponse,
 } from "@capstone/protocol";
 import { type InfiniteData, QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useEffect, useState } from "react";
 import { createMemoryRouter, Outlet } from "react-router";
@@ -16,6 +16,12 @@ import { seedModelTierQueries } from "../test/model-tier-fixture";
 import { conversationQueryKeys, draftScopeKey } from "./api";
 import type { ChatRuntime } from "./chat-runtime";
 import { ChatRuntimeProvider, useChatRuntime } from "./chat-runtime-provider";
+import {
+  ConversationActionDialogs,
+  ConversationActionDisclosure,
+} from "./conversation-action-controls";
+import { useConversationActions } from "./conversation-actions";
+import { useConversationDetail } from "./conversation-detail";
 import { ConversationPage } from "./conversation-page";
 import { DraftEditor } from "./draft-editor";
 import { DraftMemoryProvider, useDraftMemory } from "./draft-memory";
@@ -77,12 +83,67 @@ function TestLayout() {
   );
 }
 
+function ConversationPageWithActions() {
+  const detail = useConversationDetail(conversationId);
+  const conversation = detail.data?.pages[0]?.conversation;
+  const controller = useConversationActions(conversation);
+  const title = conversation?.title ?? copy.conversations.common.untitled;
+
+  return (
+    <>
+      <ConversationActionDisclosure
+        controller={controller}
+        label={copy.conversations.conversation.actionsLabel(title)}
+      />
+      <ConversationPage />
+      <ConversationActionDialogs controller={controller} />
+    </>
+  );
+}
+
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
 });
 
 describe("conversation page", () => {
+  it("focuses the visible error heading when canonical conversation detail fails", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url.endsWith(`/api/conversations/${conversationId}`)) {
+          return json(
+            { code: "INTERNAL_ERROR", message: "Unavailable", requestId: "request-detail" },
+            500,
+          );
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      }),
+    );
+    const queryClient = createTestQueryClient();
+    const router = createMemoryRouter(
+      [
+        {
+          Component: TestLayout,
+          children: [{ path: "/c/:conversationId", Component: ConversationPage }],
+        },
+      ],
+      { initialEntries: [`/c/${conversationId}`] },
+    );
+    render(
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>,
+    );
+
+    const heading = await screen.findByRole("heading", {
+      level: 1,
+      name: copy.identity.route.unavailableTitle,
+    });
+    await waitFor(() => expect(heading).toHaveFocus());
+  });
+
   it("keeps an active runtime across metadata refreshes and rotates it with authentication scope", async () => {
     const session = {
       employee: { id: "employee-1", name: "Ana", email: "ana@example.test" },
@@ -1054,6 +1115,450 @@ describe("conversation page", () => {
     expect(scrollWrites.at(-1)).toBe(240);
   });
 
+  it("clears the page mutation banner when a sidebar action adopts canonical state", async () => {
+    const messageId = "33333333-3333-4333-8333-333333333333";
+    const summary = (revision: number, isArchived = false) => ({
+      id: conversationId,
+      title: "Conversación con alerta",
+      isArchived,
+      revision,
+      createdAt: "2026-08-06T12:00:00.000Z",
+      updatedAt: "2026-08-06T12:00:00.000Z",
+    });
+    let canonicalReads = 0;
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith(`/api/conversations/${conversationId}?cursor=cursor.signature`)) {
+        return json(
+          { code: "CONVERSATION_CHANGED", message: "Conversation changed", requestId: "cursor" },
+          409,
+        );
+      }
+      if (url.endsWith(`/api/conversations/${conversationId}/draft`)) {
+        return json({
+          scope: { kind: "conversation", conversationId },
+          content: "",
+          revision: 0,
+          updatedAt: null,
+        });
+      }
+      if (url.endsWith(`/api/conversations/${conversationId}/archive`)) {
+        return json(summary(3, true));
+      }
+      if (url.endsWith(`/api/conversations/${conversationId}`)) {
+        canonicalReads += 1;
+        if (canonicalReads === 2) {
+          // The page's own canonical recovery fails and leaves its banner up.
+          return json(
+            { code: "INTERNAL_ERROR", message: "Recovery failed", requestId: "recovery-failed" },
+            500,
+          );
+        }
+        return json({
+          conversation: summary(canonicalReads),
+          selectedLeafId: messageId,
+          messages: [conversationMessage(messageId, null, "user", "Mensaje base")],
+          nextCursor: "cursor.signature",
+        });
+      }
+      if (url.includes("/api/conversations?") || url.includes("/search")) {
+        return json({ conversations: [], nextCursor: null });
+      }
+      if (url.endsWith("/response-states")) {
+        return json({ responses: [] });
+      }
+      throw new Error(`Unexpected request: ${url} ${String(init?.method ?? "GET")}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const queryClient = createTestQueryClient();
+    const router = createMemoryRouter(
+      [
+        {
+          Component: TestLayout,
+          children: [{ path: "/c/:conversationId", Component: ConversationPageWithActions }],
+        },
+      ],
+      { initialEntries: [`/c/${conversationId}`] },
+    );
+    const user = userEvent.setup();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>,
+    );
+
+    await screen.findByText("Mensaje base", { exact: true });
+    await user.click(screen.getByRole("button", { name: copy.conversations.conversation.older }));
+    const banner = await screen.findByRole("alert");
+    expect(banner).toHaveTextContent(copy.conversations.common.genericError);
+
+    await user.click(
+      screen.getByRole("button", {
+        name: copy.conversations.conversation.actionsLabel("Conversación con alerta"),
+      }),
+    );
+    await user.click(screen.getByRole("button", { name: copy.conversations.conversation.archive }));
+
+    // The successful sidebar archive adopts canonical state, which supersedes the
+    // page's stale error banner.
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+  });
+
+  it("re-anchors to the bottom after sidebar recovery collapses the thread", async () => {
+    const messageId = "33333333-3333-4333-8333-333333333333";
+    const summary = (revision: number) => ({
+      id: conversationId,
+      title: "Conversación colapsada",
+      isArchived: false,
+      revision,
+      createdAt: "2026-08-06T12:00:00.000Z",
+      updatedAt: "2026-08-06T12:00:00.000Z",
+    });
+    let canonicalReads = 0;
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith(`/api/conversations/${conversationId}/draft`)) {
+        return json({
+          scope: { kind: "conversation", conversationId },
+          content: "",
+          revision: 0,
+          updatedAt: null,
+        });
+      }
+      if (url.endsWith(`/api/conversations/${conversationId}/archive`)) {
+        return json(
+          { code: "CONVERSATION_CHANGED", message: "Conversation changed", requestId: "stale" },
+          409,
+        );
+      }
+      if (url.endsWith(`/api/conversations/${conversationId}`)) {
+        canonicalReads += 1;
+        return json({
+          conversation: summary(canonicalReads),
+          selectedLeafId: messageId,
+          messages: [
+            conversationMessage(
+              messageId,
+              null,
+              "user",
+              canonicalReads === 1 ? "Mensaje original" : "Mensaje canónico",
+            ),
+          ],
+          nextCursor: null,
+        });
+      }
+      if (url.includes("/api/conversations?") || url.includes("/search")) {
+        return json({ conversations: [], nextCursor: null });
+      }
+      if (url.endsWith("/response-states")) {
+        return json({ responses: [] });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const queryClient = createTestQueryClient();
+    const router = createMemoryRouter(
+      [
+        {
+          Component: TestLayout,
+          children: [{ path: "/c/:conversationId", Component: ConversationPageWithActions }],
+        },
+      ],
+      { initialEntries: [`/c/${conversationId}`] },
+    );
+    const user = userEvent.setup();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>,
+    );
+
+    await screen.findByText("Mensaje original", { exact: true });
+    const container = document.querySelector<HTMLElement>(".message-scroll");
+    expect(container).not.toBeNull();
+    let top = 0;
+    const scrollWrites: number[] = [];
+    Object.defineProperties(container, {
+      scrollHeight: { configurable: true, get: () => 240 },
+      scrollTop: {
+        configurable: true,
+        get: () => top,
+        set: (value: number) => {
+          top = value;
+          scrollWrites.push(value);
+        },
+      },
+    });
+
+    await user.click(
+      screen.getByRole("button", {
+        name: copy.conversations.conversation.actionsLabel("Conversación colapsada"),
+      }),
+    );
+    await user.click(screen.getByRole("button", { name: copy.conversations.conversation.archive }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(copy.conversations.common.changed);
+    expect(await screen.findByText("Mensaje canónico", { exact: true })).toBeVisible();
+    await waitFor(() => expect(top).toBe(240));
+    expect(scrollWrites.at(-1)).toBe(240);
+  });
+
+  it.each([
+    ["older response resolves first", "page-first"],
+    ["older response resolves last", "shell-first"],
+  ])("never regresses the canonical cache when %s", async (_name, order) => {
+    const messageId = "33333333-3333-4333-8333-333333333333";
+    const summary = (revision: number) => ({
+      id: conversationId,
+      title: "Conversación en carrera",
+      isArchived: false,
+      revision,
+      createdAt: "2026-08-06T12:00:00.000Z",
+      updatedAt: "2026-08-06T12:00:00.000Z",
+    });
+    const branch = (revision: number, text: string) => ({
+      conversation: summary(revision),
+      selectedLeafId: messageId,
+      messages: [conversationMessage(messageId, null, "user", text)],
+      nextCursor: "cursor.signature",
+    });
+    let canonicalReads = 0;
+    let releasePageRecovery!: () => void;
+    let releaseShellRecovery!: () => void;
+    const pageRecoveryGate = new Promise<void>((resolve) => {
+      releasePageRecovery = resolve;
+    });
+    const shellRecoveryGate = new Promise<void>((resolve) => {
+      releaseShellRecovery = resolve;
+    });
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith(`/api/conversations/${conversationId}?cursor=cursor.signature`)) {
+        return json(
+          { code: "CONVERSATION_CHANGED", message: "Conversation changed", requestId: "cursor" },
+          409,
+        );
+      }
+      if (url.endsWith(`/api/conversations/${conversationId}/draft`)) {
+        return json({
+          scope: { kind: "conversation", conversationId },
+          content: "",
+          revision: 0,
+          updatedAt: null,
+        });
+      }
+      if (url.endsWith(`/api/conversations/${conversationId}/archive`)) {
+        return json(
+          { code: "CONVERSATION_CHANGED", message: "Conversation changed", requestId: "stale" },
+          409,
+        );
+      }
+      if (url.endsWith(`/api/conversations/${conversationId}`)) {
+        canonicalReads += 1;
+        if (canonicalReads === 2) {
+          // The page's recovery observes an OLDER canonical revision than the
+          // sidebar's; the loser of the race must never overwrite the winner.
+          await pageRecoveryGate;
+          return json(branch(2, "Mensaje antiguo"));
+        }
+        if (canonicalReads === 3) {
+          await shellRecoveryGate;
+          return json(branch(3, "Mensaje más nuevo"));
+        }
+        return json(branch(1, "Mensaje original"));
+      }
+      if (url.includes("/api/conversations?") || url.includes("/search")) {
+        return json({ conversations: [], nextCursor: null });
+      }
+      if (url.endsWith("/response-states")) {
+        return json({ responses: [] });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const queryClient = createTestQueryClient();
+    const router = createMemoryRouter(
+      [
+        {
+          Component: TestLayout,
+          children: [{ path: "/c/:conversationId", Component: ConversationPageWithActions }],
+        },
+      ],
+      { initialEntries: [`/c/${conversationId}`] },
+    );
+    const user = userEvent.setup();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>,
+    );
+
+    await screen.findByText("Mensaje original", { exact: true });
+    await user.click(screen.getByRole("button", { name: copy.conversations.conversation.older }));
+    await user.click(
+      screen.getByRole("button", {
+        name: copy.conversations.conversation.actionsLabel("Conversación en carrera"),
+      }),
+    );
+    await user.click(screen.getByRole("button", { name: copy.conversations.conversation.archive }));
+    await waitFor(() => expect(canonicalReads).toBe(3));
+
+    const releases =
+      order === "page-first"
+        ? [releasePageRecovery, releaseShellRecovery]
+        : [releaseShellRecovery, releasePageRecovery];
+    for (const release of releases) {
+      await act(async () => {
+        release();
+        await Promise.resolve();
+      });
+    }
+
+    // Whichever response arrives last, the cache holds the highest revision and
+    // the newest branch content.
+    await waitFor(() => {
+      const cached = queryClient.getQueryData<InfiniteData<ConversationDetailResponse>>(
+        conversationQueryKeys.detail(queryScope, conversationId),
+      );
+      expect(cached?.pages[0]?.conversation.revision).toBe(3);
+    });
+    expect(await screen.findByText("Mensaje más nuevo", { exact: true })).toBeVisible();
+    expect(screen.queryByText("Mensaje antiguo", { exact: true })).not.toBeInTheDocument();
+  });
+
+  it("keeps a coherent alert when page and sidebar recoveries overlap", async () => {
+    const messageId = "33333333-3333-4333-8333-333333333333";
+    const summary = (revision: number) => ({
+      id: conversationId,
+      title: "Conversación concurrente",
+      isArchived: false,
+      revision,
+      createdAt: "2026-08-06T12:00:00.000Z",
+      updatedAt: "2026-08-06T12:00:00.000Z",
+    });
+    let canonicalReads = 0;
+    let releaseRecoveries!: () => void;
+    const recoveryGate = new Promise<void>((resolve) => {
+      releaseRecoveries = resolve;
+    });
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith(`/api/conversations/${conversationId}?cursor=cursor.signature`)) {
+        return json(
+          { code: "CONVERSATION_CHANGED", message: "Conversation changed", requestId: "cursor" },
+          409,
+        );
+      }
+      if (url.endsWith(`/api/conversations/${conversationId}/draft`)) {
+        return json({
+          scope: { kind: "conversation", conversationId },
+          content: "",
+          revision: 0,
+          updatedAt: null,
+        });
+      }
+      if (url.endsWith(`/api/conversations/${conversationId}/archive`)) {
+        return json(
+          { code: "CONVERSATION_CHANGED", message: "Conversation changed", requestId: "stale" },
+          409,
+        );
+      }
+      if (url.endsWith(`/api/conversations/${conversationId}`)) {
+        canonicalReads += 1;
+        if (canonicalReads > 1) {
+          // Both the page and the sidebar recovery wait on the same gate so the
+          // two canonical fetches are provably in flight together.
+          await recoveryGate;
+        }
+        return json({
+          conversation: summary(canonicalReads === 1 ? 1 : 2),
+          selectedLeafId: messageId,
+          messages: [
+            conversationMessage(
+              messageId,
+              null,
+              "user",
+              canonicalReads === 1 ? "Mensaje original" : "Mensaje canónico",
+            ),
+          ],
+          nextCursor: "cursor.signature",
+        });
+      }
+      if (url.includes("/api/conversations?") || url.includes("/search")) {
+        return json({ conversations: [], nextCursor: null });
+      }
+      if (url.endsWith("/response-states")) {
+        return json({ responses: [] });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const queryClient = createTestQueryClient();
+    const router = createMemoryRouter(
+      [
+        {
+          Component: TestLayout,
+          children: [{ path: "/c/:conversationId", Component: ConversationPageWithActions }],
+        },
+      ],
+      { initialEntries: [`/c/${conversationId}`] },
+    );
+    const user = userEvent.setup();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>,
+    );
+
+    await screen.findByText("Mensaje original", { exact: true });
+    const container = document.querySelector<HTMLElement>(".message-scroll");
+    expect(container).not.toBeNull();
+    let top = 0;
+    Object.defineProperties(container, {
+      scrollHeight: { configurable: true, get: () => 240 },
+      scrollTop: {
+        configurable: true,
+        get: () => top,
+        set: (value: number) => {
+          top = value;
+        },
+      },
+    });
+
+    await user.click(screen.getByRole("button", { name: copy.conversations.conversation.older }));
+    await user.click(
+      screen.getByRole("button", {
+        name: copy.conversations.conversation.actionsLabel("Conversación concurrente"),
+      }),
+    );
+    await user.click(screen.getByRole("button", { name: copy.conversations.conversation.archive }));
+    await waitFor(() => expect(canonicalReads).toBeGreaterThanOrEqual(3));
+    act(() => releaseRecoveries());
+
+    // Exactly one alert survives the race: the page banner takes focus, which
+    // dismisses the sidebar panel via focus-out without discarding its error.
+    const banner = await screen.findByRole("alert");
+    expect(banner).toHaveTextContent(copy.conversations.common.changed);
+    expect(banner.closest(".conversation-action-panel")).toBeNull();
+    expect(await screen.findByText("Mensaje canónico", { exact: true })).toBeVisible();
+    await waitFor(() => expect(top).toBe(240));
+
+    // The sidebar's retry affordance stays reachable: reopening the disclosure
+    // still shows its preserved error and retry.
+    await user.click(
+      screen.getByRole("button", {
+        name: copy.conversations.conversation.actionsLabel("Conversación concurrente"),
+      }),
+    );
+    const panel = document.querySelector<HTMLElement>(".conversation-action-panel");
+    expect(panel).not.toBeNull();
+    expect(within(panel as HTMLElement).getByText(copy.conversations.common.changed)).toBeVisible();
+    expect(
+      within(panel as HTMLElement).getByRole("button", { name: copy.conversations.common.retry }),
+    ).toBeEnabled();
+  });
+
   it("keeps Send disabled while reload lifecycle state is unresolved", async () => {
     const userMessageId = "22222222-2222-4222-8222-222222222222";
     const assistantMessageId = "33333333-3333-4333-8333-333333333333";
@@ -1465,7 +1970,7 @@ describe("conversation page", () => {
         {
           Component: TestLayout,
           children: [
-            { path: "/c/:conversationId", Component: ConversationPage },
+            { path: "/c/:conversationId", Component: ConversationPageWithActions },
             {
               path: "/",
               element: (
@@ -1492,6 +1997,11 @@ describe("conversation page", () => {
     await user.type(editor, "Borrador que se eliminará");
     await waitFor(() => expect(finishDraftSave).toBeTypeOf("function"), { timeout: 1_500 });
 
+    await user.click(
+      screen.getByRole("button", {
+        name: copy.conversations.conversation.actionsLabel(conversation.title),
+      }),
+    );
     await user.click(screen.getByRole("button", { name: copy.conversations.conversation.delete }));
     await user.click(
       screen.getByRole("button", { name: copy.conversations.conversation.confirmDelete }),

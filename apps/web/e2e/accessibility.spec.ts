@@ -1,8 +1,8 @@
-import AxeBuilder from "@axe-core/playwright";
-import { expect, type Page, type TestInfo, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 
 import { copy } from "../src/copy";
 import { availableModelTierPolicy } from "../src/test/model-tier-fixture";
+import { expectReviewedWcagState } from "./support/accessibility";
 import {
   openAuthenticatedBrowserEmployee,
   openDesktopConversation,
@@ -39,66 +39,6 @@ const catalog = {
   maximumOutputTokens: 16_384,
   validatedAt: now,
 } as const;
-
-const acceptedLowerImpactFindings: Readonly<Record<string, Readonly<Record<string, string>>>> =
-  Object.freeze({});
-
-async function expectReviewedWcagState(
-  page: Page,
-  testInfo: TestInfo,
-  state: string,
-): Promise<void> {
-  const result = await new AxeBuilder({ page })
-    .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])
-    .analyze();
-  const findings = result.violations.map(
-    ({ description, help, helpUrl, id, impact, nodes, tags }) => ({
-      description,
-      help,
-      helpUrl,
-      id,
-      impact,
-      tags,
-      nodes: nodes.map((node) => ({
-        failureSummary: node.failureSummary,
-        html: node.html,
-        target: node.target,
-      })),
-      disposition: acceptedLowerImpactFindings[state]?.[id] ?? null,
-    }),
-  );
-  await testInfo.attach(`axe-${state}`, {
-    body: Buffer.from(
-      JSON.stringify(
-        { state, tags: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"], findings },
-        null,
-        2,
-      ),
-    ),
-    contentType: "application/json",
-  });
-
-  const blocking = result.violations
-    .filter(({ impact }) => impact === "serious" || impact === "critical")
-    .map(({ help, id, impact, nodes }) => ({
-      help,
-      id,
-      impact,
-      targets: nodes.map((node) => node.target),
-    }));
-  const accepted = acceptedLowerImpactFindings[state] ?? {};
-  const lowerImpactIds = result.violations
-    .filter(({ impact }) => impact !== "serious" && impact !== "critical")
-    .map(({ id }) => id)
-    .sort();
-  const acceptedIds = Object.keys(accepted).sort();
-
-  expect(blocking, `${state} has serious or critical axe findings`).toEqual([]);
-  expect(
-    lowerImpactIds,
-    `${state} has untriaged lower-impact axe findings; document each disposition explicitly`,
-  ).toEqual(acceptedIds);
-}
 
 async function installAdminFixture(page: Page): Promise<void> {
   await page.route(/^http:\/\/127\.0\.0\.1:4173\/api\//u, async (route) => {
@@ -333,6 +273,15 @@ test("@critical-accessibility scans the responsive authenticated shell", async (
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
   await expect(page.getByRole("heading", { name: copy.conversations.newChat.title })).toBeVisible();
+  const tierTrigger = page.getByRole("button", {
+    name: new RegExp(`^${copy.conversations.modelTiers.label}:`, "u"),
+  });
+  await tierTrigger.click();
+  await expect(page.locator(".model-tier-popover")).toBeVisible();
+  await expectReviewedWcagState(page, testInfo, "open-model-tier-popover");
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".model-tier-popover")).toHaveCount(0);
+  await expect(tierTrigger).toBeFocused();
   const opener = page.getByRole("button", { name: copy.conversations.navigation.open });
   await opener.click();
   const drawer = page.getByRole("dialog", { name: copy.conversations.navigation.label });

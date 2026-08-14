@@ -6,6 +6,7 @@ import type {
 import { useQueryClient } from "@tanstack/react-query";
 import {
   type KeyboardEvent,
+  type ReactNode,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -17,10 +18,10 @@ import { copy } from "../copy";
 import { ConversationApiError, conversationQueryKeys, createConversation } from "./api";
 import { ChatRuntimeError, type ChatRuntimePhase, type RemoteGeneration } from "./chat-runtime";
 import { useOptionalChatRuntime, useOptionalConversationRuntime } from "./chat-runtime-provider";
-import { MOBILE_SHELL_MEDIA_QUERY } from "./config";
 import type { ContentValidationIssue } from "./content-validation";
 import { useDraftMemory, useServerDraft } from "./draft-memory";
 import { useConversationRequestLifetime } from "./request-lifetime";
+import { useMobileShell } from "./use-mobile-shell";
 
 export type DraftEditorComposer =
   | {
@@ -55,31 +56,14 @@ interface DraftEditorProps {
   readonly modelTier?: GenerationModelTier | undefined;
   readonly scope: DraftScope;
   readonly tierAvailable?: boolean;
+  readonly tierControl?: ReactNode;
+  readonly tierSavePending?: boolean;
 }
 
 function isActivePhase(phase: ChatRuntimePhase | undefined): boolean {
   return (
     phase === "starting" || phase === "generating" || phase === "compacting" || phase === "stopping"
   );
-}
-
-function useMobileShell(): boolean {
-  const [mobile, setMobile] = useState(
-    () => globalThis.matchMedia?.(MOBILE_SHELL_MEDIA_QUERY).matches ?? false,
-  );
-
-  useEffect(() => {
-    const media = globalThis.matchMedia?.(MOBILE_SHELL_MEDIA_QUERY);
-    if (!media) {
-      return;
-    }
-    const update = () => setMobile(media.matches);
-    update();
-    media.addEventListener("change", update);
-    return () => media.removeEventListener("change", update);
-  }, []);
-
-  return mobile;
 }
 
 export function generationErrorCodeCopy(code: string | undefined): string {
@@ -179,6 +163,8 @@ export function DraftEditor({
   modelTier,
   scope,
   tierAvailable = false,
+  tierControl,
+  tierSavePending = false,
 }: DraftEditorProps) {
   const draft = useServerDraft(scope);
   const memory = useDraftMemory();
@@ -245,6 +231,7 @@ export function DraftEditor({
       !runtime ||
       !modelTier ||
       !tierAvailable ||
+      tierSavePending ||
       sendLockRef.current ||
       generationActive ||
       draft.isLoading ||
@@ -294,6 +281,7 @@ export function DraftEditor({
           return;
         }
         createdConversationId = conversation.id;
+        // Initialize the new conversation cache from the tier already selected by its page.
         queryClient.setQueryData<ConversationPreferredTierResponse>(
           conversationQueryKeys.preferredTier(memory.queryScope, conversation.id),
           { conversationId: conversation.id, modelTier },
@@ -375,6 +363,7 @@ export function DraftEditor({
     runtime,
     scope,
     tierAvailable,
+    tierSavePending,
   ]);
 
   const stop = useCallback(() => {
@@ -429,10 +418,17 @@ export function DraftEditor({
             ? copy.conversations.generation.status.refreshing
             : undefined
           : (generationStatus ?? remoteStatus);
+  const draftStatusImportance =
+    !draft.isLoading && !draft.validationIssue && draft.status === "saved"
+      ? "routine"
+      : "important";
+  const lifecycleStatusImportance =
+    lifecycleStatus === copy.conversations.generation.status.completed ? "routine" : "important";
   const sendDisabled =
     !runtime ||
     !modelTier ||
     !tierAvailable ||
+    tierSavePending ||
     submitting ||
     draft.isLoading ||
     draft.loadError ||
@@ -463,65 +459,88 @@ export function DraftEditor({
         {copy.conversations.draft.label}
       </label>
       <div className="composer-control">
-        <textarea
-          ref={textareaRef}
-          id={`draft-${scope.kind === "new" ? "new" : scope.conversationId}`}
-          value={draft.content}
-          onChange={(event) => {
-            if (sendConfirmedRef.current) {
-              return;
+        <div className="composer-input-clip">
+          <textarea
+            ref={textareaRef}
+            id={`draft-${scope.kind === "new" ? "new" : scope.conversationId}`}
+            value={draft.content}
+            onChange={(event) => {
+              if (sendConfirmedRef.current) {
+                return;
+              }
+              setSendError(undefined);
+              draft.setContent(event.currentTarget.value);
+            }}
+            onKeyDown={handleKeyDown}
+            placeholder={copy.conversations.draft.placeholder}
+            rows={1}
+            disabled={draft.isLoading || draft.loadError || draft.interactionLocked}
+            readOnly={
+              sendConfirmed ||
+              (runtimeSnapshot?.phase === "starting" && runtimeSnapshot.consumesDraft)
             }
-            setSendError(undefined);
-            draft.setContent(event.currentTarget.value);
-          }}
-          onKeyDown={handleKeyDown}
-          placeholder={copy.conversations.draft.placeholder}
-          rows={1}
-          disabled={draft.isLoading || draft.loadError || draft.interactionLocked}
-          readOnly={
-            sendConfirmed ||
-            (runtimeSnapshot?.phase === "starting" && runtimeSnapshot.consumesDraft)
-          }
-          aria-describedby="draft-save-status"
-        />
-        {composer ? (
-          generationActive ? (
-            <button
-              className="composer-action secondary-button"
-              type="button"
-              disabled={stopping || !activeGeneration}
-              onClick={stop}
-            >
-              {stopping
-                ? copy.conversations.generation.actions.stopping
-                : copy.conversations.generation.actions.stop}
-            </button>
-          ) : (
-            <button
-              className="composer-action primary-button"
-              type="button"
-              disabled={sendDisabled}
-              onClick={() => void submit()}
-            >
-              {submitting
-                ? copy.conversations.generation.actions.sending
-                : copy.conversations.generation.actions.send}
-            </button>
-          )
+            aria-describedby="draft-save-status"
+          />
+        </div>
+        {tierControl || composer ? (
+          <div className="composer-footer">
+            <div className="composer-tier-control">{tierControl}</div>
+            {composer ? (
+              generationActive ? (
+                <button
+                  className="composer-action secondary-button"
+                  type="button"
+                  disabled={stopping || !activeGeneration}
+                  onClick={stop}
+                >
+                  {stopping
+                    ? copy.conversations.generation.actions.stopping
+                    : copy.conversations.generation.actions.stop}
+                </button>
+              ) : (
+                <button
+                  className="composer-action primary-button"
+                  type="button"
+                  disabled={sendDisabled}
+                  onClick={() => void submit()}
+                >
+                  {submitting
+                    ? copy.conversations.generation.actions.sending
+                    : copy.conversations.generation.actions.send}
+                </button>
+              )
+            ) : null}
+          </div>
         ) : null}
       </div>
       <div className="draft-status-row">
         <div>
-          <p id="draft-save-status" className="draft-save-status" role="status" aria-live="polite">
+          <p
+            id="draft-save-status"
+            className="draft-save-status"
+            data-importance={draftStatusImportance}
+            role="status"
+            aria-live="polite"
+          >
             {saveStatus}
           </p>
           {lifecycleStatus ? (
-            <p className="generation-status" role="status" aria-live="polite">
+            <p
+              className="generation-status"
+              data-importance={lifecycleStatusImportance}
+              role="status"
+              aria-live="polite"
+            >
               {lifecycleStatus}
             </p>
           ) : null}
           {runtimeSnapshot?.contextWarning ? (
-            <p className="generation-warning" role="status" aria-live="polite">
+            <p
+              className="generation-warning"
+              data-importance="important"
+              role="status"
+              aria-live="polite"
+            >
               {copy.conversations.generation.status.contextFallback}
             </p>
           ) : null}

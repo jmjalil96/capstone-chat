@@ -1,7 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
 const extendedBrowsers = Boolean(process.env.CI || process.env.CAPSTONE_EXTENDED_BROWSERS);
-const criticalFlow = /@critical-(?:access|accessibility|identity|stream)/u;
+const criticalFlow = /@critical-(?:access|accessibility|chat|identity|stream)/u;
 
 export default defineConfig({
   testDir: "./e2e",

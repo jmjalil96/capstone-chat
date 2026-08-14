@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { useEffect } from "react";
+import { type ReactNode, useEffect } from "react";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -57,6 +57,10 @@ function RuntimeProbe({ capture }: { readonly capture: (runtime: ChatRuntime) =>
 function renderComposer(
   overrides: Partial<Omit<ConversationComposer, "kind">> = {},
   captureRuntime?: (runtime: ChatRuntime) => void,
+  editorOptions: {
+    readonly tierControl?: ReactNode;
+    readonly tierSavePending?: boolean;
+  } = {},
 ) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
@@ -79,6 +83,8 @@ function renderComposer(
               }}
               modelTier="balanced"
               tierAvailable
+              tierControl={editorOptions.tierControl}
+              tierSavePending={editorOptions.tierSavePending ?? false}
               autoFocus
             />
           </ChatRuntimeProvider>
@@ -96,6 +102,42 @@ afterEach(() => {
 });
 
 describe("streaming composer", () => {
+  it("places the tier control in the compound footer and fences send while its save is pending", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith("/draft")) {
+        return json(draft("", 0));
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderComposer({}, undefined, {
+      tierControl: (
+        <button aria-label={copy.conversations.modelTiers.label} type="button">
+          Balanced
+        </button>
+      ),
+      tierSavePending: true,
+    });
+
+    const editor = await screen.findByRole("textbox", { name: copy.conversations.draft.label });
+    await waitFor(() => expect(editor).toBeEnabled());
+    expect(editor.closest(".composer-input-clip")).not.toBeNull();
+    const picker = screen.getByRole("button", {
+      name: copy.conversations.modelTiers.label,
+    });
+    expect(picker.closest(".composer-tier-control")).not.toBeNull();
+    expect(picker.closest(".composer-footer")).not.toBeNull();
+
+    fireEvent.change(editor, { target: { value: "Espera el nivel" } });
+    const send = screen.getByRole("button", {
+      name: copy.conversations.generation.actions.send,
+    });
+    expect(send).toBeDisabled();
+    fireEvent.keyDown(editor, { key: "Enter" });
+    await act(async () => Promise.resolve());
+    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/responses"))).toBe(false);
+  });
+
   it("keeps the compaction fallback warning visible while generation continues", async () => {
     let streamController!: ReadableStreamDefaultController<Uint8Array>;
     const stream = new ReadableStream<Uint8Array>({
@@ -146,6 +188,10 @@ describe("streaming composer", () => {
     expect(
       await screen.findByText(copy.conversations.generation.status.contextFallback),
     ).toHaveAttribute("role", "status");
+    expect(screen.getByText(copy.conversations.generation.status.contextFallback)).toHaveAttribute(
+      "data-importance",
+      "important",
+    );
     expect(screen.getByText(copy.conversations.generation.status.generating)).toBeInTheDocument();
   });
 
@@ -535,7 +581,7 @@ describe("streaming composer", () => {
     expect(editor).toHaveValue("Siguiente borrador");
   });
 
-  it("keeps remote Stop available when the draft cannot be loaded", async () => {
+  it("keeps remote Stop available when the draft cannot load and a tier save is pending", async () => {
     const fetchMock = vi.fn(async (url: string) => {
       if (url.endsWith("/draft")) {
         return json(
@@ -546,7 +592,9 @@ describe("streaming composer", () => {
       throw new Error(`Unexpected request: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
-    renderComposer({ remoteGeneration: { generationId, messageId } });
+    renderComposer({ remoteGeneration: { generationId, messageId } }, undefined, {
+      tierSavePending: true,
+    });
 
     expect(await screen.findByRole("alert")).toBeVisible();
     expect(
@@ -564,14 +612,12 @@ describe("streaming composer", () => {
     vi.stubGlobal("fetch", fetchMock);
     renderComposer({ remoteOutcome: "completed" });
 
-    expect(await screen.findByText(copy.conversations.generation.status.completed)).toHaveAttribute(
-      "role",
-      "status",
-    );
-    expect(await screen.findByText(copy.conversations.draft.saved)).toHaveAttribute(
-      "role",
-      "status",
-    );
+    const completedStatus = await screen.findByText(copy.conversations.generation.status.completed);
+    const savedStatus = await screen.findByText(copy.conversations.draft.saved);
+    expect(completedStatus).toHaveAttribute("role", "status");
+    expect(completedStatus).toHaveAttribute("data-importance", "routine");
+    expect(savedStatus).toHaveAttribute("role", "status");
+    expect(savedStatus).toHaveAttribute("data-importance", "routine");
     const editor = screen.getByRole("textbox", { name: copy.conversations.draft.label });
     fireEvent.change(editor, { target: { value: "Borrador independiente" } });
     expect(screen.getByText(copy.conversations.generation.status.completed)).toHaveAttribute(
@@ -579,6 +625,26 @@ describe("streaming composer", () => {
       "status",
     );
     expect(screen.getByText(copy.conversations.draft.unsaved)).toHaveAttribute("role", "status");
+    expect(screen.getByText(copy.conversations.draft.unsaved)).toHaveAttribute(
+      "data-importance",
+      "important",
+    );
+  });
+
+  it("marks cancellation as an important status for short-height presentation", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith("/draft")) {
+        return json(draft("", 0));
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderComposer({ remoteOutcome: "cancelled" });
+
+    expect(await screen.findByText(copy.conversations.generation.status.cancelled)).toHaveAttribute(
+      "data-importance",
+      "important",
+    );
   });
 
   it("keeps remote generation status and failed next-draft persistence visible", async () => {
@@ -607,6 +673,10 @@ describe("streaming composer", () => {
     expect(screen.getByText(copy.conversations.generation.status.generating)).toHaveAttribute(
       "role",
       "status",
+    );
+    expect(screen.getByText(copy.conversations.generation.status.generating)).toHaveAttribute(
+      "data-importance",
+      "important",
     );
     expect(screen.getByText(copy.conversations.draft.unsaved)).toHaveAttribute("role", "status");
     await waitFor(

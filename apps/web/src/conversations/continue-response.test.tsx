@@ -216,11 +216,10 @@ describe("Continue response", () => {
     await act(async () => {
       await router.navigate(`/c/${secondConversationId}`);
     });
-    const secondHeading = await screen.findByRole("heading", {
-      level: 1,
+    const secondRegion = await screen.findByRole("article", {
       name: "Conversación siguiente",
     });
-    expect(secondHeading).toHaveFocus();
+    expect(secondRegion).toHaveFocus();
     await act(async () => {
       resolveSecondDraft(
         json({
@@ -236,7 +235,7 @@ describe("Continue response", () => {
       name: copy.conversations.draft.label,
     });
     await waitFor(() => expect(secondEditor).toHaveValue("Borrador siguiente"));
-    expect(secondHeading).toHaveFocus();
+    expect(secondRegion).toHaveFocus();
     expect(secondEditor).not.toHaveFocus();
   });
 });

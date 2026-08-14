@@ -1,22 +1,41 @@
 import capstoneSymbol from "@capstone/brand/assets/logos/capstone-icon.svg";
 import capstoneLogo from "@capstone/brand/assets/logos/capstone-primary.svg";
-import type { SessionResponse } from "@capstone/protocol";
+import type { ConversationSummary, SessionResponse } from "@capstone/protocol";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
-import { Link, NavLink, Outlet, useNavigate, useOutletContext } from "react-router";
+import { type ReactNode, useEffect, useRef, useState } from "react";
+import {
+  Link,
+  matchPath,
+  NavLink,
+  Outlet,
+  useLocation,
+  useNavigate,
+  useOutletContext,
+} from "react-router";
 
 import { type SessionQueryResult, sessionQueryKey } from "../api/session";
 import { copy } from "../copy";
 import { signOut } from "../identity/auth-actions";
 import { ReadinessIndicator } from "../readiness-indicator";
+import {
+  ConversationActionDialogs,
+  ConversationActionDisclosure,
+} from "./conversation-action-controls";
+import { useConversationActions } from "./conversation-actions";
+import { useConversationDetail } from "./conversation-detail";
 import { ConversationHistory } from "./conversation-history";
 import { useDraftMemory } from "./draft-memory";
 import { Icon } from "./icons";
 import { NetworkStatus } from "./network-status";
 import { readSidebarCollapsed, writeSidebarCollapsed } from "./sidebar-preference";
+import { useMobileShell } from "./use-mobile-shell";
 
 interface SidebarContentsProps {
   readonly collapsed: boolean;
+  readonly currentActions?: ReactNode;
+  readonly currentConversation: ConversationSummary | undefined;
+  readonly currentConversationId: string | undefined;
+  readonly currentConversationPending: boolean;
   readonly historyHeadingId: string;
   readonly onNavigate: () => void;
   readonly session: SessionResponse;
@@ -27,6 +46,10 @@ interface SidebarContentsProps {
 
 function SidebarContents({
   collapsed,
+  currentActions,
+  currentConversation,
+  currentConversationId,
+  currentConversationPending,
   historyHeadingId,
   onNavigate,
   onSignOut,
@@ -34,6 +57,11 @@ function SidebarContents({
   signOutError,
   signingOut,
 }: SidebarContentsProps) {
+  const currentTitle = currentConversation?.title ?? copy.conversations.common.untitled;
+  const currentLinkLabel = currentConversation?.isArchived
+    ? `${currentTitle}, ${copy.conversations.conversation.archivedState}`
+    : undefined;
+
   return (
     <div className="sidebar-contents" data-collapsed={collapsed}>
       <Link
@@ -66,9 +94,51 @@ function SidebarContents({
           <Icon name="search" />
           <span>{copy.conversations.navigation.search}</span>
         </NavLink>
+        {currentConversation ? (
+          <section
+            aria-label={copy.conversations.navigation.current}
+            className="current-conversation"
+          >
+            <p className="current-conversation-label">{copy.conversations.navigation.current}</p>
+            <div className="current-conversation-row">
+              <NavLink
+                aria-label={currentLinkLabel}
+                className="current-conversation-link"
+                to={`/c/${currentConversation.id}`}
+                onClick={onNavigate}
+                title={currentTitle}
+              >
+                <span>{currentTitle}</span>
+                {currentConversation.isArchived ? (
+                  <small>{copy.conversations.conversation.archivedState}</small>
+                ) : null}
+              </NavLink>
+              {currentActions}
+            </div>
+          </section>
+        ) : currentConversationPending ? (
+          <section
+            aria-hidden="true"
+            className="current-conversation current-conversation-placeholder"
+          >
+            <p className="current-conversation-label">{copy.conversations.navigation.current}</p>
+            <div className="current-conversation-row">
+              <span className="current-conversation-link">
+                <span className="current-conversation-title-placeholder" />
+              </span>
+              <span className="conversation-action-placeholder" />
+            </div>
+          </section>
+        ) : null}
         <section className="recent-section" aria-labelledby={historyHeadingId}>
           <h2 id={historyHeadingId}>{copy.conversations.navigation.recent}</h2>
-          {collapsed ? null : <ConversationHistory view="active" onNavigate={onNavigate} />}
+          {collapsed ? null : (
+            <ConversationHistory
+              excludeConversationId={currentConversationId}
+              view="active"
+              onNavigate={onNavigate}
+            />
+          )}
         </section>
         <NavLink
           className="sidebar-link"
@@ -126,16 +196,30 @@ function SidebarContents({
 export function ConversationShell() {
   const session = useOutletContext<SessionResponse>();
   const queryClient = useQueryClient();
+  const location = useLocation();
   const navigate = useNavigate();
   const draftMemory = useDraftMemory();
+  const mobile = useMobileShell();
   const [collapsed, setCollapsed] = useState(() => readSidebarCollapsed());
   const [mobileOpen, setMobileOpen] = useState(false);
   const [signOutError, setSignOutError] = useState<string>();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
+  const collapseButtonRef = useRef<HTMLButtonElement>(null);
   const signOutCaptureRef = useRef<AbortSignal | undefined>(undefined);
   const captureGeneration = draftMemory.capture;
   const isGenerationCurrent = draftMemory.isCurrent;
+  const conversationRoute = matchPath({ path: "/c/:conversationId", end: true }, location.pathname);
+  const currentConversationId = conversationRoute?.params.conversationId;
+  const currentDetail = useConversationDetail(currentConversationId);
+  const currentConversation = currentDetail.data?.pages[0]?.conversation;
+  const currentConversationPending = Boolean(currentConversationId && currentDetail.isPending);
+  const conversationActions = useConversationActions(currentConversation);
+  const currentTitle = currentConversation?.title ?? copy.conversations.common.untitled;
+  const currentActionLabel = copy.conversations.conversation.actionsLabel(currentTitle);
+  const showCollapsedContext = Boolean(
+    !mobile && collapsed && (currentConversation || currentConversationPending),
+  );
 
   const signOutMutation = useMutation({
     mutationFn: async () => {
@@ -197,16 +281,36 @@ export function ConversationShell() {
     }
   }, [mobileOpen]);
 
+  useEffect(() => {
+    if (mobile || !mobileOpen) {
+      return;
+    }
+    if (dialogRef.current?.open) {
+      dialogRef.current.close();
+    } else {
+      setMobileOpen(false);
+    }
+  }, [mobile, mobileOpen]);
+
   function closeMobileSidebar() {
     setMobileOpen(false);
   }
 
   function restoreMenuFocus() {
     setMobileOpen(false);
-    menuButtonRef.current?.focus();
+    if (mobile) {
+      menuButtonRef.current?.focus();
+    } else if (currentConversation) {
+      conversationActions.restoreTriggerFocus();
+    } else {
+      collapseButtonRef.current?.focus();
+    }
   }
 
   const sidebarProps = {
+    currentConversation,
+    currentConversationId,
+    currentConversationPending,
     onNavigate: closeMobileSidebar,
     onSignOut: () => {
       draftMemory.lockEditing();
@@ -254,13 +358,23 @@ export function ConversationShell() {
       <aside className="desktop-sidebar">
         <SidebarContents
           collapsed={collapsed}
+          currentActions={
+            !mobile && !collapsed && currentConversation ? (
+              <ConversationActionDisclosure
+                controller={conversationActions}
+                label={currentActionLabel}
+              />
+            ) : undefined
+          }
           historyHeadingId="desktop-recent-heading"
           {...sidebarProps}
         />
         <button
           className="sidebar-collapse-button icon-button"
+          ref={collapseButtonRef}
           type="button"
           onClick={() => {
+            conversationActions.closeDisclosure({ restoreFocus: false });
             const next = !collapsed;
             setCollapsed(next);
             writeSidebarCollapsed(next);
@@ -291,9 +405,45 @@ export function ConversationShell() {
         >
           <Icon name="menu" />
         </button>
-        <Link to="/" aria-label={copy.brand.homeLabel}>
-          <img src={capstoneLogo} alt="" />
-        </Link>
+        {currentConversation ? (
+          <>
+            <Link
+              aria-label={
+                currentConversation.isArchived
+                  ? `${currentTitle}, ${copy.conversations.conversation.archivedState}`
+                  : undefined
+              }
+              className="mobile-current-conversation"
+              to={`/c/${currentConversation.id}`}
+              title={currentTitle}
+            >
+              <span>{currentTitle}</span>
+              {currentConversation.isArchived ? (
+                <small>{copy.conversations.conversation.archivedState}</small>
+              ) : null}
+            </Link>
+            {mobile ? (
+              <ConversationActionDisclosure
+                controller={conversationActions}
+                label={currentActionLabel}
+              />
+            ) : null}
+          </>
+        ) : currentConversationPending ? (
+          <>
+            <span
+              aria-hidden="true"
+              className="mobile-current-conversation current-conversation-placeholder"
+            >
+              <span className="current-conversation-title-placeholder" />
+            </span>
+            <span aria-hidden="true" className="conversation-action-placeholder" />
+          </>
+        ) : (
+          <Link to="/" aria-label={copy.brand.homeLabel}>
+            <img src={capstoneLogo} alt="" />
+          </Link>
+        )}
       </header>
       <dialog
         className="mobile-sidebar-dialog"
@@ -315,13 +465,64 @@ export function ConversationShell() {
         </button>
         <SidebarContents
           collapsed={false}
+          currentConversation={currentConversation}
+          currentConversationId={currentConversationId}
+          currentConversationPending={currentConversationPending}
           historyHeadingId="mobile-recent-heading"
-          {...sidebarProps}
+          onNavigate={sidebarProps.onNavigate}
+          onSignOut={sidebarProps.onSignOut}
+          session={sidebarProps.session}
+          signOutError={sidebarProps.signOutError}
+          signingOut={sidebarProps.signingOut}
         />
       </dialog>
-      <main className="conversation-main" id="main-content">
-        <Outlet context={session} />
+      <main
+        className="conversation-main"
+        data-context-strip={showCollapsedContext}
+        id="main-content"
+      >
+        {showCollapsedContext ? (
+          <div className="conversation-context-strip">
+            {currentConversation ? (
+              <>
+                <Link
+                  aria-label={
+                    currentConversation.isArchived
+                      ? `${currentTitle}, ${copy.conversations.conversation.archivedState}`
+                      : undefined
+                  }
+                  className="conversation-context-link"
+                  to={`/c/${currentConversation.id}`}
+                  title={currentTitle}
+                >
+                  <span>{currentTitle}</span>
+                  {currentConversation.isArchived ? (
+                    <small>{copy.conversations.conversation.archivedState}</small>
+                  ) : null}
+                </Link>
+                <ConversationActionDisclosure
+                  controller={conversationActions}
+                  label={currentActionLabel}
+                />
+              </>
+            ) : (
+              <>
+                <span
+                  aria-hidden="true"
+                  className="conversation-context-link current-conversation-placeholder"
+                >
+                  <span className="current-conversation-title-placeholder" />
+                </span>
+                <span aria-hidden="true" className="conversation-action-placeholder" />
+              </>
+            )}
+          </div>
+        ) : null}
+        <div className="conversation-route">
+          <Outlet context={session} />
+        </div>
       </main>
+      <ConversationActionDialogs controller={conversationActions} />
     </div>
   );
 }

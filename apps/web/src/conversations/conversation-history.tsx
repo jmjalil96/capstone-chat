@@ -8,11 +8,16 @@ import { uniqueConversations } from "./collection";
 import { useDraftMemory } from "./draft-memory";
 
 interface ConversationHistoryProps {
+  readonly excludeConversationId?: string | undefined;
   readonly onNavigate?: () => void;
   readonly view: ConversationView;
 }
 
-export function ConversationHistory({ onNavigate, view }: ConversationHistoryProps) {
+export function ConversationHistory({
+  excludeConversationId,
+  onNavigate,
+  view,
+}: ConversationHistoryProps) {
   const { queryScope } = useDraftMemory();
   const history = useInfiniteQuery({
     queryKey: conversationQueryKeys.history(queryScope, view),
@@ -20,7 +25,10 @@ export function ConversationHistory({ onNavigate, view }: ConversationHistoryPro
     initialPageParam: undefined as OpaqueCursor | undefined,
     getNextPageParam: (page) => page.nextCursor ?? undefined,
   });
-  const conversations = uniqueConversations(history.data?.pages ?? []);
+  const allConversations = uniqueConversations(history.data?.pages ?? []);
+  const conversations = allConversations.filter(
+    (conversation) => conversation.id !== excludeConversationId,
+  );
 
   if (history.isPending) {
     return (
@@ -64,20 +72,22 @@ export function ConversationHistory({ onNavigate, view }: ConversationHistoryPro
         }
       }}
     >
-      <ol className="conversation-history-list">
-        {conversations.map((conversation) => (
-          <li key={conversation.id}>
-            <NavLink
-              className={({ isActive }) => `history-link${isActive ? " is-active" : ""}`}
-              to={`/c/${conversation.id}`}
-              onClick={onNavigate}
-              title={conversation.title ?? copy.conversations.common.untitled}
-            >
-              <span>{conversation.title ?? copy.conversations.common.untitled}</span>
-            </NavLink>
-          </li>
-        ))}
-      </ol>
+      {conversations.length > 0 ? (
+        <ol className="conversation-history-list">
+          {conversations.map((conversation) => (
+            <li key={conversation.id}>
+              <NavLink
+                className={({ isActive }) => `history-link${isActive ? " is-active" : ""}`}
+                to={`/c/${conversation.id}`}
+                onClick={onNavigate}
+                title={conversation.title ?? copy.conversations.common.untitled}
+              >
+                <span>{conversation.title ?? copy.conversations.common.untitled}</span>
+              </NavLink>
+            </li>
+          ))}
+        </ol>
+      ) : null}
       {history.isFetchNextPageError ? (
         <p className="history-status" role="alert">
           {copy.conversations.common.genericError}

@@ -476,9 +476,11 @@ test("resets selected-branch scrolling when the conversation route parameter cha
   await page.goto(`/c/${firstId}`);
   const scroll = page.locator(".message-scroll");
   await expect(page.getByText("1111 mensaje 30")).toBeVisible();
+  await expect(page.getByRole("article", { name: "Conversación uno" })).toBeFocused();
   await expect.poll(() => scroll.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
   await page.locator(".desktop-sidebar").getByRole("link", { name: "Conversación dos" }).click();
   await expect(page.getByText("2222 mensaje 30")).toBeVisible();
+  await expect(page.getByRole("article", { name: "Conversación dos" })).toBeFocused();
   await expect.poll(() => scroll.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
   const dockDraft = page.getByRole("textbox", { name: copy.conversations.draft.label });
   const dockDraftBox = await dockDraft.boundingBox();
@@ -510,6 +512,10 @@ test("resets selected-branch scrolling when the conversation route parameter cha
   await expect.poll(() => secondInitialRequests).toBeGreaterThanOrEqual(3);
   await expect.poll(() => scroll.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
 
+  const actionTrigger = page.getByRole("button", {
+    name: copy.conversations.conversation.actionsLabel("Conversación dos"),
+  });
+  await actionTrigger.click();
   await page.getByRole("button", { name: copy.conversations.conversation.rename }).click();
   const renameDialog = page.getByRole("dialog", {
     name: copy.conversations.conversation.renameTitle,
@@ -527,6 +533,10 @@ test("resets selected-branch scrolling when the conversation route parameter cha
   expect(submittedTitle).toBe(decomposedTitle);
   await expect(page.getByRole("heading", { level: 1, name: canonicalTitle })).toBeVisible();
 
+  const canonicalActionTrigger = page.getByRole("button", {
+    name: copy.conversations.conversation.actionsLabel(canonicalTitle),
+  });
+  await canonicalActionTrigger.click();
   await page.getByRole("button", { name: copy.conversations.conversation.rename }).click();
   await renameDialog
     .getByRole("textbox", { name: copy.conversations.conversation.titleLabel, exact: true })
@@ -535,11 +545,12 @@ test("resets selected-branch scrolling when the conversation route parameter cha
     renameDialog.getByRole("button", { name: copy.conversations.conversation.saveTitle }),
   ).toBeDisabled();
   await renameDialog.getByRole("button", { name: copy.conversations.conversation.cancel }).click();
+  await expect(canonicalActionTrigger).toBeFocused();
 
   await page.setViewportSize({ width: 844, height: 320 });
   await page.goto(`/c/${emptyId}`);
   const emptyDraft = page.getByRole("textbox", { name: copy.conversations.draft.label });
-  await expect(emptyDraft).toBeFocused();
+  await expect(page.getByRole("article", { name: "Conversación vacía" })).toBeFocused();
   const emptyDraftBox = await emptyDraft.boundingBox();
   const emptyMainBox = await page.locator(".conversation-main").boundingBox();
   expect(emptyDraftBox).not.toBeNull();

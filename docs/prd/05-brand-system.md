@@ -56,6 +56,12 @@ The chat interface should feel calm, clear, structured, and contemporary. Brand 
 - Every chat and administration operation is keyboard accessible and has a visible focus state.
 - Color is never the only signal for state, feedback, or action.
 - Focus indicators use a visible 2–3 px ring with at least 3:1 contrast and a readable offset.
+- As an explicit August 14, 2026 amendment, the programmatically focused conversation reading
+  region is the one exception to the ring shape: design review rejected framing the whole reading
+  surface, so keyboard-visible region focus shows a restrained 3 px teal-ink leading accent on the
+  region's inline-start edge together with the title accent. The accent uses the approved Teal Ink
+  on white pairing, remains visible at any scroll position, and applies only to this
+  non-interactive reading region — every operable control keeps the standard offset ring.
 - Navy on white, Gold on Navy, Teal Ink on white, and Mint on Navy are approved accessible pairings for their documented uses.
 - Bright Teal on white is not used for normal-sized text. Gold on white is decorative only and never body text.
 - New tones or component states must be derived from the approved palette and contrast-tested before use. A one-off feature does not introduce a new brand color.

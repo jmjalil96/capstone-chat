@@ -47,11 +47,16 @@ The first release is an internal company tool. Its purpose is to deliver an exce
 
 - Desktop uses a two-column shell with a collapsible left sidebar and one main content area.
 - The sidebar contains **Nuevo chat**, search, recent conversation history, archived access, and the employee/account menu.
-- The conversation header contains its title, tier picker, and conversation actions.
-- The main area contains only the selected conversation and composer; v1 has no right inspector or secondary workspace panel.
-- On mobile, the conversation is full-width and the sidebar opens as a modal drawer from a compact header.
+- Current-conversation identity and actions adapt to the available shell. Expanded desktop pins the selected conversation as **Actual** above **Recientes**, with its title and rename, archive or unarchive, and delete actions. Collapsed desktop uses a slim title-and-action context strip in the main column. Mobile places the title and action trigger in the compact header; the drawer may repeat the pinned title but does not duplicate the action trigger.
+- The selected conversation also begins with one restrained visible semantic title inside its scrollable content. It scrolls away with the messages and is not a persistent visual header.
+- The tier picker is part of the composer rather than conversation chrome. It is one low-profile disclosure: the trigger shows only the current short tier name with a chevron, and its popover pairs each of `Fast`, `Balanced`, and `Pro` with its approved purpose. Status feedback stays in a persistent line programmatically associated with the trigger.
+- The main area contains only the selected conversation and composer, plus the collapsed-desktop context strip described above; that strip is not a right inspector, secondary workspace panel, or persistent content header.
+- On mobile, the conversation is full-width and the sidebar opens as a modal drawer from the compact header.
 - Administration uses the same branded shell at `/admin` with dedicated administrative navigation and content.
 - Sidebar collapse and mobile-drawer state are local presentation preferences and are not synchronized across devices in v1.
+- Compact current-conversation action targets are at least 44 by 44 CSS pixels.
+- One semantic conversation heading labels the visible conversation region; adaptive shell titles are navigation and action context rather than additional headings.
+- At viewport heights of 30 rem or less, routine settled status text yields visual space to the conversation while remaining available to assistive technology. Important draft, generation, cancellation, warning, conflict, and error states remain visible. At 844 by 320 CSS pixels, both expanded and collapsed desktop retain at least 7.5 rem of usable message viewport, and the complete new-chat composer is initially reachable without scrolling.
 
 ### Conversations and history
 
@@ -67,7 +72,7 @@ The first release is an internal company tool. Its purpose is to deliver an exce
 - Undo by moving backward through the selected conversation path.
 - Switch among preserved alternatives.
 
-A new chat opens with a restrained Capstone symbol, the heading **¿En qué puedo ayudarte?**, and the composer as its primary focus. It does not show marketing copy, news, onboarding carousels, promotional model cards, a prompt marketplace, or suggested-prompt tiles. Before the first message, the composer sits near the visual center; after sending, it moves to its persistent position at the bottom of the conversation without losing focus. The transition respects reduced-motion preferences. The new-chat draft follows the same approved server-persistence behavior as conversation drafts.
+A new chat opens with a restrained Capstone symbol, the heading **¿En qué puedo ayudarte?**, and the composer as its primary focus. At viewport heights of 30 rem or less, the decorative symbol may be hidden to keep the complete composer initially visible. It does not show marketing copy, news, onboarding carousels, promotional model cards, a prompt marketplace, or suggested-prompt tiles. Before the first message, the composer sits near the visual center; after sending, it moves to its persistent position at the bottom of the conversation without losing focus. The transition respects reduced-motion preferences. The new-chat draft follows the same approved server-persistence behavior as conversation drafts.
 
 History loads incrementally. The sidebar begins with the most recently updated conversations and fetches more as the employee scrolls. Opening a conversation loads the recent portion of its selected branch; scrolling upward loads older messages without moving the current viewport. Full alternative branches load only when selected.
 
@@ -90,6 +95,7 @@ If another tab or device changes the same draft, a stale tab stops autosaving an
 - Employees may type and autosave their next draft while a response streams, but cannot submit it until the active generation completes or is stopped.
 - During an active generation, the primary composer action becomes **Stop**.
 - After completion or cancellation, the saved draft is immediately ready to send.
+- While an existing conversation's preferred-tier change is being saved, controls that would begin a new generation—Send, Edit, Try again, and Continue—are unavailable. Stop remains available, and an already-running generation retains the tier committed when it started.
 - Backend validation remains authoritative.
 
 V1 user messages contain exactly one text block. Fastify validates Unicode, normalizes line endings to `\n`, rejects null bytes and unsupported control characters, and otherwise preserves whitespace and Markdown. Empty means no non-whitespace content. Oversized or over-context messages are rejected without consuming the draft, and URLs remain ordinary text rather than fetched content.
@@ -173,7 +179,7 @@ Raw HTML, scripts, iframes, and embedded web content are never rendered. Externa
 
 ### Model selection
 
-Employees see no underlying provider or model names. The picker exposes exactly three stable service tiers:
+Employees see no underlying provider or model names. The composer's tier disclosure exposes exactly three stable service tiers:
 
 | Tier | Employee-facing purpose |
 |---|---|
@@ -183,7 +189,9 @@ Employees see no underlying provider or model names. The picker exposes exactly 
 
 Balanced is the initial workspace default. Administrators can see and configure the underlying mapping and may choose another enabled tier as the workspace default.
 
-Each conversation stores a preferred tier. The picker controls the next generation in that conversation and does not alter earlier answers. New conversations use the current workspace default. At least one tier must remain enabled. If a conversation's preferred tier becomes unavailable, the employee must select an available tier; the backend never silently substitutes one.
+The disclosure trigger displays only the current short tier name. Each popover option pairs a short name with its approved purpose, and a disabled option may append **No disponible**. Loading, unavailable, and failure feedback appears in the status line under the control and as the trigger's accessible description.
+
+Each conversation stores a preferred tier. The selector controls the next generation in that conversation and does not alter earlier answers. New conversations use local selection initialized from the current workspace default; they do not persist a conversation preference until conversation creation. At least one tier must remain enabled. If a conversation's preferred tier becomes unavailable, the employee must select an available tier; the backend never silently substitutes one.
 
 ### Authentication
 

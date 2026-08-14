@@ -32,15 +32,6 @@ export function NewChatPage() {
         </h1>
         <p>{copy.conversations.newChat.description}</p>
       </div>
-      <ModelTierPicker
-        error={policy.isError}
-        id="new-chat"
-        isPending={policy.isPending}
-        onRetry={() => void policy.refetch()}
-        onSelect={setSelectedTier}
-        policy={policy.data}
-        selectedTier={selectedTier}
-      />
       <DraftEditor
         scope={{ kind: "new" }}
         composer={{
@@ -50,6 +41,17 @@ export function NewChatPage() {
         }}
         modelTier={selectedTier}
         tierAvailable={tierAvailable}
+        tierControl={
+          <ModelTierPicker
+            error={policy.isError}
+            id="new-chat"
+            isPending={policy.isPending}
+            onRetry={() => void policy.refetch()}
+            onSelect={setSelectedTier}
+            policy={policy.data}
+            selectedTier={selectedTier}
+          />
+        }
         autoFocus
       />
     </div>

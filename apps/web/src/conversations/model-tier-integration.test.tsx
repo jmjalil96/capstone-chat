@@ -24,6 +24,20 @@ function json(payload: unknown, status = 200): Response {
   });
 }
 
+function tierTriggerName(tier: "balanced" | "fast" | "pro"): string {
+  return `${copy.conversations.modelTiers.label}: ${copy.conversations.modelTiers.tiers[tier].name}`;
+}
+
+const anyTierTrigger = new RegExp(`^${copy.conversations.modelTiers.label}:`, "u");
+
+async function chooseTier(
+  user: ReturnType<typeof userEvent.setup>,
+  rowName: RegExp,
+): Promise<void> {
+  await user.click(screen.getByRole("button", { name: anyTierTrigger }));
+  await user.click(screen.getByRole("button", { name: rowName }));
+}
+
 function policy(defaultTier: "balanced" | "fast" | "pro", proAvailable = true) {
   return {
     defaultTier,
@@ -57,7 +71,7 @@ afterEach(() => {
 });
 
 describe("tiered generation experience", () => {
-  it("uses the workspace default for the first request in a new chat", async () => {
+  it("starts from the workspace default and keeps a new-chat tier change local until creation", async () => {
     let responseBody: unknown;
     const stream = new ReadableStream<Uint8Array>();
     const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
@@ -107,8 +121,83 @@ describe("tiered generation experience", () => {
     const { queryClient } = renderApp(router);
     const user = userEvent.setup();
 
-    const pro = await screen.findByRole("radio", { name: /Pro/ });
-    await waitFor(() => expect(pro).toBeChecked());
+    await screen.findByRole("button", { name: tierTriggerName("pro") });
+    await chooseTier(user, /^Fast/u);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: tierTriggerName("fast") })).toBeVisible(),
+    );
+    expect(
+      fetchMock.mock.calls.some(
+        ([url, init]) => String(url).endsWith("/preferred-tier") && init?.method === "PUT",
+      ),
+    ).toBe(false);
+    await user.type(
+      await screen.findByRole("textbox", { name: copy.conversations.draft.label }),
+      "Analiza este caso",
+    );
+    await user.click(
+      screen.getByRole("button", { name: copy.conversations.generation.actions.send }),
+    );
+
+    await waitFor(() => expect(responseBody).toMatchObject({ source: "draft", modelTier: "fast" }));
+    expect(
+      queryClient.getQueryData(["conversations", ...queryScope, "preferred-tier", conversationId]),
+    ).toEqual({ conversationId, modelTier: "fast" });
+  });
+
+  it("sends the untouched workspace default tier for a new chat", async () => {
+    let responseBody: unknown;
+    const stream = new ReadableStream<Uint8Array>();
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      if (url === "/api/model-tiers") {
+        return json(policy("pro"));
+      }
+      if (url === "/api/drafts/new" && method === "PUT") {
+        const body = JSON.parse(String(init?.body)) as { content: string };
+        return json({
+          scope: { kind: "new" },
+          content: body.content,
+          revision: 1,
+          updatedAt: "2026-08-08T12:00:00.000Z",
+        });
+      }
+      if (url === "/api/drafts/new") {
+        return json({ scope: { kind: "new" }, content: "", revision: 0, updatedAt: null });
+      }
+      if (url === "/api/conversations" && method === "POST") {
+        return json({
+          id: conversationId,
+          title: null,
+          isArchived: false,
+          revision: 0,
+          createdAt: "2026-08-08T12:00:00.000Z",
+          updatedAt: "2026-08-08T12:00:00.000Z",
+        });
+      }
+      if (url.endsWith(`/api/conversations/${conversationId}/responses`)) {
+        responseBody = JSON.parse(String(init?.body));
+        return new Response(stream, {
+          status: 200,
+          headers: { "content-type": "application/x-ndjson" },
+        });
+      }
+      throw new Error(`Unexpected request: ${method} ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const router = createMemoryRouter(
+      [
+        { path: "/", Component: NewChatPage },
+        { path: "/c/:conversationId", element: <h1>Conversación creada</h1> },
+      ],
+      { initialEntries: ["/"] },
+    );
+    renderApp(router);
+    const user = userEvent.setup();
+
+    // No tier interaction at all: the first request must carry the workspace
+    // default exactly as the policy delivered it.
+    await screen.findByRole("button", { name: tierTriggerName("pro") });
     await user.type(
       await screen.findByRole("textbox", { name: copy.conversations.draft.label }),
       "Analiza este caso",
@@ -119,8 +208,10 @@ describe("tiered generation experience", () => {
 
     await waitFor(() => expect(responseBody).toMatchObject({ source: "draft", modelTier: "pro" }));
     expect(
-      queryClient.getQueryData(["conversations", ...queryScope, "preferred-tier", conversationId]),
-    ).toEqual({ conversationId, modelTier: "pro" });
+      fetchMock.mock.calls.some(
+        ([url, init]) => String(url).endsWith("/preferred-tier") && init?.method === "PUT",
+      ),
+    ).toBe(false);
   });
 
   it("blocks every generation action when the persisted tier is unavailable", async () => {
@@ -211,6 +302,149 @@ describe("tiered generation experience", () => {
     expect(
       screen.queryByRole("button", { name: copy.conversations.generation.actions.continue }),
     ).not.toBeInTheDocument();
+  });
+
+  it("fences generation initiators while an existing conversation tier is saving", async () => {
+    let finishTierUpdate!: (response: Response) => void;
+    const tierUpdate = new Promise<Response>((resolve) => {
+      finishTierUpdate = resolve;
+    });
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      if (url === "/api/model-tiers") {
+        return json(policy("balanced"));
+      }
+      if (url.endsWith("/preferred-tier") && method === "PUT") {
+        return tierUpdate;
+      }
+      if (url.endsWith("/preferred-tier")) {
+        return json({ conversationId, modelTier: "balanced" });
+      }
+      if (url.endsWith("/draft")) {
+        return json({
+          scope: { kind: "conversation", conversationId },
+          content: "Siguiente pregunta",
+          revision: 1,
+          updatedAt: "2026-08-08T12:00:02.000Z",
+        });
+      }
+      if (url.endsWith("/response-states")) {
+        return json({
+          conversationId,
+          revision: 2,
+          responses: [
+            {
+              generationId,
+              messageId: assistantMessageId,
+              status: "completed",
+              reason: "length",
+              errorCode: null,
+            },
+          ],
+        });
+      }
+      if (url.endsWith(`/api/conversations/${conversationId}`)) {
+        return json({
+          conversation: {
+            id: conversationId,
+            title: "Preferencia en guardado",
+            isArchived: false,
+            revision: 2,
+            createdAt: "2026-08-08T12:00:00.000Z",
+            updatedAt: "2026-08-08T12:00:01.000Z",
+          },
+          selectedLeafId: assistantMessageId,
+          messages: [
+            {
+              id: userMessageId,
+              parentMessageId: null,
+              role: "user",
+              content: [{ type: "text", text: "Pregunta" }],
+              createdAt: "2026-08-08T12:00:00.000Z",
+              siblingCount: 0,
+            },
+            {
+              id: assistantMessageId,
+              parentMessageId: userMessageId,
+              role: "assistant",
+              content: [{ type: "text", text: "Respuesta incompleta" }],
+              createdAt: "2026-08-08T12:00:01.000Z",
+              siblingCount: 0,
+            },
+          ],
+          nextCursor: null,
+        });
+      }
+      throw new Error(`Unexpected request: ${method} ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const router = createMemoryRouter(
+      [{ path: "/c/:conversationId", Component: ConversationPage }],
+      { initialEntries: [`/c/${conversationId}`] },
+    );
+    renderApp(router);
+    const user = userEvent.setup();
+
+    const send = await screen.findByRole("button", {
+      name: copy.conversations.generation.actions.send,
+    });
+    const edit = await screen.findByRole("button", { name: copy.conversations.messages.edit });
+    const picker = screen.getByRole("button", { name: anyTierTrigger });
+    await waitFor(() => {
+      expect(send).toBeEnabled();
+      expect(screen.getByRole("button", { name: tierTriggerName("balanced") })).toBeVisible();
+    });
+    expect(
+      screen.getByRole("button", { name: copy.conversations.messages.tryAgain }),
+    ).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: copy.conversations.generation.actions.continue }),
+    ).toBeEnabled();
+
+    await user.click(edit);
+    const inlineEditor = screen.getByRole("textbox", {
+      name: copy.conversations.messages.editLabel,
+    });
+    await user.clear(inlineEditor);
+    await user.type(inlineEditor, "Pregunta editada");
+    const saveEdit = screen.getByRole("button", { name: copy.conversations.messages.saveEdit });
+    expect(saveEdit).toBeEnabled();
+
+    await chooseTier(user, /^Pro/u);
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        `/api/conversations/${conversationId}/preferred-tier`,
+        expect.objectContaining({ method: "PUT" }),
+      ),
+    );
+
+    expect(screen.getByRole("button", { name: tierTriggerName("balanced") })).toBeVisible();
+    expect(picker).toHaveAttribute("aria-disabled", "true");
+    expect(picker).toBeEnabled();
+    expect(send).toBeDisabled();
+    expect(saveEdit).toBeDisabled();
+    expect(
+      screen.queryByRole("button", { name: copy.conversations.messages.tryAgain }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: copy.conversations.generation.actions.continue }),
+    ).not.toBeInTheDocument();
+
+    finishTierUpdate(json({ conversationId, modelTier: "pro" }));
+    await tierUpdate;
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: tierTriggerName("pro") })).toBeVisible();
+      expect(picker).not.toHaveAttribute("aria-disabled");
+      expect(send).toBeEnabled();
+      expect(saveEdit).toBeEnabled();
+    });
+    expect(
+      screen.getByRole("button", { name: copy.conversations.messages.tryAgain }),
+    ).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: copy.conversations.generation.actions.continue }),
+    ).toBeEnabled();
   });
 
   it("keeps the active request on its committed tier while preparing the next tier", async () => {
@@ -321,8 +555,10 @@ describe("tiered generation experience", () => {
     );
 
     await screen.findByRole("button", { name: copy.conversations.generation.actions.stop });
-    await user.click(screen.getByRole("radio", { name: /Pro/ }));
-    await waitFor(() => expect(screen.getByRole("radio", { name: /Pro/ })).toBeChecked());
+    await chooseTier(user, /^Pro/u);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: tierTriggerName("pro") })).toBeVisible(),
+    );
     expect(responseBodies).toEqual([expect.objectContaining({ modelTier: "balanced" })]);
   });
 });

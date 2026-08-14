@@ -1,9 +1,12 @@
 interface IconProps {
   readonly name:
     | "archive"
+    | "check"
+    | "chevron-down"
     | "chevron-left"
     | "chevron-right"
     | "close"
+    | "ellipsis-horizontal"
     | "menu"
     | "plus"
     | "search"
@@ -19,9 +22,18 @@ export function Icon({ name }: IconProps) {
         <path d="M3 4.5h18v3H3zM9 12h6" />
       </>
     ),
+    check: <path d="m5 12.5 4.5 4.5L19 7" />,
+    "chevron-down": <path d="m6 9.5 6 6 6-6" />,
     "chevron-left": <path d="m15 18-6-6 6-6" />,
     "chevron-right": <path d="m9 18 6-6-6-6" />,
     close: <path d="m6 6 12 12M18 6 6 18" />,
+    "ellipsis-horizontal": (
+      <>
+        <circle cx="5" cy="12" r="1.25" fill="currentColor" stroke="none" />
+        <circle cx="12" cy="12" r="1.25" fill="currentColor" stroke="none" />
+        <circle cx="19" cy="12" r="1.25" fill="currentColor" stroke="none" />
+      </>
+    ),
     menu: <path d="M4 7h16M4 12h16M4 17h16" />,
     plus: <path d="M12 5v14M5 12h14" />,
     search: (

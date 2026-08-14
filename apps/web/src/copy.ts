@@ -273,6 +273,7 @@ export const copy = {
       expand: "Expandir barra lateral",
       search: "Buscar chats",
       recent: "Recientes",
+      current: "Actual",
       archived: "Archivados",
       account: "Cuenta",
       security: "Seguridad de la cuenta",
@@ -366,6 +367,8 @@ export const copy = {
     },
     modelTiers: {
       label: "Nivel para la próxima respuesta",
+      tierPending: "Cargando…",
+      tierUnknown: "Sin seleccionar",
       loading: "Cargando niveles disponibles…",
       loadError: "No pudimos cargar los niveles disponibles. Inténtalo de nuevo.",
       saveError: "No pudimos cambiar el nivel. Inténtalo de nuevo.",
@@ -397,7 +400,8 @@ export const copy = {
       assistantLabel: "Asistente",
       alternatives: (count: number) =>
         count === 1 ? "1 alternativa preservada" : `${count} alternativas preservadas`,
-      actions: "Acciones de la conversación",
+      actionsLabel: (title: string) => `Acciones de “${title}”`,
+      archivedState: "Archivada",
       rename: "Cambiar nombre",
       renameTitle: "Cambiar nombre de la conversación",
       titleLabel: "Nombre",

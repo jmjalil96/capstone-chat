@@ -134,6 +134,11 @@ export async function openConversation(
 ): Promise<void> {
   await followConversationSidebarLink(page, title, isMobile);
   await page.getByRole("heading", { level: 1, name: title }).waitFor();
+  await expect(conversationRegion(page, title)).toBeFocused();
+}
+
+export function conversationRegion(page: Page, title: string): Locator {
+  return page.getByRole("article", { name: title });
 }
 
 export async function openDesktopConversation(page: Page, title: string): Promise<void> {

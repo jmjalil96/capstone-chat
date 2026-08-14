@@ -4,6 +4,7 @@ import { copy } from "../src/copy";
 import { exerciseConversationControls } from "./support/phase5-controls-flow";
 import {
   clipboardWrites,
+  conversationRegion,
   followConversationSidebarLink,
   installClipboardCapture,
   openAuthenticatedBrowserEmployee,
@@ -445,6 +446,7 @@ async function exerciseDeepSearchPositioning(page: Page, isMobile: boolean): Pro
   await expect(
     page.getByRole("status").filter({ hasText: copy.conversations.search.located }),
   ).toHaveText(copy.conversations.search.located, { timeout: 10_000 });
+  await expect(conversationRegion(page, phaseFiveBrowserFixtures.searchTitle)).toBeFocused();
   await expect(
     page.getByText(phaseFiveBrowserFixtures.searchRootText, { exact: true }),
   ).toBeVisible();

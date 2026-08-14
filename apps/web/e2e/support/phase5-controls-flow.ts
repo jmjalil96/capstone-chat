@@ -1,7 +1,7 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
 import { copy } from "../../src/copy";
-import { openConversation, phaseFiveBrowserFixtures } from "./phase5-fixture";
+import { conversationRegion, openConversation, phaseFiveBrowserFixtures } from "./phase5-fixture";
 
 const simulatedResponse = "Esta es una respuesta simulada de Capstone Chat para desarrollo local.";
 
@@ -68,6 +68,7 @@ export async function exerciseConversationControls(
   await expect(
     page.getByText(copy.conversations.messages.branchSelected, { exact: true }),
   ).toBeVisible();
+  await expect(conversationRegion(page, title)).toBeFocused();
 
   const secondAnswer = page
     .locator(".message-assistant")
@@ -83,6 +84,7 @@ export async function exerciseConversationControls(
   await expect(
     page.getByText(phaseFiveBrowserFixtures.controlsNextBranchText, { exact: true }),
   ).toHaveCount(0);
+  await expect(conversationRegion(page, title)).toBeFocused();
 
   const selectedLeaf = page
     .locator(".message-assistant")
@@ -95,6 +97,7 @@ export async function exerciseConversationControls(
   await expect(
     page.getByText(copy.conversations.messages.turnUndone, { exact: true }),
   ).toBeVisible();
+  await expect(conversationRegion(page, title)).toBeFocused();
   await expect(draft).toHaveValue(phaseFiveBrowserFixtures.controlsDraft);
 
   const rootMessage = page
@@ -164,7 +167,13 @@ export async function exerciseConversationControls(
   await expect(page.getByText(simulatedResponse, { exact: true })).toBeVisible();
   await expect(draft).toHaveValue(phaseFiveBrowserFixtures.controlsDraft);
 
+  const actionTrigger = page.getByRole("button", {
+    name: copy.conversations.conversation.actionsLabel(title),
+  });
+  await actionTrigger.click();
   await page.getByRole("button", { name: copy.conversations.conversation.archive }).click();
+  await expect(actionTrigger).toBeFocused();
+  await actionTrigger.click();
   await expect(
     page.getByRole("button", { name: copy.conversations.conversation.unarchive }),
   ).toBeVisible();

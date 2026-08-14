@@ -44,9 +44,18 @@ test("completes the real conversation and model-tier lifecycle through the brows
   await page.reload();
   await expect(draft).toHaveValue("Borrador nuevo persistido para la prueba.");
   expect(await page.evaluate(() => Object.keys(window.localStorage))).toEqual([]);
-  await expect(page.getByRole("radio", { name: /Balanced/u })).toBeChecked();
-  await page.getByRole("radio", { name: /Pro/u }).check();
-  await expect(page.getByRole("radio", { name: /Pro/u })).toBeChecked();
+  const tier = page.getByRole("button", {
+    name: new RegExp(`^${copy.conversations.modelTiers.label}:`, "u"),
+  });
+  const tierPopover = page.locator(".model-tier-popover");
+  const chooseTier = async (name: string) => {
+    await tier.click();
+    await tierPopover.locator(".model-tier-option").filter({ hasText: name }).click();
+    await expect(tierPopover).toHaveCount(0);
+    await expect(tier).toContainText(name);
+  };
+  await expect(tier).toContainText(copy.conversations.modelTiers.tiers.balanced.name);
+  await chooseTier(copy.conversations.modelTiers.tiers.pro.name);
 
   await page.evaluate(() => {
     const observed = window as unknown as {
@@ -74,8 +83,7 @@ test("completes the real conversation and model-tier lifecycle through the brows
   await expect(
     page.getByRole("button", { name: copy.conversations.generation.actions.stop }),
   ).toBeVisible();
-  await page.getByRole("radio", { name: /Fast/u }).click();
-  await expect(page.getByRole("radio", { name: /Fast/u })).toBeChecked();
+  await chooseTier(copy.conversations.modelTiers.tiers.fast.name);
   await draft.fill("Segundo mensaje confirmado para detener.");
   const simulatedResponse =
     "Esta es una respuesta simulada de Capstone Chat para desarrollo local.";
@@ -91,7 +99,7 @@ test("completes the real conversation and model-tier lifecycle through the brows
   expect(requestedTiers).toEqual(["pro"]);
 
   await page.reload();
-  await expect(page.getByRole("radio", { name: /Fast/u })).toBeChecked();
+  await expect(tier).toContainText(copy.conversations.modelTiers.tiers.fast.name);
   await expect(draft).toHaveValue("Segundo mensaje confirmado para detener.");
 
   await page.getByRole("button", { name: copy.conversations.generation.actions.send }).click();
@@ -174,6 +182,10 @@ test("completes the real conversation and model-tier lifecycle through the brows
   await alternativeResult.click();
   await expect(page.getByText("La brújula ámbar señala la ruta alternativa.")).toBeVisible();
 
+  const actionTrigger = page.getByRole("button", {
+    name: copy.conversations.conversation.actionsLabel("Plan de lanzamiento"),
+  });
+  await actionTrigger.click();
   await page.getByRole("button", { name: copy.conversations.conversation.rename }).click();
   const renameDialog = page.getByRole("dialog", {
     name: copy.conversations.conversation.renameTitle,
@@ -190,14 +202,30 @@ test("completes the real conversation and model-tier lifecycle through the brows
     page.getByRole("heading", { level: 1, name: "Plan de lanzamiento actualizado" }),
   ).toBeVisible();
 
+  const renamedActionTrigger = page.getByRole("button", {
+    name: copy.conversations.conversation.actionsLabel("Plan de lanzamiento actualizado"),
+  });
+  await renamedActionTrigger.click();
   await page.getByRole("button", { name: copy.conversations.conversation.archive }).click();
+  await expect(renamedActionTrigger).toBeFocused();
+  await renamedActionTrigger.click();
   await expect(
     page.getByRole("button", { name: copy.conversations.conversation.unarchive }),
   ).toBeVisible();
   await desktopSidebar.getByRole("link", { name: copy.conversations.navigation.archived }).click();
   await page.getByRole("link", { name: "Plan de lanzamiento actualizado" }).click();
-  await expect(page.getByText(copy.conversations.search.archived, { exact: true })).toBeVisible();
+  await expect(
+    desktopSidebar
+      .locator(".current-conversation")
+      .getByText(copy.conversations.search.archived, { exact: true }),
+  ).toBeVisible();
+  const archivedActionTrigger = page.getByRole("button", {
+    name: copy.conversations.conversation.actionsLabel("Plan de lanzamiento actualizado"),
+  });
+  await archivedActionTrigger.click();
   await page.getByRole("button", { name: copy.conversations.conversation.unarchive }).click();
+  await expect(archivedActionTrigger).toBeFocused();
+  await archivedActionTrigger.click();
   await expect(
     page.getByRole("button", { name: copy.conversations.conversation.archive }),
   ).toBeVisible();

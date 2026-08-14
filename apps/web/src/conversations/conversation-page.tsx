@@ -2,18 +2,10 @@ import {
   type ConversationDetailResponse,
   type ConversationMessage,
   type ConversationSelectionResponse,
-  type ConversationSummary,
-  ConversationTitleSchema,
   MessageIdSchema,
-  type OpaqueCursor,
   type ResponseState,
 } from "@capstone/protocol";
-import {
-  type InfiniteData,
-  useInfiniteQuery,
-  useMutation,
-  useQueryClient,
-} from "@tanstack/react-query";
+import { type InfiniteData, useQueryClient } from "@tanstack/react-query";
 import {
   type ComponentType,
   lazy,
@@ -31,24 +23,21 @@ import Value from "typebox/value";
 import { copy } from "../copy";
 import { useConversationAlternativeContexts } from "./alternative-contexts";
 import {
-  archiveConversation,
   ConversationApiError,
   conversationQueryKeys,
-  deleteConversation,
   fetchConversation,
-  renameConversation,
   selectConversationLeaf,
-  unarchiveConversation,
   undoConversation,
 } from "./api";
+import { subscribeCanonicalAdoption } from "./canonical-adoption";
 import { useOptionalChatRuntime, useOptionalConversationRuntime } from "./chat-runtime-provider";
 import { orderedBranchMessages } from "./collection";
 import { SEARCH_MATCH_FADE_MS, SEARCH_MATCH_HOLD_MS } from "./config";
+import { adoptCanonicalConversationDetail, useConversationDetail } from "./conversation-detail";
 import { useConversationScroll } from "./conversation-scroll";
 import { ConversationSelectionFence } from "./conversation-selection";
 import { DraftEditor, generationErrorCodeCopy, type RemoteResponseOutcome } from "./draft-editor";
 import { useDraftMemory } from "./draft-memory";
-import { Icon } from "./icons";
 import { CodeCopyAction, MessageActions } from "./message-actions";
 import type { MessageContentProps } from "./message-content";
 import { ModelTierPicker, useConversationModelTier } from "./model-tiers";
@@ -77,28 +66,6 @@ interface DeferredMessageContentProps extends MessageContentProps {
 function DeferredMessageContent({ onReady, ...props }: DeferredMessageContentProps) {
   useLayoutEffect(onReady, [onReady]);
   return <MessageContent {...props} />;
-}
-
-function openDialog(dialog: HTMLDialogElement | null): void {
-  if (!dialog) {
-    return;
-  }
-  if (typeof dialog.showModal === "function") {
-    dialog.showModal();
-  } else {
-    dialog.setAttribute("open", "");
-  }
-}
-
-function closeDialog(dialog: HTMLDialogElement | null): void {
-  if (!dialog) {
-    return;
-  }
-  if (typeof dialog.close === "function") {
-    dialog.close();
-  } else {
-    dialog.removeAttribute("open");
-  }
 }
 
 function responseTerminalLabel(state: ResponseState | undefined): string | undefined {
@@ -223,7 +190,8 @@ export function ConversationPage() {
   const modelTier = useConversationModelTier(conversationId);
   const queryScope = draftMemory.queryScope;
   const requestLifetime = useConversationRequestLifetime(`conversation:${conversationId}`);
-  const headingRef = useRef<HTMLHeadingElement>(null);
+  const conversationRegionRef = useRef<HTMLElement>(null);
+  const errorHeadingRef = useRef<HTMLHeadingElement>(null);
   const alertRef = useRef<HTMLParagraphElement>(null);
   const mutationErrorFocusRef = useRef(true);
   const structuralFocusRestoreRef = useRef<HTMLButtonElement | undefined>(undefined);
@@ -255,13 +223,7 @@ export function ConversationPage() {
     mutationErrorFocusRef.current = moveFocus;
     setMutationError(message);
   }, []);
-  const detail = useInfiniteQuery({
-    queryKey: conversationQueryKeys.detail(queryScope, conversationId),
-    queryFn: ({ pageParam, signal }) => fetchConversation(conversationId, pageParam, signal),
-    initialPageParam: undefined as OpaqueCursor | undefined,
-    getNextPageParam: (page) => page.nextCursor ?? undefined,
-    enabled: conversationId.length > 0,
-  });
+  const detail = useConversationDetail(conversationId);
   const firstPage = detail.data?.pages[0];
   const conversation = firstPage?.conversation;
   const canonicalMessages = orderedBranchMessages(detail.data?.pages ?? []);
@@ -400,7 +362,7 @@ export function ConversationPage() {
       ? copy.conversations.conversation.notFoundTitle
       : copy.identity.route.unavailableTitle
     : displayTitle;
-  useRouteHeading(documentTitle, headingRef, false);
+  useRouteHeading(documentTitle, conversationRegionRef, false);
 
   const recoverCanonical = useCallback(
     async (moveErrorFocus = true) => {
@@ -411,10 +373,7 @@ export function ConversationPage() {
         if (!capture.isCurrent()) {
           return false;
         }
-        queryClient.setQueryData<InfiniteData<ConversationDetailResponse>>(
-          conversationQueryKeys.detail(queryScope, conversationId),
-          { pages: [canonical], pageParams: [undefined] },
-        );
+        const adopted = adoptCanonicalConversationDetail(queryClient, queryScope, canonical);
         await Promise.all([
           queryClient.invalidateQueries({ queryKey: conversationQueryKeys.histories(queryScope) }),
           queryClient.invalidateQueries({ queryKey: conversationQueryKeys.searches(queryScope) }),
@@ -429,7 +388,9 @@ export function ConversationPage() {
           return false;
         }
         setCanonicalRecoveryFailed(false);
-        setCanonicalPositionRequest((current) => current + 1);
+        if (adopted) {
+          setCanonicalPositionRequest((current) => current + 1);
+        }
         reportMutationError(copy.conversations.common.changed, moveErrorFocus);
         return true;
       } catch {
@@ -499,6 +460,21 @@ export function ConversationPage() {
     }
   }, [conversationId, searchPositionIntent?.conversationId]);
 
+  useEffect(
+    () =>
+      subscribeCanonicalAdoption((adoptedId, mode) => {
+        if (adoptedId !== currentConversationIdRef.current) {
+          return;
+        }
+        setMutationError(undefined);
+        setCanonicalRecoveryFailed(false);
+        if (mode === "recover") {
+          setCanonicalPositionRequest((current) => current + 1);
+        }
+      }),
+    [],
+  );
+
   useLayoutEffect(() => {
     if (!matchedRouteMessageId || consumedSearchLocationRef.current === location.key) {
       return;
@@ -515,7 +491,7 @@ export function ConversationPage() {
     if (conversation && focusedConversationRef.current !== conversation.id) {
       focusedConversationRef.current = conversation.id;
       if (!focusComposerOnArrival) {
-        headingRef.current?.focus();
+        conversationRegionRef.current?.focus();
       }
     }
   }, [conversation, focusComposerOnArrival]);
@@ -582,7 +558,7 @@ export function ConversationPage() {
 
   useEffect(() => {
     if (fatalDetailError) {
-      headingRef.current?.focus();
+      errorHeadingRef.current?.focus();
     }
   }, [fatalDetailError]);
 
@@ -613,7 +589,7 @@ export function ConversationPage() {
       return;
     } else {
       structuralFocusRestoreRef.current = undefined;
-      headingRef.current?.focus();
+      conversationRegionRef.current?.focus();
     }
   }, [alternativeContexts.isPending, composerRefreshing, structuralPendingMessageId]);
 
@@ -768,30 +744,6 @@ export function ConversationPage() {
     return () => window.clearTimeout(timeout);
   }, [conversationScroll.reducedMotion, searchHighlight]);
 
-  function adoptCanonical(summary: ConversationSummary) {
-    queryClient.setQueryData<InfiniteData<ConversationDetailResponse>>(
-      conversationQueryKeys.detail(queryScope, summary.id),
-      (current) =>
-        current
-          ? {
-              ...current,
-              pages: current.pages.map((page) => ({ ...page, conversation: summary })),
-            }
-          : current,
-    );
-    void Promise.all([
-      queryClient.invalidateQueries({ queryKey: conversationQueryKeys.histories(queryScope) }),
-      queryClient.invalidateQueries({ queryKey: conversationQueryKeys.searches(queryScope) }),
-      queryClient.invalidateQueries({ queryKey: conversationQueryKeys.responseStates(queryScope) }),
-    ]);
-    setCanonicalRecoveryFailed(false);
-    setMutationError(undefined);
-  }
-
-  async function handleStale() {
-    await recoverCanonical();
-  }
-
   function focusComposerAfterGeneration(): void {
     if (!conversation || currentConversationIdRef.current !== conversation.id) {
       return;
@@ -811,10 +763,7 @@ export function ConversationPage() {
     if (!capture.isCurrent()) {
       return;
     }
-    queryClient.setQueryData<InfiniteData<ConversationDetailResponse>>(
-      conversationQueryKeys.detail(queryScope, selection.conversation.id),
-      { pages: [canonical], pageParams: [undefined] },
-    );
+    const adopted = adoptCanonicalConversationDetail(queryClient, queryScope, canonical);
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: conversationQueryKeys.histories(queryScope) }),
       queryClient.invalidateQueries({ queryKey: conversationQueryKeys.searches(queryScope) }),
@@ -826,10 +775,13 @@ export function ConversationPage() {
     if (!capture.isCurrent()) {
       return;
     }
-    setCanonicalPositionRequest((current) => current + 1);
+    if (adopted) {
+      setCanonicalPositionRequest((current) => current + 1);
+    }
     setMutationError(undefined);
     setMutationStatus(status);
-    headingRef.current?.focus();
+    structuralFocusRestoreRef.current = undefined;
+    conversationRegionRef.current?.focus();
   }
 
   async function selectAlternative(
@@ -921,6 +873,7 @@ export function ConversationPage() {
       !conversation ||
       !modelTier.selectedTier ||
       !modelTier.available ||
+      modelTier.updatePending ||
       message.role !== "user" ||
       generationActive ||
       conversation.isArchived ||
@@ -962,6 +915,7 @@ export function ConversationPage() {
       !conversation ||
       !modelTier.selectedTier ||
       !modelTier.available ||
+      modelTier.updatePending ||
       message.role !== "assistant" ||
       !message.parentMessageId ||
       generationActive ||
@@ -995,6 +949,7 @@ export function ConversationPage() {
       !conversation ||
       !modelTier.selectedTier ||
       !modelTier.available ||
+      modelTier.updatePending ||
       generationActive ||
       conversation.isArchived ||
       composerIncoherent
@@ -1026,7 +981,7 @@ export function ConversationPage() {
   if (!conversation) {
     return (
       <div className="route-error">
-        <h1 tabIndex={-1} ref={headingRef}>
+        <h1 tabIndex={-1} ref={errorHeadingRef}>
           {missingConversation
             ? copy.conversations.conversation.notFoundTitle
             : copy.identity.route.unavailableTitle}
@@ -1044,34 +999,12 @@ export function ConversationPage() {
   }
 
   return (
-    <article className="conversation-page">
-      <header className="conversation-header">
-        <div>
-          <p className="conversation-kicker">
-            {conversation.isArchived ? copy.conversations.search.archived : copy.brand.productName}
-          </p>
-          <h1 ref={headingRef} tabIndex={-1}>
-            {displayTitle}
-          </h1>
-        </div>
-        <ModelTierPicker
-          error={modelTier.error}
-          id={`conversation-${conversation.id}`}
-          isPending={modelTier.isPending}
-          onRetry={modelTier.retry}
-          onSelect={modelTier.select}
-          policy={modelTier.policy}
-          selectedTier={modelTier.selectedTier}
-          updateError={modelTier.updateError}
-          updatePending={modelTier.updatePending}
-        />
-        <ConversationActions
-          conversation={conversation}
-          onCanonical={adoptCanonical}
-          onError={reportMutationError}
-          onStale={handleStale}
-        />
-      </header>
+    <article
+      aria-labelledby="conversation-page-title"
+      className="conversation-page"
+      ref={conversationRegionRef}
+      tabIndex={-1}
+    >
       {mutationError ||
       generationError ||
       runtimeRecoveryActionRequired ||
@@ -1175,6 +1108,9 @@ export function ConversationPage() {
       ) : null}
       {!hasPresentedMessages ? (
         <div className="empty-conversation">
+          <h1 className="conversation-title" id="conversation-page-title">
+            {displayTitle}
+          </h1>
           <h2>{copy.conversations.newChat.title}</h2>
           <p>{copy.conversations.conversation.empty}</p>
         </div>
@@ -1196,6 +1132,9 @@ export function ConversationPage() {
             }
           }}
         >
+          <h1 className="conversation-title" id="conversation-page-title">
+            {displayTitle}
+          </h1>
           {detail.isFetchNextPageError && !branchCursorChanged ? (
             <p className="inline-alert" role="alert">
               {copy.conversations.common.genericError}
@@ -1272,6 +1211,7 @@ export function ConversationPage() {
                     canContinue={
                       canContinue &&
                       modelTier.available &&
+                      !modelTier.updatePending &&
                       !generationActive &&
                       !conversation.isArchived &&
                       !composerIncoherent
@@ -1280,6 +1220,7 @@ export function ConversationPage() {
                     canEdit={
                       message.role === "user" &&
                       modelTier.available &&
+                      !modelTier.updatePending &&
                       !generationActive &&
                       !conversation.isArchived &&
                       !composerIncoherent
@@ -1287,6 +1228,7 @@ export function ConversationPage() {
                     canRetry={
                       message.role === "assistant" &&
                       modelTier.available &&
+                      !modelTier.updatePending &&
                       message.parentMessageId !== null &&
                       !generationActive &&
                       !conversation.isArchived &&
@@ -1392,334 +1334,28 @@ export function ConversationPage() {
                 }
               : {}),
           }}
-          autoFocus={focusComposerOnArrival || !hasPresentedMessages}
+          autoFocus={focusComposerOnArrival}
           focusRequest={
             composerFocusIntent.conversationId === conversationId ? composerFocusIntent.request : 0
           }
           modelTier={modelTier.selectedTier}
+          tierControl={
+            <ModelTierPicker
+              error={modelTier.error}
+              id={`conversation-${conversation.id}`}
+              isPending={modelTier.isPending}
+              onRetry={modelTier.retry}
+              onSelect={modelTier.select}
+              policy={modelTier.policy}
+              selectedTier={modelTier.selectedTier}
+              updateError={modelTier.updateError}
+              updatePending={modelTier.updatePending}
+            />
+          }
           tierAvailable={modelTier.available}
+          tierSavePending={modelTier.updatePending}
         />
       </div>
     </article>
-  );
-}
-
-interface ConversationActionsProps {
-  readonly conversation: ConversationSummary;
-  readonly onCanonical: (conversation: ConversationSummary) => void;
-  readonly onError: (message: string) => void;
-  readonly onStale: () => Promise<void>;
-}
-
-function ConversationActions({
-  conversation,
-  onCanonical,
-  onError,
-  onStale,
-}: ConversationActionsProps) {
-  const navigate = useNavigate();
-  const queryClient = useQueryClient();
-  const chatRuntime = useOptionalChatRuntime();
-  const draftMemory = useDraftMemory();
-  const captureGeneration = draftMemory.capture;
-  const isGenerationCurrent = draftMemory.isCurrent;
-  const queryScope = draftMemory.queryScope;
-  const requestLifetime = useConversationRequestLifetime(`actions:${conversation.id}`);
-  const renameDialogRef = useRef<HTMLDialogElement>(null);
-  const deleteDialogRef = useRef<HTMLDialogElement>(null);
-  const renameButtonRef = useRef<HTMLButtonElement>(null);
-  const deleteButtonRef = useRef<HTMLButtonElement>(null);
-  const renameCaptureRef = useRef<ConversationRequestCapture | undefined>(undefined);
-  const archiveCaptureRef = useRef<ConversationRequestCapture | undefined>(undefined);
-  const removeCaptureRef = useRef<AbortSignal | undefined>(undefined);
-  const [title, setTitle] = useState(conversation.title ?? "");
-  const [dialogError, setDialogError] = useState<string>();
-  const titleValid = Value.Check(ConversationTitleSchema, title);
-
-  useEffect(() => setTitle(conversation.title ?? ""), [conversation.title]);
-
-  async function mutationFailure(error: unknown, inDialog: boolean, isCurrent: () => boolean) {
-    if (!isCurrent()) {
-      return;
-    }
-    if (error instanceof ConversationApiError && error.code === "CONVERSATION_CHANGED") {
-      closeDialog(renameDialogRef.current);
-      closeDialog(deleteDialogRef.current);
-      await onStale();
-      return;
-    }
-    if (inDialog) {
-      setDialogError(copy.conversations.common.genericError);
-    } else {
-      onError(copy.conversations.common.genericError);
-    }
-  }
-
-  const rename = useMutation({
-    mutationFn: () => {
-      if (!titleValid) {
-        throw new Error("The conversation title is invalid.");
-      }
-      const capture = requestLifetime.capture();
-      renameCaptureRef.current = capture;
-      return renameConversation(
-        conversation.id,
-        {
-          title,
-          observedRevision: conversation.revision,
-        },
-        capture.signal,
-      );
-    },
-    onSuccess: (canonical) => {
-      const capture = renameCaptureRef.current;
-      try {
-        if (!capture?.isCurrent()) {
-          return;
-        }
-        onCanonical(canonical);
-        closeDialog(renameDialogRef.current);
-      } finally {
-        capture?.release();
-        if (renameCaptureRef.current === capture) {
-          renameCaptureRef.current = undefined;
-        }
-      }
-    },
-    onError: async (error) => {
-      const capture = renameCaptureRef.current;
-      try {
-        if (capture) {
-          await mutationFailure(error, true, capture.isCurrent);
-        }
-      } finally {
-        capture?.release();
-        if (renameCaptureRef.current === capture) {
-          renameCaptureRef.current = undefined;
-        }
-      }
-    },
-  });
-  const archive = useMutation({
-    mutationFn: () => {
-      const capture = requestLifetime.capture();
-      archiveCaptureRef.current = capture;
-      return conversation.isArchived
-        ? unarchiveConversation(
-            conversation.id,
-            { observedRevision: conversation.revision },
-            capture.signal,
-          )
-        : archiveConversation(
-            conversation.id,
-            { observedRevision: conversation.revision },
-            capture.signal,
-          );
-    },
-    onSuccess: (canonical) => {
-      const capture = archiveCaptureRef.current;
-      try {
-        if (capture?.isCurrent()) {
-          onCanonical(canonical);
-        }
-      } finally {
-        capture?.release();
-        if (archiveCaptureRef.current === capture) {
-          archiveCaptureRef.current = undefined;
-        }
-      }
-    },
-    onError: async (error) => {
-      const capture = archiveCaptureRef.current;
-      try {
-        if (capture) {
-          await mutationFailure(error, false, capture.isCurrent);
-        }
-      } finally {
-        capture?.release();
-        if (archiveCaptureRef.current === capture) {
-          archiveCaptureRef.current = undefined;
-        }
-      }
-    },
-  });
-  const remove = useMutation({
-    mutationFn: async () => {
-      const capture = captureGeneration();
-      removeCaptureRef.current = capture;
-      // Deletion intentionally removes this draft, but no earlier save may finish after discard.
-      await draftMemory.flushActiveDraft();
-      if (!isGenerationCurrent(capture)) {
-        throw new Error("session-changed");
-      }
-      return deleteConversation(
-        conversation.id,
-        { observedRevision: conversation.revision },
-        capture,
-      );
-    },
-    onSuccess: async () => {
-      const capture = removeCaptureRef.current;
-      if (!capture || !isGenerationCurrent(capture)) {
-        return;
-      }
-      chatRuntime?.discardConversation(conversation.id);
-      queryClient.removeQueries({
-        queryKey: conversationQueryKeys.detail(queryScope, conversation.id),
-      });
-      queryClient.removeQueries({
-        queryKey: conversationQueryKeys.draft(queryScope, {
-          kind: "conversation",
-          conversationId: conversation.id,
-        }),
-      });
-      draftMemory.discardDraft({
-        kind: "conversation",
-        conversationId: conversation.id,
-      });
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: conversationQueryKeys.histories(queryScope) }),
-        queryClient.invalidateQueries({ queryKey: conversationQueryKeys.searches(queryScope) }),
-      ]);
-      if (!isGenerationCurrent(capture)) {
-        return;
-      }
-      draftMemory.unlockEditing();
-      navigate("/", { replace: true });
-    },
-    onError: async (error) => {
-      const capture = removeCaptureRef.current;
-      if (!capture || !isGenerationCurrent(capture)) {
-        return;
-      }
-      draftMemory.unlockEditing();
-      await mutationFailure(error, true, () => isGenerationCurrent(capture));
-    },
-  });
-  return (
-    <fieldset className="conversation-actions">
-      <legend className="visually-hidden">{copy.conversations.conversation.actions}</legend>
-      <button
-        className="secondary-button compact-button"
-        ref={renameButtonRef}
-        type="button"
-        onClick={() => {
-          setDialogError(undefined);
-          setTitle(conversation.title ?? "");
-          openDialog(renameDialogRef.current);
-        }}
-      >
-        {copy.conversations.conversation.rename}
-      </button>
-      <button
-        className="secondary-button compact-button"
-        type="button"
-        disabled={archive.isPending}
-        onClick={() => archive.mutate()}
-      >
-        {conversation.isArchived
-          ? copy.conversations.conversation.unarchive
-          : copy.conversations.conversation.archive}
-      </button>
-      <button
-        className="danger-button compact-button"
-        ref={deleteButtonRef}
-        type="button"
-        onClick={() => {
-          setDialogError(undefined);
-          openDialog(deleteDialogRef.current);
-        }}
-      >
-        <Icon name="trash" />
-        {copy.conversations.conversation.delete}
-      </button>
-
-      <dialog
-        className="action-dialog"
-        ref={renameDialogRef}
-        aria-labelledby="rename-dialog-title"
-        onClose={() => renameButtonRef.current?.focus()}
-      >
-        <form
-          method="dialog"
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (titleValid) {
-              setDialogError(undefined);
-              rename.mutate();
-            }
-          }}
-        >
-          <h2 id="rename-dialog-title">{copy.conversations.conversation.renameTitle}</h2>
-          <label htmlFor="conversation-title">{copy.conversations.conversation.titleLabel}</label>
-          <input
-            id="conversation-title"
-            value={title}
-            onChange={(event) => setTitle(event.currentTarget.value)}
-            aria-invalid={!titleValid}
-            aria-describedby="conversation-title-help"
-          />
-          <p className="field-help" id="conversation-title-help">
-            {copy.conversations.conversation.titleHelp}
-          </p>
-          {dialogError ? <p role="alert">{dialogError}</p> : null}
-          <div className="dialog-actions">
-            <button
-              className="secondary-button compact-button"
-              type="button"
-              onClick={() => closeDialog(renameDialogRef.current)}
-            >
-              {copy.conversations.conversation.cancel}
-            </button>
-            <button
-              className="primary-button compact-button"
-              type="submit"
-              disabled={!titleValid || rename.isPending}
-            >
-              {copy.conversations.conversation.saveTitle}
-            </button>
-          </div>
-        </form>
-      </dialog>
-
-      <dialog
-        className="action-dialog"
-        ref={deleteDialogRef}
-        aria-labelledby="delete-dialog-title"
-        onCancel={(event) => {
-          if (remove.isPending) {
-            event.preventDefault();
-          }
-        }}
-        onClose={() => deleteButtonRef.current?.focus()}
-      >
-        <h2 id="delete-dialog-title">{copy.conversations.conversation.deleteTitle}</h2>
-        <p>{copy.conversations.conversation.deleteNotice}</p>
-        {dialogError ? <p role="alert">{dialogError}</p> : null}
-        <div className="dialog-actions">
-          <button
-            className="secondary-button compact-button"
-            type="button"
-            disabled={remove.isPending}
-            onClick={() => closeDialog(deleteDialogRef.current)}
-          >
-            {copy.conversations.conversation.cancel}
-          </button>
-          <button
-            className="danger-button compact-button"
-            type="button"
-            disabled={remove.isPending}
-            onClick={() => {
-              draftMemory.lockEditing();
-              remove.mutate();
-            }}
-          >
-            {remove.isPending
-              ? copy.conversations.conversation.deleting
-              : copy.conversations.conversation.confirmDelete}
-          </button>
-        </div>
-      </dialog>
-    </fieldset>
   );
 }
