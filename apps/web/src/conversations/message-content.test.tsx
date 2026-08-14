@@ -5,6 +5,25 @@ import { MessageContent } from "./message-content";
 
 const fallback = "No pudimos mostrar este contenido.";
 
+function renderMessage(source: string): HTMLElement {
+  const { container } = render(<MessageContent fallback={fallback} source={source} />);
+  const root = container.querySelector<HTMLElement>("[data-message-content]");
+  if (!root) {
+    throw new Error("Message content did not render.");
+  }
+  return root;
+}
+
+function listItemContaining(root: HTMLElement, text: string): HTMLLIElement {
+  const item = [...root.querySelectorAll<HTMLLIElement>("li")].find((candidate) =>
+    candidate.textContent?.includes(text),
+  );
+  if (!item) {
+    throw new Error(`List item containing "${text}" did not render.`);
+  }
+  return item;
+}
+
 describe("MessageContent", () => {
   it("renders semantic Markdown, remapped headings, and inert task items", () => {
     render(
@@ -42,6 +61,124 @@ Texto con **fuerza**, ~~tachado~~ y \`código\`.
     const tableRegion = screen.getByRole("table").parentElement;
     expect(tableRegion).toHaveAttribute("data-message-overflow", "table");
     expect(within(screen.getByRole("table")).getByText("Dos")).toBeVisible();
+  });
+
+  it.each([
+    ["LF", "\n"],
+    ["CRLF", "\r\n"],
+    ["CR", "\r"],
+  ])("turns an authored %s soft ending into one semantic break", (_label, ending) => {
+    const root = renderMessage(`Primera línea${ending}segunda línea`);
+    const paragraph = root.querySelector("p");
+
+    expect(paragraph).toHaveTextContent("Primera línea segunda línea");
+    expect(paragraph?.querySelectorAll("br")).toHaveLength(1);
+  });
+
+  it("renders direct, formatted, and list-item line endings exactly once", () => {
+    const root = renderMessage(`Directo suave
+continuación directa
+
+**Fuerte suave
+continuación fuerte**
+
+*Énfasis duro con espacios${"  "}
+continuación énfasis*
+
+**Fuerte duro con barra\\
+continuación barra**
+
+- Elemento con **formato suave
+  continuación formateada**`);
+    const paragraphs = [...root.querySelectorAll<HTMLElement>(":scope > p")];
+
+    expect(paragraphs.map((paragraph) => paragraph.querySelectorAll("br").length)).toEqual([
+      1, 1, 1, 1,
+    ]);
+    expect(paragraphs[1]?.querySelector("strong > br")).not.toBeNull();
+    expect(paragraphs[2]?.querySelector("em > br")).not.toBeNull();
+    expect(paragraphs[3]?.querySelector("strong > br")).not.toBeNull();
+    expect(root.querySelector("li strong > br")).not.toBeNull();
+    expect(root.querySelectorAll("li strong > br")).toHaveLength(1);
+  });
+
+  it("keeps tight, loose, nested, multiline, and long task items semantic", () => {
+    const longLabel = `Tarea-${"ininterrumpida".repeat(24)}`;
+    const root = renderMessage(`- [ ] Tarea compacta
+- [x] ${longLabel}
+- [ ] Tarea suave
+  continuación suave
+- [x] Tarea dura\\
+  continuación dura
+
+- [ ] Tarea suelta
+
+  Segundo párrafo de la tarea
+
+  - [x] Tarea anidada
+    continuación anidada`);
+    const tasks = [...root.querySelectorAll<HTMLLIElement>(".task-list-item")];
+    const softTask = listItemContaining(root, "Tarea suave");
+    const hardTask = listItemContaining(root, "Tarea dura");
+    const looseTask = listItemContaining(root, "Segundo párrafo de la tarea");
+    const nestedTask = looseTask.querySelector<HTMLLIElement>(":scope > ul > li.task-list-item");
+
+    expect(tasks).toHaveLength(6);
+    expect(listItemContaining(root, longLabel)).toHaveTextContent(longLabel);
+    expect(softTask.querySelectorAll("br")).toHaveLength(1);
+    expect(hardTask.querySelectorAll("br")).toHaveLength(1);
+    expect(looseTask.querySelectorAll(":scope > p")).toHaveLength(2);
+    expect(looseTask.querySelector(":scope > ul")).not.toBeNull();
+    expect(nestedTask).not.toBeNull();
+    expect(nestedTask?.querySelectorAll("br")).toHaveLength(1);
+  });
+
+  it("keeps footnotes structural and suppressed multiline image alt intact", () => {
+    const root = renderMessage(`![Descripción inicial
+descripción final](https://example.com/privada.png)
+
+Referencia[^ritmo].
+
+[^ritmo]: Nota final sin espacio fantasma.`);
+    const suppressedMedia = [...root.querySelectorAll("span")].find(
+      (candidate) => candidate.textContent === "Descripción inicial\ndescripción final",
+    );
+    const footnotes = root.querySelector<HTMLElement>("section[data-footnotes]");
+
+    expect(suppressedMedia).not.toBeUndefined();
+    expect(suppressedMedia?.querySelector("br")).toBeNull();
+    expect(root.querySelector("img")).toBeNull();
+    expect(footnotes).not.toBeNull();
+    expect(footnotes?.querySelector("ol > li > p")).toHaveTextContent(
+      "Nota final sin espacio fantasma.",
+    );
+    expect(root.lastElementChild).toBe(footnotes);
+  });
+
+  it("does not split code, inline code, or math leaf payloads", () => {
+    const root = renderMessage(`Texto con línea suave
+continuación del texto y \`código
+en línea\`.
+
+$$
+x +
+y
+$$
+
+\`\`\`
+primera línea
+segunda línea
+\`\`\``);
+    const paragraph = root.querySelector(":scope > p");
+    const inlineCode = paragraph?.querySelector("code");
+    const blockCode = root.querySelector("pre code");
+
+    expect(paragraph?.querySelectorAll(":scope > br")).toHaveLength(1);
+    expect(inlineCode).toHaveTextContent("código en línea");
+    expect(inlineCode?.querySelector("br")).toBeNull();
+    expect(root.querySelector("math br")).toBeNull();
+    expect(blockCode?.textContent).toBe("primera línea\nsegunda línea\n");
+    expect(blockCode?.querySelector("br")).toBeNull();
   });
 
   it("allows only absolute HTTP, HTTPS, and mail links and never mounts media or raw HTML", () => {

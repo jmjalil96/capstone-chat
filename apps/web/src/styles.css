@@ -1283,12 +1283,6 @@ select:focus-visible,
   font-weight: var(--capstone-weight-medium);
 }
 
-.message-content {
-  overflow-wrap: anywhere;
-  line-height: 1.65;
-  white-space: pre-wrap;
-}
-
 .message-actions {
   min-inline-size: 0;
   display: flex;

@@ -220,6 +220,59 @@ const RendererContext = createContext<RendererContextValue>({
   renderCodeAction: undefined,
 });
 
+interface MarkdownNode {
+  readonly data?: unknown;
+  readonly type?: string;
+  readonly value?: string;
+  children?: MarkdownNode[];
+}
+
+function markdownNode(value: unknown): MarkdownNode | undefined {
+  return typeof value === "object" && value !== null ? (value as MarkdownNode) : undefined;
+}
+
+function preserveAuthoredLineEndings() {
+  return (tree: unknown): undefined => {
+    const root = markdownNode(tree);
+    if (root) {
+      insertSoftBreaks(root);
+    }
+  };
+}
+
+function insertSoftBreaks(parent: MarkdownNode): void {
+  if (!parent.children) {
+    return;
+  }
+
+  const transformed: MarkdownNode[] = [];
+
+  for (const child of parent.children) {
+    if (child.type !== "text" || child.value === undefined) {
+      insertSoftBreaks(child);
+      transformed.push(child);
+      continue;
+    }
+
+    const lines = child.value.split(/\r\n?|\n/u);
+    if (lines.length === 1) {
+      transformed.push(child);
+      continue;
+    }
+
+    for (const [index, line] of lines.entries()) {
+      if (index > 0) {
+        transformed.push({ type: "break" });
+      }
+      if (line) {
+        transformed.push({ data: child.data, type: "text", value: line });
+      }
+    }
+  }
+
+  parent.children = transformed;
+}
+
 const markdownComponents: Components = {
   a: ({ children, href }) =>
     isSafeDestination(href) ? (
@@ -315,7 +368,11 @@ const markdownComponents: Components = {
   },
 };
 
-const remarkPlugins: NonNullable<ReactMarkdownOptions["remarkPlugins"]> = [remarkGfm, remarkMath];
+const remarkPlugins: NonNullable<ReactMarkdownOptions["remarkPlugins"]> = [
+  remarkGfm,
+  remarkMath,
+  preserveAuthoredLineEndings,
+];
 
 const rehypePlugins: NonNullable<ReactMarkdownOptions["rehypePlugins"]> = [
   filterCodeLanguages,
