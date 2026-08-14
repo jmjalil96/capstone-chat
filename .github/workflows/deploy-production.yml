@@ -105,7 +105,11 @@ jobs:
 
       - name: Verify exact doctl version
         if: ${{ inputs.operation == 'deploy' }}
-        run: test "$(doctl version)" = "doctl version 1.166.0-release"
+        run: |-
+          doctl_version="$(doctl version)"
+          test "$(printf '%s\n' "$doctl_version" | sed -n '1p')" = "doctl version 1.166.0-release"
+          test "$(printf '%s\n' "$doctl_version" | sed -n '2p')" = "Git commit hash: b98e7442"
+          test "$(printf '%s\n' "$doctl_version" | wc -l | tr -d ' ')" = "2"
 
       - name: Validate App Platform source authority
         if: ${{ inputs.operation == 'deploy' }}

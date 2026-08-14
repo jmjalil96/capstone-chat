@@ -12,6 +12,12 @@ const deploymentRevisionBinding = ["$", "{_self.COMMIT_HASH}"].join("");
 const starterDomainBinding = ["$", "{STARTER_DOMAIN}"].join("");
 const releaseOperationBinding = ["$", "{{ inputs.operation }}"].join("");
 const deployTokenBinding = ["$", "{{ secrets.DIGITALOCEAN_DEPLOY_TOKEN }}"].join("");
+const exactDoctlVersionCheck = [
+  'doctl_version="$(doctl version)"',
+  `test "$(printf '%s\\n' "$doctl_version" | sed -n '1p')" = "doctl version 1.166.0-release"`,
+  `test "$(printf '%s\\n' "$doctl_version" | sed -n '2p')" = "Git commit hash: b98e7442"`,
+  `test "$(printf '%s\\n' "$doctl_version" | wc -l | tr -d ' ')" = "2"`,
+].join("\n");
 const requiredDeploymentFiles = [
   "README.md",
   "app.contract.yaml",
@@ -298,13 +304,13 @@ function inspectOperationsContract() {
       releaseStep("Install doctl")?.uses ===
         "digitalocean/action-doctl@3cb3953159719656269e044e0e24ca16dd2a690f" &&
       releaseStep("Install doctl")?.with?.no_auth === true &&
+      releaseStep("Install doctl")?.with?.version === "1.166.0" &&
       releaseStep("Install doctl")?.with?.token === undefined &&
       releaseStep("Install locked validator dependency")?.if?.includes("operation == 'deploy'") &&
       releaseStep("Install locked validator dependency")?.run ===
         "pnpm install --frozen-lockfile --ignore-scripts --filter capstone-chat" &&
       releaseStep("Verify exact doctl version")?.if?.includes("operation == 'deploy'") &&
-      releaseStep("Verify exact doctl version")?.run ===
-        'test "$(doctl version)" = "doctl version 1.166.0-release"' &&
+      releaseStep("Verify exact doctl version")?.run === exactDoctlVersionCheck &&
       [
         "Validate App Platform source authority",
         "Build and deploy the source pointer",
