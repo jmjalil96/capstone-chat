@@ -6,7 +6,7 @@ Status: locked for v1
 
 **Locked**
 
-Every OpenRouter request creates a generation record. Chat responses and hidden context-compaction calls are both accounted for.
+Every OpenRouter request creates a generation record. Chat responses, hidden context-compaction calls, and (Phase 10) hidden automatic-title calls are all accounted for.
 
 The record includes:
 
@@ -16,7 +16,7 @@ workspace_id
 user_id
 conversation_id
 assistant_message_id
-purpose                    chat | compaction
+purpose                    chat | compaction | title
 tier
 requested_model
 resolved_model
@@ -42,6 +42,7 @@ Rules:
 - Monetary values use PostgreSQL `numeric`, never floating-point arithmetic.
 - Completed, cancelled, incomplete, and failed generations remain recorded.
 - Compaction cost is visible to administrators.
+- Title cost is visible to administrators as `Título` (Phase 10). Title calls always use the Fast mapping, are bounded to 32 output tokens, skip the employee concurrency limit like compaction, and still respect the workspace budget ceiling.
 - Timing fields support measurement of time to first token, generation duration, and total latency.
 - Daily and monthly reporting is derived from generation records initially; no separate analytics system is introduced in v1.
 - Non-content generation metadata is retained for accounting after conversation content is permanently deleted.
@@ -77,7 +78,7 @@ The budget check and reservation occur in one PostgreSQL transaction with row lo
 
 Reservations expire. A reconciliation process identifies abandoned generations after an API crash and releases their unused reservations.
 
-Each Fastify replica runs a narrow PostgreSQL-backed reconciler. Replicas claim expired records with transactional row locking and `SKIP LOCKED`, mark abandoned generations incomplete, and settle expired reservations. If a process dies before Capstone receives OpenRouter's final usage event, the reconciler retains a conservative estimated charge marked as estimated rather than risk undercounting against the hard workspace budget.
+Each Fastify replica runs narrow PostgreSQL-backed reconcilers. Replicas claim expired records with transactional row locking and `SKIP LOCKED`; abandoned active chat/compaction work retains useful partial content as incomplete, abandoned title work fails with `GENERATION_TIMEOUT`, and answer-durable `finalizing` parents complete. Expired reservations settle independently. If a process dies before Capstone receives OpenRouter's final usage event, reconciliation retains a conservative estimated charge marked as estimated rather than risk undercounting against the hard workspace budget.
 
 Only one generation may be active per conversation. PostgreSQL enforces this invariant across API replicas, while a separately configurable per-employee concurrency limit controls simultaneous generations across different conversations.
 
@@ -89,7 +90,7 @@ Cancellation propagates through the complete request path:
 
 ```text
 employee stops response
--> browser aborts fetch
+-> browser sends the explicit Stop request
 -> Fastify detects cancellation
 -> Fastify aborts the OpenRouter request
 -> partial content is retained
@@ -98,13 +99,19 @@ employee stops response
 -> unused reservation is released
 ```
 
-Connection loss follows the same upstream-cancellation path. V1 does not resume an interrupted stream or automatically generate a replacement response.
+Connection loss is presentation detachment, not cancellation. Fastify keeps provider work,
+checkpointing, accounting, and terminalization alive while the producing process survives; the
+browser reattaches to that same generation through the durable updates endpoint. V1 does not resume
+the original byte stream and never automatically creates a replacement response.
 
-Stream forwarding honors downstream backpressure and bounded buffering. Database checkpoints are coalesced, terminal writes are guarded against races, and a completion event is sent only after content and accounting have been durably committed.
+Stream forwarding honors downstream backpressure and bounded buffering. A five-second stalled
+writer is detached by destroying its socket without aborting upstream work. Database checkpoints are
+coalesced, terminal writes are guarded against races, and a completion event is sent only after
+content and accounting have been durably committed.
 
 While a connected downstream response is otherwise quiet, Fastify emits the approved content-free
 `stream.heartbeat` every 15 seconds. The browser bounds downstream silence at 35 seconds, then
-performs the same canonical incomplete-response recovery as another interrupted transport. A
+detaches that transport and reattaches through durable updates. A
 heartbeat never changes content, accounting, first-token timing, checkpoints, or lifecycle state.
 
 ## Fallback and retry policy
@@ -132,7 +139,9 @@ Every upstream request has separately configurable limits for:
 
 Employees receive stable Capstone error codes and recoverable UI states. Raw upstream errors and correlation metadata remain available to administrators and server-side diagnostics.
 
-Raw diagnostic data must not include employee prompts, model responses, or compaction summaries. OpenRouter routing is required to use `data_collection: "deny"` and `zdr: true` for every generation.
+Raw diagnostic data must not include employee prompts, model responses, compaction summaries, title
+text, report notes or reasons, cursors, report/message identifiers, or raw provider/report payloads.
+OpenRouter routing is required to use `data_collection: "deny"` and `zdr: true` for every generation.
 
 ## Production launch operating values
 

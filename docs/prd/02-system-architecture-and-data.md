@@ -37,7 +37,10 @@ The initial system does not introduce microservices, Redis, or a separate queue.
 - Liveness checks confirm that the process is functioning without depending on external services.
 - Readiness rejects new traffic while a replica is starting, unhealthy, or draining.
 - During deployment, a replica stops accepting new requests and drains active streams for a configured period.
-- Streams remaining after the drain period are cancelled and retained as incomplete.
+- Streams remaining after the drain period settle by lifecycle: ordinary active chat/compaction work
+  retains useful partial content as incomplete, while an answer-durable `finalizing` chat completes
+  and its hidden title work is cancelled. A stream whose browser disconnected keeps producing until
+  it completes, is stopped, or the drain period ends (Phase 10).
 - Production credentials are delivered as component-scoped DigitalOcean App Platform encrypted
   environment variables; recoverable source copies remain in the approved company-controlled
   password manager and never enter the image, repository, process arguments, or application logs.
@@ -75,7 +78,9 @@ binding recovery objective; that exception does not weaken any controlled recove
 - PostgreSQL is the source of truth for due reconciliation work.
 - Replicas claim short batches transactionally with row locking and `SKIP LOCKED`.
 - Reconciliation operations are small, idempotent, and recoverable.
-- V1 reconciliation marks abandoned generations incomplete and settles expired budget reservations.
+- V1 reconciliation retains abandoned active chat/compaction work as incomplete, fails abandoned
+  title work with `GENERATION_TIMEOUT`, completes answer-durable `finalizing` parents, and settles
+  expired budget reservations.
 - A replica stopping mid-pass leaves records eligible for another replica.
 - Failures contain metadata only and are retried on a later pass.
 - Context compaction and employee generations do not become background jobs.
@@ -224,7 +229,7 @@ The browser does not hold provider credentials, construct authoritative model pr
 
 - React Router owns URLs and navigation.
 - TanStack Query owns persisted server state, including conversations, history, drafts, session data, and administrative data.
-- A small plain-TypeScript `ChatRuntime` owns active streams, accumulated deltas, and abort controllers.
+- A small plain-TypeScript `ChatRuntime` owns active streams, accumulated deltas, abort controllers, and (Phase 10) durable reattachment through the updates endpoint, including the `reattaching` and `naming` phases.
 - Component-local React state owns temporary presentation state.
 - Active streams live outside route components and continue when navigating between conversations.
 - Token deltas do not update the TanStack Query cache one chunk at a time.
@@ -280,9 +285,11 @@ Better Auth rate limiting uses PostgreSQL storage so it applies across replicas.
 
 **Locked**
 
-- Application logs never contain prompts, responses, compaction summaries, or raw provider payloads.
-- Logs contain only identifiers, lifecycle status, timing, token counts, cost, and sanitized error information.
-- External observability systems receive metadata only.
+- Application logs never contain prompts, responses, compaction summaries, title text, report notes
+  or reasons, cursors, report/message identifiers, or raw provider/report payloads.
+- Logs contain only approved content-free correlation metadata, lifecycle status, timing, token
+  counts, cost, and sanitized error information.
+- External observability systems receive the same bounded metadata only.
 - OpenRouter input/output logging and data-discount logging remain disabled.
 - Every OpenRouter request denies provider data collection and requires Zero Data Retention.
 - If no eligible endpoint satisfies the privacy policy, the request fails instead of weakening the policy.

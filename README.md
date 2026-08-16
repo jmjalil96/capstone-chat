@@ -254,7 +254,11 @@ and a session authenticated within the last 15 minutes for every mutation.
   and change the hard monthly workspace budget atomically.
 - `/admin/usage` reports the current workspace-local month. It separates actual, estimated, and
   still-reserved cost and groups content-free token/cost metadata by employee, tier, and purpose
-  (`chat` or `compaction`). It never exposes conversations, prompts, responses, or summaries.
+  (`chat`, `compaction`, or `title`). It never exposes conversations, prompts, responses, or
+  summaries.
+- `/admin/reports` is the read-only inbox for answers employees explicitly reported. Each item
+  shows the reporter, reason, time, and note; opening one fetches only the consented prompt/answer
+  pair. There is no status, filter, export, notification, or link to the conversation.
 
 The development fake sender delivers administrator invitations to `/api/dev/mailbox`. Production
 uses the bounded native-fetch Resend adapter and the verified `mail.capstone.com.ec` sender; it does
@@ -323,8 +327,20 @@ incrementally through the same safe Markdown path as persisted messages.
   another replica preserves the latest durable checkpoint.
 - A response ending because of the output limit exposes **Continuar**. Its backend-owned visible
   message does not consume a separately typed draft.
-- Interrupted streams are never resumed or automatically retried. The browser reloads canonical
-  messages and lifecycle state; explicit employee action is required to generate again.
+- A lost NDJSON transport no longer cancels the response (Phase 10). The producing API keeps
+  consuming, checkpointing, and terminalizing; the browser reattaches to the same generation
+  through the durable `POST …/responses/:generationId/updates` long-poll and continues presenting
+  it, showing **Reconectando respuesta…** meanwhile. Reloads and new tabs attach the same way.
+  Explicit Stop, logout, deletion, deactivation, provider limits, the five-minute ceiling, and
+  shutdown remain the cancellation paths, and no replacement generation is ever created
+  automatically.
+- After a new conversation's first root answer completes, one hidden Fast call names the
+  conversation inside an eight-second naming phase (**Nombrando conversación…**); the local fake
+  produces `Conversación simulada`. Manual renames always win, and any naming failure keeps the
+  deterministic first-message title.
+- Employees may **Reportar** a finished answer. After an explicit consent dialog, that answer and
+  its direct prompt become visible to administrators in the read-only **Reportes** inbox; nothing
+  else about the conversation is exposed, and the report disappears with its source.
 - User messages are limited to 32,768 UTF-8 bytes. Assistant accumulation and selected-branch
   context are each bounded at 1 MiB.
 
@@ -356,8 +372,8 @@ Long selected branches are planned entirely by Fastify. At 80% of the smaller sa
 budget, the server reuses an applicable persisted summary or makes one synchronous hidden Fast call.
 Normal compaction keeps the newest eight complete turns verbatim, never changes or deletes original
 messages, and records the hidden call under purpose `compaction`. Its summary and deltas never enter
-the browser, search, logs, or administrator responses. Stop and disconnect cancel both the hidden
-work and the waiting chat.
+the browser, search, logs, or administrator responses. Stop cancels both the hidden work and the
+waiting chat; a lost browser connection alone no longer does.
 
 If compaction is unavailable, rejected by the hard budget, or ends without a reusable summary, the
 chat proceeds once with the newest bounded turns and displays a context warning. The fallback keeps

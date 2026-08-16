@@ -256,7 +256,9 @@ function requestBody(request: GenerationRequest, route: RequestRoute): Record<st
       require_parameters: true,
       zdr: true,
     },
-    reasoning: { exclude: true },
+    // Titles disable hidden reasoning entirely: with a 32-token cap, reasoning models otherwise spend
+    // the whole budget before emitting any visible title text and finish with `length`.
+    reasoning: request.purpose === "title" ? { enabled: false, exclude: true } : { exclude: true },
     stream: true,
   };
 }

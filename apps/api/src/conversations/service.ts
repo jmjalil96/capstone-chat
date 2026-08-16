@@ -14,11 +14,11 @@ import type {
   MessageContent,
 } from "@capstone/protocol";
 import { ALTERNATIVE_CONTEXT_MAX_MESSAGE_IDS } from "@capstone/protocol";
-import { and, desc, eq, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
 import type { ModelGatewayMode } from "../config.js";
 import { conversations, drafts, messages } from "../database/conversation-schema.js";
 import type { AppDatabase } from "../database/database.js";
-import { generations } from "../database/generation-schema.js";
+import { generations, nonterminalGenerationStatuses } from "../database/generation-schema.js";
 import { isPostgresError } from "../database/postgres-error.js";
 import { ApplicationError } from "../errors.js";
 import type { RequestActor } from "../identity/authorization.js";
@@ -540,18 +540,35 @@ export function createConversationService(
         return notFound();
       }
       if (conversation.title === title) {
+        // A same-title rename stays a revision no-op but still records manual intent so a pending
+        // automatic title can never overwrite the employee's choice.
+        if (conversation.automaticTitlePending) {
+          await transaction
+            .update(conversations)
+            .set({ automaticTitlePending: false })
+            .where(eq(conversations.id, conversation.id));
+        }
         return toSummary(conversation);
       }
-      if (conversation.revision !== observedRevision) {
+      const automaticTitleSettledSinceObservation =
+        conversation.revision === observedRevision + 1 &&
+        conversation.automaticTitleSettledRevision === conversation.revision;
+      if (conversation.revision !== observedRevision && !automaticTitleSettledSinceObservation) {
         return changed();
       }
+      const currentRevision = conversation.revision;
       const updated = await transaction
         .update(conversations)
-        .set({ revision: conversation.revision + 1, title, updatedAt: new Date() })
+        .set({
+          automaticTitlePending: false,
+          revision: currentRevision + 1,
+          title,
+          updatedAt: new Date(),
+        })
         .where(
           and(
             ownedConversationWhere(actor, conversationId),
-            eq(conversations.revision, observedRevision),
+            eq(conversations.revision, currentRevision),
           ),
         )
         .returning();
@@ -583,7 +600,12 @@ export function createConversationService(
     const preflightActiveGenerations = await database
       .select({ id: generations.id })
       .from(generations)
-      .where(and(eq(generations.conversationId, conversationId), eq(generations.status, "active")))
+      .where(
+        and(
+          eq(generations.conversationId, conversationId),
+          inArray(generations.status, [...nonterminalGenerationStatuses]),
+        ),
+      )
       .limit(1);
     if (preflightActiveGenerations.length !== 0) {
       throw new ApplicationError(409, "GENERATION_ACTIVE", conversationCopy.generationActive);
@@ -695,7 +717,10 @@ export function createConversationService(
         .select({ id: generations.id })
         .from(generations)
         .where(
-          and(eq(generations.conversationId, conversationId), eq(generations.status, "active")),
+          and(
+            eq(generations.conversationId, conversationId),
+            inArray(generations.status, [...nonterminalGenerationStatuses]),
+          ),
         )
         .limit(1);
       if (activeGenerations.length !== 0) {
@@ -875,7 +900,10 @@ export function createConversationService(
         .select({ id: generations.id })
         .from(generations)
         .where(
-          and(eq(generations.conversationId, conversationId), eq(generations.status, "active")),
+          and(
+            eq(generations.conversationId, conversationId),
+            inArray(generations.status, [...nonterminalGenerationStatuses]),
+          ),
         )
         .limit(1);
       if (activeRows.length !== 0) {
@@ -960,6 +988,19 @@ export function createConversationService(
       }
       if ((conversation.archivedAt !== null) === archived) {
         return toSummary(conversation);
+      }
+      const activeRows = await transaction
+        .select({ id: generations.id })
+        .from(generations)
+        .where(
+          and(
+            eq(generations.conversationId, conversationId),
+            inArray(generations.status, [...nonterminalGenerationStatuses]),
+          ),
+        )
+        .limit(1);
+      if (activeRows.length !== 0) {
+        throw new ApplicationError(409, "GENERATION_ACTIVE", conversationCopy.generationActive);
       }
       if (conversation.revision !== observedRevision) {
         return changed();

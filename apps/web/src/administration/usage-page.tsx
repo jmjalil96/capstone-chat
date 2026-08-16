@@ -183,7 +183,7 @@ export function UsagePage() {
                     item.groups.map((group) => (
                       <tr key={`${group.tier}:${group.purpose}`}>
                         <th scope="row">{copy.conversations.modelTiers.tiers[group.tier].name}</th>
-                        <td>{copy.administration.usage[group.purpose]}</td>
+                        <td>{copy.administration.usage.purposes[group.purpose]}</td>
                         <td>{integerFormatter.format(group.generationCount)}</td>
                         <td>{integer(group.promptTokens)}</td>
                         <td>{integer(group.completionTokens)}</td>

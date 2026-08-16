@@ -20,6 +20,8 @@ export interface RequestActor {
   readonly session: {
     readonly createdAt: Date;
     readonly expiresAt: Date;
+    /** Durable Better Auth session authority used to fence response admission. */
+    readonly id: string;
   };
   readonly workspace: {
     readonly id: string;
@@ -138,6 +140,7 @@ export function createActorResolver(authentication: Authentication, identity: Id
         session: Object.freeze({
           createdAt: new Date(authSession.session.createdAt),
           expiresAt: new Date(authSession.session.expiresAt),
+          id: authSession.session.id,
         }),
         workspace: Object.freeze({
           id: membership.workspaceId,

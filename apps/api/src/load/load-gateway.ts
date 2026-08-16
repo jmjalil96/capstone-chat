@@ -10,12 +10,12 @@ import type {
 import { initialTierModels } from "../model-policy/catalog.js";
 
 const loadMessage =
-  /^CAPSTONE_LOAD_V1:([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}):(\d):(\d{1,2}):(\d):(normal|cancel|failure|large|seed|slow)$/u;
+  /^CAPSTONE_LOAD_V1:([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}):(\d):(\d{1,2}):(\d):(normal|cancel|failure|large|reattach|seed|slow)$/u;
 
 const loadProvider = "capstone-load-rehearsal";
 const measuredActiveWindowMilliseconds = 15_000;
 const loadProviderGeneration =
-  /^load-(?:compaction|[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}-\d-\d{1,2}-\d)-[a-z0-9]+$/u;
+  /^load-(?:compaction|title|[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}-\d-\d{1,2}-\d)-[a-z0-9]+$/u;
 const controlledReservationProviderGeneration =
   /^load-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}-[0-5]-2-0-[a-z0-9]+$/u;
 
@@ -65,6 +65,20 @@ export function loadRehearsalSteps(
   request: GenerationRequest,
   providerAttempt = "fixture",
 ): readonly FakeGatewayStep[] {
+  if (request.purpose === "title") {
+    const metadata = providerMetadata(
+      `load-title-${providerAttempt}`,
+      request.route?.requestedModel,
+    );
+    return [
+      { event: { metadata, type: "generation.metadata" } },
+      {
+        delayMilliseconds: 100,
+        event: { text: "Título sintético de carga", type: "content.delta" },
+      },
+      completedAfter(48, 6, metadata, 200),
+    ];
+  }
   if (request.purpose !== "chat") {
     const metadata = providerMetadata(
       `load-compaction-${providerAttempt}`,
@@ -217,7 +231,8 @@ export class LoadModelGateway implements ModelGateway, GenerationAccountingGatew
 }
 
 function initialTierModel(providerGenerationId: string): string {
-  return providerGenerationId.startsWith("load-compaction-")
+  return providerGenerationId.startsWith("load-compaction-") ||
+    providerGenerationId.startsWith("load-title-")
     ? initialTierModels.fast
     : initialTierModels.balanced;
 }

@@ -12,6 +12,7 @@ import {
 import {
   telemetryHistogramBoundaries,
   telemetryMetrics,
+  telemetrySafeHttpRoutes,
 } from "../src/observability/telemetry-contract.js";
 
 let shutdownTelemetry: (() => Promise<void>) | undefined;
@@ -199,6 +200,14 @@ describe("content-free application telemetry", () => {
         "url.query",
       ]),
     );
+    for (const route of [
+      "/api/admin/answer-reports",
+      "/api/admin/answer-reports/:reportId",
+      "/api/conversations/:conversationId/answer-report-states",
+      "/api/conversations/:conversationId/messages/:messageId/report",
+    ]) {
+      expect(telemetrySafeHttpRoutes.has(route)).toBe(true);
+    }
   });
 
   it("uses an inert implementation when OTLP is disabled", async () => {

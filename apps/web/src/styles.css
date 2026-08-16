@@ -2642,3 +2642,113 @@ select:focus-visible,
     animation: none;
   }
 }
+
+/* Phase 10 — answer report dialog */
+.answer-report-reasons {
+  margin: 0 0 var(--capstone-space-4);
+  padding: 0;
+  border: 0;
+}
+
+.answer-report-reasons legend {
+  padding: 0;
+  margin-block-end: var(--capstone-space-2);
+  font-weight: var(--capstone-weight-semibold);
+}
+
+.answer-report-reason {
+  display: flex;
+  align-items: center;
+  gap: var(--capstone-space-2);
+  min-height: 2.75rem;
+  font-weight: var(--capstone-weight-regular);
+}
+
+.answer-report-reason input {
+  inline-size: 1.125rem;
+  block-size: 1.125rem;
+  margin: 0;
+  accent-color: var(--app-accent);
+}
+
+.answer-report-dialog textarea {
+  inline-size: 100%;
+  min-block-size: 4.5rem;
+  resize: vertical;
+}
+
+.answer-report-disclosure {
+  margin-block: var(--capstone-space-4) 0;
+  padding: var(--capstone-space-3);
+  border-inline-start: 3px solid var(--app-accent);
+  background: color-mix(in srgb, var(--app-accent) 8%, transparent);
+  font-size: var(--capstone-type-small);
+}
+
+.message-action[data-report-state="reported"] {
+  cursor: default;
+  opacity: 0.72;
+}
+
+/* Phase 10 — administrator report inbox */
+.admin-report-list {
+  display: grid;
+  gap: var(--capstone-space-3);
+}
+
+.admin-report-item {
+  display: grid;
+  gap: var(--capstone-space-2);
+  padding: var(--capstone-space-4);
+  border: 1px solid var(--app-border);
+  border-radius: var(--capstone-radius-md);
+  background: var(--app-panel);
+}
+
+.admin-report-item header {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: var(--capstone-space-2);
+}
+
+.admin-report-item p {
+  margin: 0;
+}
+
+.admin-report-note {
+  white-space: pre-wrap;
+}
+
+.admin-report-dialog {
+  width: min(calc(100% - 2 * var(--capstone-gutter-small)), 44rem);
+  max-block-size: min(85vh, 48rem);
+  overflow: auto;
+}
+
+.admin-report-exchange {
+  display: grid;
+  gap: var(--capstone-space-4);
+}
+
+.admin-report-exchange section {
+  padding: var(--capstone-space-3);
+  border: 1px solid var(--app-border);
+  border-radius: var(--capstone-radius-md);
+}
+
+.admin-report-exchange h3 {
+  margin: 0 0 var(--capstone-space-2);
+  font-size: var(--capstone-type-small);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.admin-report-exchange pre {
+  margin: 0;
+  max-block-size: 18rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: inherit;
+}

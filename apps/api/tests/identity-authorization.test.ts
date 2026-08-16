@@ -22,6 +22,7 @@ function actor(role: "admin" | "member", createdAt = now): RequestActor {
     session: {
       createdAt,
       expiresAt: new Date("2026-08-13T18:00:00.000Z"),
+      id: "session-123",
     },
     workspace: {
       id: "workspace-123",

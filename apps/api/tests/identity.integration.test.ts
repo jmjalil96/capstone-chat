@@ -1,5 +1,5 @@
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import type { LightMyRequestResponse } from "fastify";
 import { Pool } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -10,13 +10,16 @@ import {
   session as sessionTable,
   user as userTable,
 } from "../src/database/auth-schema.generated.js";
+import { conversations, messages } from "../src/database/conversation-schema.js";
 import { createDatabase } from "../src/database/database.js";
+import { generations } from "../src/database/generation-schema.js";
 import {
   employeeApprovals,
   workspaceMemberships,
   workspaces,
 } from "../src/database/identity-schema.js";
 import { migrateDatabase } from "../src/database/migrate.js";
+import type { GenerationAdministrationService } from "../src/generations/administration.js";
 import type { ModelGateway } from "../src/generations/model-gateway.js";
 import { type EmailSender, FakeEmailSender } from "../src/identity/email.js";
 import { ResendEmailSender } from "../src/identity/resend-email.js";
@@ -104,7 +107,10 @@ describe.sequential("identity integration", () => {
     await container.stop();
   });
 
-  function startApplication(sender: EmailSender = new FakeEmailSender()): ApiApplication {
+  function startApplication(
+    sender: EmailSender = new FakeEmailSender(),
+    generationAdministration?: GenerationAdministrationService,
+  ): ApiApplication {
     const started = createApplication(
       loadConfig({
         BETTER_AUTH_SECRET: "capstone-chat-test-secret-with-more-than-thirty-two-characters",
@@ -114,7 +120,7 @@ describe.sequential("identity integration", () => {
         NODE_ENV: "test",
         PUBLIC_ORIGIN: publicOrigin,
       }),
-      { emailSender: sender },
+      { emailSender: sender, ...(generationAdministration ? { generationAdministration } : {}) },
     );
     application = started;
     return started;
@@ -215,6 +221,267 @@ describe.sequential("identity integration", () => {
       rememberMe,
     });
   }
+
+  it("cancels the employee's active work durably before sign-out and stays idempotent", async () => {
+    const sender = new FakeEmailSender();
+    const app = startApplication(sender);
+    await registerActiveAdministrator(app, sender);
+    const signedIn = await signIn(app);
+    expect(signedIn.statusCode).toBe(200);
+    const cookie = cookieHeader(signedIn);
+    const admin = await app.database.query.user.findFirst({
+      where: eq(userTable.email, adminEmail),
+    });
+    const workspace = await app.database.query.workspaces.findFirst();
+    if (admin === undefined || workspace === undefined) {
+      throw new Error("The sign-out fixture is missing its administrator or workspace");
+    }
+    const conversationRows = await app.database
+      .insert(conversations)
+      .values({ title: "Trabajo en curso", userId: admin.id, workspaceId: workspace.id })
+      .returning({ id: conversations.id });
+    const conversationId = conversationRows[0]?.id ?? "";
+    const userMessage = await app.database
+      .insert(messages)
+      .values({
+        content: [{ text: "Pregunta", type: "text" }],
+        conversationId,
+        parentMessageId: null,
+        role: "user",
+      })
+      .returning({ id: messages.id });
+    const assistantMessage = await app.database
+      .insert(messages)
+      .values({
+        content: [{ text: "", type: "text" }],
+        conversationId,
+        parentMessageId: userMessage[0]?.id ?? null,
+        role: "assistant",
+      })
+      .returning({ id: messages.id });
+    const activeRows = await app.database
+      .insert(generations)
+      .values({
+        assistantMessageId: assistantMessage[0]?.id ?? null,
+        conversationId,
+        effectiveParameters: { context: { mode: "full" } },
+        idempotencyKey: "0f5cbe0d-8f4c-4a3f-a5c6-6a3a3a1c9b01",
+        purpose: "chat",
+        requestedTier: "balanced",
+        status: "active",
+        systemPromptVersion: "capstone-chat-v1",
+        userId: admin.id,
+        workspaceId: workspace.id,
+      })
+      .returning({ id: generations.id });
+    const generationId = activeRows[0]?.id ?? "";
+    const secondWorkspaceId = "8c47e9b9-f52f-46ba-9f95-3818e160e71e";
+    await app.database.insert(workspaces).values({
+      displayName: "Segundo espacio",
+      id: secondWorkspaceId,
+      identity: "second-sign-out-workspace",
+    });
+    await app.database.insert(workspaceMemberships).values({
+      role: "admin",
+      status: "active",
+      userId: admin.id,
+      workspaceId: secondWorkspaceId,
+    });
+    const secondConversationRows = await app.database
+      .insert(conversations)
+      .values({ title: "Segundo trabajo", userId: admin.id, workspaceId: secondWorkspaceId })
+      .returning({ id: conversations.id });
+    const secondConversationId = secondConversationRows[0]?.id ?? "";
+    const secondPromptRows = await app.database
+      .insert(messages)
+      .values({
+        content: [{ text: "Otra pregunta", type: "text" }],
+        conversationId: secondConversationId,
+        parentMessageId: null,
+        role: "user",
+      })
+      .returning({ id: messages.id });
+    const secondAnswerRows = await app.database
+      .insert(messages)
+      .values({
+        content: [{ text: "", type: "text" }],
+        conversationId: secondConversationId,
+        parentMessageId: secondPromptRows[0]?.id ?? null,
+        role: "assistant",
+      })
+      .returning({ id: messages.id });
+    const secondGenerationRows = await app.database
+      .insert(generations)
+      .values({
+        assistantMessageId: secondAnswerRows[0]?.id ?? null,
+        conversationId: secondConversationId,
+        effectiveParameters: { context: { mode: "full" } },
+        idempotencyKey: "89628ebc-e67e-4ace-9f5c-bb7290763b2e",
+        purpose: "chat",
+        requestedTier: "balanced",
+        status: "active",
+        systemPromptVersion: "capstone-chat-v1",
+        userId: admin.id,
+        workspaceId: secondWorkspaceId,
+      })
+      .returning({ id: generations.id });
+    const secondGenerationId = secondGenerationRows[0]?.id ?? "";
+
+    const simultaneous = await Promise.all([
+      authPost(app, "/sign-out", {}, cookie),
+      authPost(app, "/sign-out", {}, cookie),
+    ]);
+    expect(simultaneous.map((response) => response.statusCode)).toEqual([200, 200]);
+    const settled = await app.database
+      .select({
+        id: generations.id,
+        status: generations.status,
+        terminalReason: generations.terminalReason,
+      })
+      .from(generations);
+    expect(settled).toEqual(
+      expect.arrayContaining([
+        { id: generationId, status: "cancelled", terminalReason: "cancelled" },
+        { id: secondGenerationId, status: "cancelled", terminalReason: "cancelled" },
+      ]),
+    );
+    expect(await app.database.select().from(sessionTable)).toHaveLength(0);
+    const revised = await app.database.query.conversations.findFirst({
+      where: eq(conversations.id, conversationId),
+    });
+    expect(revised?.revision).toBe(1);
+    const secondRevised = await app.database.query.conversations.findFirst({
+      where: eq(conversations.id, secondConversationId),
+    });
+    expect(secondRevised?.revision).toBe(1);
+
+    // Signing out again without a session is idempotent and touches no work.
+    const again = await authPost(app, "/sign-out", {}, undefined);
+    expect(again.statusCode).toBe(200);
+  });
+
+  it("preserves the authenticated session and cookie when durable sign-out cleanup fails", async () => {
+    const sender = new FakeEmailSender();
+    const failingAdministration = {
+      cancelEmployeeWork: async () => Object.freeze([]),
+      recordSettlementTelemetry: () => undefined,
+      settleEmployeeWorkInTransaction: async () => {
+        throw new Error("synthetic sign-out settlement failure");
+      },
+    } satisfies GenerationAdministrationService;
+    const app = startApplication(sender, failingAdministration);
+    await registerActiveAdministrator(app, sender);
+    const signedIn = await signIn(app);
+    const cookie = cookieHeader(signedIn);
+
+    const failed = await authPost(app, "/sign-out", {}, cookie);
+
+    expect(failed.statusCode).toBe(503);
+    expect(failed.json()).toMatchObject({ code: "SIGN_OUT_CANCELLATION_FAILED" });
+    expect(setCookies(failed)).toHaveLength(0);
+    expect(await app.database.select().from(sessionTable)).toHaveLength(1);
+    const stillAuthenticated = await app.server.inject({
+      method: "GET",
+      url: "/api/session",
+      headers: { cookie },
+    });
+    expect(stillAuthenticated.statusCode).toBe(200);
+  });
+
+  it("rolls back settled work when the fenced session deletion fails", async () => {
+    const sender = new FakeEmailSender();
+    const app = startApplication(sender);
+    await registerActiveAdministrator(app, sender);
+    const signedIn = await signIn(app);
+    const cookie = cookieHeader(signedIn);
+    const admin = await app.database.query.user.findFirst({
+      where: eq(userTable.email, adminEmail),
+    });
+    const workspace = await app.database.query.workspaces.findFirst();
+    if (admin === undefined || workspace === undefined) {
+      throw new Error("The sign-out rollback fixture is incomplete");
+    }
+    const conversationRows = await app.database
+      .insert(conversations)
+      .values({ title: "Trabajo protegido", userId: admin.id, workspaceId: workspace.id })
+      .returning({ id: conversations.id });
+    const conversationId = conversationRows[0]?.id ?? "";
+    const promptRows = await app.database
+      .insert(messages)
+      .values({
+        content: [{ text: "Pregunta protegida", type: "text" }],
+        conversationId,
+        parentMessageId: null,
+        role: "user",
+      })
+      .returning({ id: messages.id });
+    const answerRows = await app.database
+      .insert(messages)
+      .values({
+        content: [{ text: "", type: "text" }],
+        conversationId,
+        parentMessageId: promptRows[0]?.id ?? null,
+        role: "assistant",
+      })
+      .returning({ id: messages.id });
+    const generationRows = await app.database
+      .insert(generations)
+      .values({
+        assistantMessageId: answerRows[0]?.id ?? null,
+        conversationId,
+        effectiveParameters: { context: { mode: "full" } },
+        idempotencyKey: "7b61cf18-9d83-42be-89f4-59d4a57b7071",
+        purpose: "chat",
+        requestedTier: "balanced",
+        status: "active",
+        systemPromptVersion: "capstone-chat-v1",
+        userId: admin.id,
+        workspaceId: workspace.id,
+      })
+      .returning({ id: generations.id });
+    const generationId = generationRows[0]?.id ?? "";
+
+    await app.database.execute(sql`
+      CREATE OR REPLACE FUNCTION fail_phase10_session_delete() RETURNS trigger AS $$
+      BEGIN
+        RAISE EXCEPTION 'synthetic session deletion failure';
+      END;
+      $$ LANGUAGE plpgsql;
+      CREATE TRIGGER fail_phase10_session_delete
+      BEFORE DELETE ON session
+      FOR EACH ROW EXECUTE FUNCTION fail_phase10_session_delete();
+    `);
+    const failed = await (async () => {
+      try {
+        return await authPost(app, "/sign-out", {}, cookie);
+      } finally {
+        await app.database.execute(sql`
+          DROP TRIGGER IF EXISTS fail_phase10_session_delete ON session;
+          DROP FUNCTION IF EXISTS fail_phase10_session_delete();
+        `);
+      }
+    })();
+
+    expect(failed.statusCode).toBe(503);
+    expect(failed.json()).toMatchObject({ code: "SIGN_OUT_CANCELLATION_FAILED" });
+    expect(setCookies(failed)).toHaveLength(0);
+    await expect(app.database.select().from(sessionTable)).resolves.toHaveLength(1);
+    await expect(
+      app.database.select().from(generations).where(eq(generations.id, generationId)),
+    ).resolves.toMatchObject([{ status: "active" }]);
+    await expect(
+      app.database
+        .select({ revision: conversations.revision })
+        .from(conversations)
+        .where(eq(conversations.id, conversationId)),
+    ).resolves.toEqual([{ revision: 0 }]);
+    const stillAuthenticated = await app.server.inject({
+      method: "GET",
+      url: "/api/session",
+      headers: { cookie },
+    });
+    expect(stillAuthenticated.statusCode).toBe(200);
+  });
 
   it("keeps approval status generic while enforcing identical registration bounds", async () => {
     const sender = new FakeEmailSender();

@@ -8,6 +8,7 @@ import type {
 } from "@capstone/protocol";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { hasUnsupportedControlCharacter } from "../conversations/content.js";
+import { isTerminalGenerationStatus } from "../database/generation-schema.js";
 import { promoteToStreamingResponse } from "../http-request-drain.js";
 import type {
   ApplicationTelemetry,
@@ -37,6 +38,7 @@ import type {
   TerminalGenerationResult,
 } from "./service.js";
 import { generationTuning } from "./settings.js";
+import { type NamingHandoff, runTitleGeneration, type TitleOutcome } from "./title-service.js";
 
 class StreamTransportError extends Error {
   constructor(message: string) {
@@ -55,17 +57,37 @@ class GatewayOutputError extends Error {
   }
 }
 
+/**
+ * Serial NDJSON writer for one downstream socket. Socket loss, write failure, or a backpressure
+ * stall detaches presentation only: later writes become no-ops and the producer keeps consuming,
+ * checkpointing, and terminalizing the generation. Only the workflow interrupt signal (Stop,
+ * deletion, shutdown) rejects a pending write.
+ */
 export class NdjsonWriter {
   readonly #interruptSignal: AbortSignal;
+  readonly #onDetach: () => void;
   readonly #reply: FastifyReply;
-  readonly #transportSignal: AbortSignal;
+  #detached = false;
   #terminalEnqueued = false;
   #writeTail = Promise.resolve();
 
-  constructor(reply: FastifyReply, transportSignal: AbortSignal, interruptSignal: AbortSignal) {
+  constructor(reply: FastifyReply, interruptSignal: AbortSignal, onDetach: () => void = () => {}) {
     this.#reply = reply;
-    this.#transportSignal = transportSignal;
     this.#interruptSignal = interruptSignal;
+    this.#onDetach = onDetach;
+  }
+
+  get detached(): boolean {
+    return this.#detached;
+  }
+
+  /** Marks the socket unusable for presentation. Idempotent; never touches the generation. */
+  detach(): void {
+    if (this.#detached) {
+      return;
+    }
+    this.#detached = true;
+    this.#onDetach();
   }
 
   start(requestId: string): void {
@@ -97,13 +119,25 @@ export class NdjsonWriter {
     if (terminal) {
       this.#terminalEnqueued = true;
     }
+    if (this.#detached) {
+      return;
+    }
     const operation = this.#writeTail.then(async () => {
-      this.#transportSignal.throwIfAborted();
+      if (this.#detached) {
+        return;
+      }
       if (this.#reply.raw.destroyed || this.#reply.raw.writableEnded) {
-        throw new StreamTransportError("The downstream response is no longer writable");
+        this.detach();
+        return;
       }
       const line = `${JSON.stringify(event)}\n`;
-      const accepted = this.#reply.raw.write(line, "utf8");
+      let accepted: boolean;
+      try {
+        accepted = this.#reply.raw.write(line, "utf8");
+      } catch {
+        this.detach();
+        return;
+      }
       if (!accepted) {
         await this.#waitForDrain();
       }
@@ -117,15 +151,30 @@ export class NdjsonWriter {
     await new Promise<void>((resolve, reject) => {
       const raw = this.#reply.raw;
       const timeout = setTimeout(() => {
-        finish(new StreamTransportError("Downstream response backpressure timed out"));
+        // A reader that cannot keep up is disconnected explicitly: end() could stay stuck behind
+        // buffered data, so destroy() closes the socket and the browser reattaches durably.
+        finish();
+        this.detach();
+        raw.destroy();
       }, generationTuning.backpressureTimeoutMilliseconds);
 
       const drained = () => finish();
-      const closed = () => finish(new StreamTransportError("Downstream response closed"));
-      const errored = () => finish(new StreamTransportError("Downstream response failed"));
+      const closed = () => {
+        finish();
+        this.detach();
+      };
+      const errored = () => {
+        finish();
+        this.detach();
+      };
       const aborted = () => finish(new StreamTransportError("Generation stream was aborted"));
 
+      let finished = false;
       const finish = (error?: Error): void => {
+        if (finished) {
+          return;
+        }
+        finished = true;
         clearTimeout(timeout);
         raw.removeListener("drain", drained);
         raw.removeListener("close", closed);
@@ -146,22 +195,20 @@ export class NdjsonWriter {
   }
 }
 
-class StreamHeartbeat {
+export class StreamHeartbeat {
   readonly #intervalMilliseconds: number;
-  readonly #onFailure: () => void;
   readonly #writer: NdjsonWriter;
   #inFlight: Promise<void> | undefined;
   #stopped = true;
   #timer: ReturnType<typeof setTimeout> | undefined;
 
-  constructor(writer: NdjsonWriter, intervalMilliseconds: number, onFailure: () => void) {
+  constructor(writer: NdjsonWriter, intervalMilliseconds: number) {
     this.#writer = writer;
     this.#intervalMilliseconds = intervalMilliseconds;
-    this.#onFailure = onFailure;
   }
 
   start(): void {
-    if (!this.#stopped) {
+    if (!this.#stopped || this.#writer.detached) {
       return;
     }
     this.#stopped = false;
@@ -186,8 +233,9 @@ class StreamHeartbeat {
       const operation = this.#writer
         .write({ type: "stream.heartbeat" })
         .catch(() => {
+          // The writer owns transport detachment. A rejected write is a workflow interrupt and
+          // only stops this scheduler from enqueueing more heartbeats.
           this.#stopped = true;
-          this.#onFailure();
         })
         .finally(() => {
           if (this.#inFlight === operation) {
@@ -448,23 +496,19 @@ export function createResponseStreamCoordinator(dependencies: {
       return;
     }
     const lease = promotion.value;
-    const disconnected = new AbortController();
     const gatewayController = new AbortController();
-    const gatewaySignal = AbortSignal.any([
-      lease.signal,
-      disconnected.signal,
-      gatewayController.signal,
-    ]);
-    const writer = new NdjsonWriter(
-      reply,
-      disconnected.signal,
-      AbortSignal.any([lease.signal, disconnected.signal]),
-    );
+    // Downstream socket state never enters the provider abort signal: a detached browser
+    // reattaches through durable updates while the generation continues.
+    const gatewaySignal = AbortSignal.any([lease.signal, gatewayController.signal]);
+    const heartbeatController = { stop: async (): Promise<void> => undefined };
+    const writer = new NdjsonWriter(reply, lease.signal, () => {
+      void heartbeatController.stop();
+    });
     const heartbeat = new StreamHeartbeat(
       writer,
       dependencies.heartbeatIntervalMilliseconds ?? generationTuning.heartbeatMilliseconds,
-      () => disconnected.abort("heartbeat-failed"),
     );
+    heartbeatController.stop = () => heartbeat.stop();
     const checkpoints = new CheckpointScheduler(generations, started.generationId, Date.now());
     const durableAuthority = new DurableGenerationAuthority({
       intervalMilliseconds: generationTuning.durableStatePollMilliseconds,
@@ -565,14 +609,12 @@ export function createResponseStreamCoordinator(dependencies: {
     }
 
     const connectionClosed = (): void => {
-      if (!reply.raw.writableFinished && !disconnected.signal.aborted) {
-        disconnected.abort("disconnect");
+      if (!reply.raw.writableFinished) {
+        writer.detach();
       }
     };
     const connectionError = (): void => {
-      if (!disconnected.signal.aborted) {
-        disconnected.abort("disconnect");
-      }
+      writer.detach();
     };
     reply.raw.once("close", connectionClosed);
     reply.raw.once("error", connectionError);
@@ -609,7 +651,7 @@ export function createResponseStreamCoordinator(dependencies: {
         });
         return true;
       }
-      return state.status !== "active" && state.status !== "preparing";
+      return isTerminalGenerationStatus(state.status);
     }
 
     async function emitFailure(
@@ -742,6 +784,241 @@ export function createResponseStreamCoordinator(dependencies: {
       }
     }
 
+    async function runNaming(
+      naming: NamingHandoff,
+      assistantMessageId: string,
+      reason: ResponseCompletedEvent["reason"],
+      usage: GatewayUsage,
+    ): Promise<void> {
+      await writer.write({ type: "conversation.naming" }).catch(() => undefined);
+      const fallbackCancellation = new AbortController();
+      const providerDeadline = new AbortController();
+      const namingSignal = AbortSignal.any([gatewaySignal, providerDeadline.signal]);
+      const timeoutOutcome: TitleOutcome = {
+        errorCode: "GENERATION_TIMEOUT",
+        kind: "failed",
+      };
+
+      function waitUntil(at: Date, signal: AbortSignal): Promise<void> {
+        signal.throwIfAborted();
+        const remaining = at.getTime() - Date.now();
+        if (remaining <= 0) {
+          return Promise.resolve();
+        }
+        return new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => finish(), remaining);
+          const aborted = () => finish(signal.reason);
+          const finish = (error?: unknown): void => {
+            clearTimeout(timer);
+            signal.removeEventListener("abort", aborted);
+            if (error === undefined) {
+              resolve();
+            } else {
+              reject(error);
+            }
+          };
+          signal.addEventListener("abort", aborted, { once: true });
+        });
+      }
+
+      function finishBeforeDeadline<TResult>(
+        deadlineAt: Date,
+        operation: () => Promise<TResult>,
+      ): Promise<TResult> {
+        const remainingMilliseconds = deadlineAt.getTime() - Date.now();
+        if (remainingMilliseconds <= 0) {
+          return Promise.reject(new Error("The title persistence deadline elapsed"));
+        }
+        let attempt: Promise<TResult>;
+        try {
+          attempt = operation();
+        } catch (error: unknown) {
+          return Promise.reject(error);
+        }
+        return new Promise<TResult>((resolve, reject) => {
+          let finished = false;
+          const finish = (result: { readonly error?: unknown; readonly value?: TResult }): void => {
+            if (finished) {
+              return;
+            }
+            finished = true;
+            clearTimeout(timer);
+            if ("error" in result) {
+              reject(result.error);
+            } else {
+              resolve(result.value as TResult);
+            }
+          };
+          const timer = setTimeout(
+            () => finish({ error: new Error("The title persistence deadline elapsed") }),
+            remainingMilliseconds,
+          );
+          attempt.then(
+            (value) => finish({ value }),
+            (error: unknown) => finish({ error }),
+          );
+        });
+      }
+
+      const finalize = (outcome: TitleOutcome) =>
+        finishBeforeDeadline(naming.deadlineAt, () =>
+          generations.finalizeNaming({
+            conversationId: started.conversationId,
+            outcome,
+            parentGenerationId: started.generationId,
+            persistenceDeadlineAt: naming.deadlineAt,
+            titleGenerationId: naming.titleGenerationId,
+          }),
+        );
+
+      async function settleLateProviderAccounting(outcome: TitleOutcome): Promise<void> {
+        if (outcome.accounting === undefined || outcome.usage === undefined) {
+          return;
+        }
+        // Deletion intentionally clears the retained title row's conversation link. Settle known
+        // provider usage by generation ID when lifecycle finalization cannot retain authority, without
+        // extending the response's eight-second naming fence.
+        await generations.settleLateTitleAccounting(
+          naming.titleGenerationId,
+          outcome.usage,
+          outcome.accounting,
+          {
+            ...(outcome.firstTokenAt === undefined ? {} : { firstTokenAt: outcome.firstTokenAt }),
+            ...(outcome.metadata === undefined ? {} : { metadata: outcome.metadata }),
+          },
+        );
+      }
+
+      // The provider owns only the first seven seconds. The fallback begins at that cutoff so the
+      // final second remains available for one transaction bounded by the absolute eight-second
+      // fence. A failed bounded attempt is left to the independent durable reconciler.
+      const fallback = (async () => {
+        await waitUntil(naming.providerDeadlineAt, fallbackCancellation.signal);
+        if (!providerDeadline.signal.aborted) {
+          providerDeadline.abort("title-provider-deadline");
+        }
+        return finalize(timeoutOutcome);
+      })();
+
+      const providerOutcome =
+        Date.now() >= naming.providerDeadlineAt.getTime()
+          ? undefined
+          : (async () => {
+              let outcome: TitleOutcome;
+              try {
+                outcome = await runTitleGeneration(
+                  gateway,
+                  naming.request,
+                  namingSignal,
+                  dependencies.telemetry,
+                  naming.titleGenerationId,
+                  (observation) =>
+                    generations.recordTitleObservation(naming.titleGenerationId, observation),
+                );
+              } catch {
+                outcome = { errorCode: "GENERATION_FAILED", kind: "failed" };
+              }
+              if (
+                outcome.kind === "cancelled" &&
+                providerDeadline.signal.aborted &&
+                !gatewaySignal.aborted
+              ) {
+                outcome = {
+                  ...(outcome.accounting === undefined ? {} : { accounting: outcome.accounting }),
+                  errorCode: "GENERATION_TIMEOUT",
+                  ...(outcome.firstTokenAt === undefined
+                    ? {}
+                    : { firstTokenAt: outcome.firstTokenAt }),
+                  kind: "failed",
+                  ...(outcome.metadata === undefined ? {} : { metadata: outcome.metadata }),
+                  ...(outcome.usage === undefined ? {} : { usage: outcome.usage }),
+                };
+              }
+              return outcome;
+            })();
+      const provider = providerOutcome?.then((outcome) => finalize(outcome));
+      if (providerOutcome !== undefined && provider !== undefined) {
+        // Register the continuation before the HTTP stream can release its lease. Shutdown then
+        // keeps the database pool alive until a lost/failed bounded finalizer has persisted any
+        // authoritative provider accounting; the response still races only `provider` itself.
+        lease.defer(
+          (async () => {
+            const outcome = await providerOutcome;
+            try {
+              const result = await provider;
+              if (result.kind === "lost-cas") {
+                await settleLateProviderAccounting(outcome);
+              }
+            } catch {
+              await settleLateProviderAccounting(outcome);
+            }
+          })(),
+        );
+      }
+
+      let finalization: Awaited<ReturnType<GenerationService["finalizeNaming"]>> | undefined;
+      try {
+        if (provider === undefined) {
+          finalization = await fallback;
+        } else {
+          const resolution = await Promise.race([
+            provider
+              .then((result) => ({ result, source: "provider" as const }))
+              .catch(() => fallback.then((result) => ({ result, source: "fallback" as const }))),
+            fallback.then((result) => ({ result, source: "fallback" as const })),
+          ]);
+          finalization = resolution.result;
+          if (resolution.source === "provider") {
+            fallbackCancellation.abort("title-finalized");
+          }
+        }
+      } catch {
+        finalization = undefined;
+      } finally {
+        fallbackCancellation.abort("title-stream-settled");
+      }
+
+      let revision = finalization?.kind === "finalized" ? finalization.revision : null;
+      if (revision === null) {
+        const remainingMilliseconds = naming.deadlineAt.getTime() - Date.now();
+        let state: Awaited<ReturnType<typeof durableAuthority.stateForEvent>> | null = null;
+        let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+        if (remainingMilliseconds > 0) {
+          const stateRead = durableAuthority.stateForEvent(true).catch(() => null);
+          state = await Promise.race([
+            stateRead,
+            new Promise<null>((resolve) => {
+              deadlineTimer = setTimeout(resolve, remainingMilliseconds, null);
+            }),
+          ]).finally(() => {
+            if (deadlineTimer !== undefined) {
+              clearTimeout(deadlineTimer);
+            }
+          });
+        }
+        if (
+          state?.status === "completed" &&
+          state.assistantMessageId !== null &&
+          state.revision !== null
+        ) {
+          revision = state.revision;
+        } else if (state !== null && isTerminalGenerationStatus(state.status)) {
+          terminal = await durableTerminalEvent(state).catch(() => true);
+        }
+      }
+      if (revision !== null && isWritable(reply)) {
+        await writer
+          .write({
+            messageId: assistantMessageId,
+            reason,
+            revision,
+            type: "response.completed",
+            usage,
+          })
+          .catch(() => undefined);
+      }
+    }
+
     try {
       observe(() =>
         dependencies.telemetry?.changeActiveEmployeeStreams(started.request.modelTier, 1),
@@ -764,6 +1041,21 @@ export function createResponseStreamCoordinator(dependencies: {
           Date.now() - started.admittedAt.getTime(),
         ),
       );
+
+      // Cancellation can commit after admission but before this process registers the stream.
+      // Force the durable fence before compaction or the provider so a missed local abort cannot
+      // spend or publish content for work that is already terminal.
+      const admittedState = await durableAuthority.stateForEvent(true);
+      const expectedAdmissionStatus = started.compaction === undefined ? "active" : "preparing";
+      if (admittedState === null) {
+        return;
+      }
+      if (admittedState.status !== expectedAdmissionStatus) {
+        if (isTerminalGenerationStatus(admittedState.status)) {
+          terminal = await durableTerminalEvent(admittedState);
+        }
+        return;
+      }
 
       let chatRequest: GenerationRequest = started.request;
       if (started.compaction !== undefined) {
@@ -961,7 +1253,10 @@ export function createResponseStreamCoordinator(dependencies: {
           reason: event.reason,
           status: "completed",
         });
-        if (result.won && result.assistantMessageId !== null && result.revision !== null) {
+        if (result.won && result.naming !== undefined && result.assistantMessageId !== null) {
+          accountingSettled = event.accounting !== undefined || accountingSettled;
+          await runNaming(result.naming, result.assistantMessageId, event.reason, event.usage);
+        } else if (result.won && result.assistantMessageId !== null && result.revision !== null) {
           accountingSettled = event.accounting !== undefined || accountingSettled;
           const completed: ResponseCompletedEvent = {
             messageId: result.assistantMessageId,
@@ -994,14 +1289,15 @@ export function createResponseStreamCoordinator(dependencies: {
       if (lease.signal.aborted || state?.status === "cancelled") {
         observeModelCancellation();
       }
-      if (state !== null && state.status !== "active" && state.status !== "preparing") {
+      if (state !== null && isTerminalGenerationStatus(state.status)) {
         terminal = await durableTerminalEvent(state).catch(() => true);
+      } else if (state?.status === "finalizing") {
+        // The answer is durable and the naming phase owns the parent; bounded reconciliation
+        // completes it if this producer cannot.
+        terminal = true;
       } else if (state?.status === "active") {
         const interrupted =
-          lease.signal.aborted ||
-          disconnected.signal.aborted ||
-          error instanceof StreamTransportError ||
-          isAbortError(error);
+          lease.signal.aborted || error instanceof StreamTransportError || isAbortError(error);
         const partial = /\S/u.test(assistantContent);
         const failureCode: GatewayFailureCode =
           error instanceof GatewayOutputError ? error.code : "GENERATION_FAILED";
@@ -1015,7 +1311,7 @@ export function createResponseStreamCoordinator(dependencies: {
           })
           .catch(() => undefined);
         if (committed?.won) {
-          if (!interrupted && isWritable(reply) && !disconnected.signal.aborted) {
+          if (!interrupted && isWritable(reply) && !writer.detached) {
             await emitFailure(failureCode, committed).catch(() => undefined);
           }
         } else if (committed !== undefined) {
@@ -1053,7 +1349,7 @@ export function createResponseStreamCoordinator(dependencies: {
         }
         const finalState = await durableAuthority.stateForEvent(true).catch(() => null);
         const workflowOutcome: TelemetryOutcome =
-          finalState?.status === "completed"
+          finalState?.status === "completed" || finalState?.status === "finalizing"
             ? "completed"
             : finalState?.status === "cancelled"
               ? "cancelled"

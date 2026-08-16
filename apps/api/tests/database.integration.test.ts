@@ -13,6 +13,7 @@ import { createDatabasePool } from "../src/database/pool.js";
 
 const productTableNames = [
   "account",
+  "answer_reports",
   "client_error_rate_limit_windows",
   "conversation_compactions",
   "conversations",
@@ -123,7 +124,7 @@ describe("PostgreSQL application schema", () => {
         "SELECT table_name AS \"tableName\" FROM information_schema.tables WHERE table_schema = 'public'",
       );
 
-      expect(appliedMigrations.rows).toHaveLength(8);
+      expect(appliedMigrations.rows).toHaveLength(9);
       expect(appliedMigrations.rows[0]?.hash).toMatch(/^[a-f0-9]{64}$/u);
       expect(Number(appliedMigrations.rows[0]?.createdAt)).toBeGreaterThan(0);
       expect(productTables.rows.map(({ tableName }) => tableName).sort()).toEqual(
@@ -189,7 +190,7 @@ describe("PostgreSQL application schema", () => {
         "SELECT table_name AS \"tableName\" FROM information_schema.tables WHERE table_schema = 'public' AND table_name IN ('conversations', 'drafts', 'messages') ORDER BY table_name",
       );
 
-      expect(migrations.rows).toHaveLength(8);
+      expect(migrations.rows).toHaveLength(9);
       expect(workspace.rows).toEqual([{ displayName: "Phase Two Preserved" }]);
       expect(phaseThreeTables.rows.map((row) => row.tableName)).toEqual([
         "conversations",
@@ -329,7 +330,7 @@ describe("PostgreSQL application schema", () => {
         "SELECT count(*)::text AS count FROM generations",
       );
 
-      expect(migrations.rows).toHaveLength(8);
+      expect(migrations.rows).toHaveLength(9);
       expect(preserved.rows).toEqual([
         {
           draftContent: "Borrador preservado",
@@ -618,9 +619,11 @@ describe("PostgreSQL application schema", () => {
           'generations_assistant_message_unique',
           'generations_chat_workflow_conversation_unique',
           'generations_conversation_idx',
+          'generations_finalizing_completed_idx',
           'generations_openrouter_generation_id_unique',
           'generations_reserved_expiry_idx',
           'generations_scoped_idempotency_unique',
+          'generations_title_conversation_unique',
           'generations_workspace_budget_period_idx'
         )
         ORDER BY indexname
@@ -671,6 +674,7 @@ describe("PostgreSQL application schema", () => {
       expect(enumValues.rows).toEqual([
         { enumName: "generation_status", value: "preparing" },
         { enumName: "generation_status", value: "active" },
+        { enumName: "generation_status", value: "finalizing" },
         { enumName: "generation_status", value: "completed" },
         { enumName: "generation_status", value: "cancelled" },
         { enumName: "generation_status", value: "incomplete" },
@@ -694,9 +698,11 @@ describe("PostgreSQL application schema", () => {
         "generations_assistant_message_unique",
         "generations_chat_workflow_conversation_unique",
         "generations_conversation_idx",
+        "generations_finalizing_completed_idx",
         "generations_openrouter_generation_id_unique",
         "generations_reserved_expiry_idx",
         "generations_scoped_idempotency_unique",
+        "generations_title_conversation_unique",
         "generations_workspace_budget_period_idx",
       ]);
     } finally {

@@ -65,6 +65,8 @@ interface MessageActionsProps {
   readonly canCopy: boolean;
   readonly canContinue: boolean;
   readonly canEdit: boolean;
+  /** Reporting is independent of generation, draft, and branch controls. */
+  readonly canReport?: boolean;
   readonly canRetry: boolean;
   readonly canUndo: boolean;
   readonly children: ReactNode;
@@ -73,11 +75,13 @@ interface MessageActionsProps {
   readonly onEdit: (content: string, onCommitted: () => void) => Promise<void>;
   readonly onContinue: () => void;
   readonly onRetry: () => void;
+  readonly onReport?: (trigger: HTMLButtonElement) => void;
   readonly onSelectAlternative: (
     selectionTargetMessageId: string,
     trigger: HTMLButtonElement,
   ) => void;
   readonly onUndo: (trigger: HTMLButtonElement) => void;
+  readonly reported?: boolean;
 }
 
 export function MessageActions({
@@ -85,6 +89,7 @@ export function MessageActions({
   canCopy,
   canContinue,
   canEdit,
+  canReport = false,
   canRetry,
   canUndo,
   children,
@@ -92,9 +97,11 @@ export function MessageActions({
   pending,
   onEdit,
   onContinue,
+  onReport,
   onRetry,
   onSelectAlternative,
   onUndo,
+  reported = false,
 }: MessageActionsProps) {
   const originalSource = message.content[0]?.text ?? "";
   const editorId = useId();
@@ -220,7 +227,9 @@ export function MessageActions({
     );
   }
 
-  const hasActions = canCopy || canEdit || canRetry || canContinue || canUndo || alternative;
+  const showReport = message.role === "assistant" && (canReport || reported);
+  const hasActions =
+    canCopy || canEdit || canRetry || canContinue || canUndo || alternative || showReport;
 
   return (
     <>
@@ -271,6 +280,21 @@ export function MessageActions({
               onClick={onContinue}
             >
               {copy.conversations.generation.actions.continue}
+            </button>
+          ) : null}
+          {showReport ? (
+            <button
+              className="text-button message-action"
+              type="button"
+              aria-disabled={reported}
+              data-report-state={reported ? "reported" : "available"}
+              onClick={(event) => {
+                if (!reported) {
+                  onReport?.(event.currentTarget);
+                }
+              }}
+            >
+              {reported ? copy.conversations.messages.reported : copy.conversations.messages.report}
             </button>
           ) : null}
           {canUndo ? (

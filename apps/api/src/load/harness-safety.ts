@@ -8,6 +8,7 @@ type StreamLifecycleType =
   | "context.compacted"
   | "context.compacting"
   | "context.warning"
+  | "conversation.naming"
   | "response.cancelled"
   | "response.completed"
   | "response.failed"
@@ -29,6 +30,21 @@ export interface LoadOptions {
 export interface PostIdleMemorySample {
   readonly heapUsedBytes: number;
   readonly rssBytes: number;
+}
+
+const durableUpdatePollStartupAllowance = 2;
+
+export function maximumDurableUpdatePolls(
+  elapsedMilliseconds: number,
+  cadenceMilliseconds: number,
+): number {
+  if (!Number.isFinite(elapsedMilliseconds) || elapsedMilliseconds < 0) {
+    throw new Error("Durable polling elapsed time must be a nonnegative finite number");
+  }
+  if (!Number.isFinite(cadenceMilliseconds) || cadenceMilliseconds <= 0) {
+    throw new Error("Durable polling cadence must be a positive finite number");
+  }
+  return Math.ceil(elapsedMilliseconds / cadenceMilliseconds) + durableUpdatePollStartupAllowance;
 }
 
 export function hasMonotonicMemoryGrowth(samples: readonly PostIdleMemorySample[]): boolean {
@@ -176,6 +192,7 @@ export class BoundedNdjsonDecoder {
 export class StreamLifecycleGuard {
   #compaction: "compacting" | "none" | "settled" = "none";
   #contentSeen = false;
+  #naming = false;
   #started = false;
   #terminal = false;
 
@@ -194,17 +211,17 @@ export class StreamLifecycleGuard {
       throw new Error("A synthetic stream emitted response.started twice");
     }
     if (type === "context.compacting") {
-      if (this.#compaction !== "none" || this.#contentSeen) {
+      if (this.#compaction !== "none" || this.#contentSeen || this.#naming) {
         throw new Error("A synthetic stream emitted an invalid compaction lifecycle");
       }
       this.#compaction = "compacting";
     } else if (type === "context.compacted") {
-      if (this.#compaction !== "compacting") {
+      if (this.#compaction !== "compacting" || this.#naming) {
         throw new Error("A synthetic stream emitted an invalid compaction lifecycle");
       }
       this.#compaction = "settled";
     } else if (type === "context.warning") {
-      if (this.#compaction === "settled" || this.#contentSeen) {
+      if (this.#compaction === "settled" || this.#contentSeen || this.#naming) {
         throw new Error("A synthetic stream emitted an invalid compaction lifecycle");
       }
       this.#compaction = "settled";
@@ -212,7 +229,15 @@ export class StreamLifecycleGuard {
       if (this.#compaction === "compacting") {
         throw new Error("A synthetic stream emitted content before compaction settled");
       }
+      if (this.#naming) {
+        throw new Error("A synthetic stream emitted content after naming began");
+      }
       this.#contentSeen = true;
+    } else if (type === "conversation.naming") {
+      if (!this.#contentSeen || this.#compaction === "compacting" || this.#naming) {
+        throw new Error("A synthetic stream emitted an invalid naming lifecycle");
+      }
+      this.#naming = true;
     }
     if (
       type === "response.cancelled" ||

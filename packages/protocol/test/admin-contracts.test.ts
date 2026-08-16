@@ -413,6 +413,26 @@ describe("administrator usage contracts", () => {
     ).toBe(true);
   });
 
+  it("accepts all nine tier-purpose groups and rejects a tenth", () => {
+    const group = usageResponse.items[0].groups[0];
+    const groups = (["fast", "balanced", "pro"] as const).flatMap((tier) =>
+      (["chat", "compaction", "title"] as const).map((purpose) => ({
+        ...group,
+        purpose,
+        tier,
+      })),
+    );
+    const responseWithGroups = (boundedGroups: readonly unknown[]) => ({
+      ...usageResponse,
+      items: [{ ...usageResponse.items[0], groups: boundedGroups }],
+    });
+
+    expect(Value.Check(AdminUsageResponseSchema, responseWithGroups(groups))).toBe(true);
+    expect(Value.Check(AdminUsageResponseSchema, responseWithGroups([...groups, group]))).toBe(
+      false,
+    );
+  });
+
   it("rejects numeric token totals, unsupported purposes, and content-bearing extras", () => {
     expect(
       Value.Check(AdminUsageResponseSchema, {

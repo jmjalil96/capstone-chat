@@ -5,17 +5,21 @@ import type {
   ResponseStateResponse,
   StoredGenerationErrorCode,
 } from "@capstone/protocol";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import {
   createInitialTitle,
   hasUnsupportedControlCharacter,
   normalizeStoredText,
   parseMessageContent,
 } from "../conversations/content.js";
-import { conversationCompactions } from "../database/compaction-schema.js";
 import { conversations, messages } from "../database/conversation-schema.js";
 import { type AppDatabase, executePrepared } from "../database/database.js";
-import { generations } from "../database/generation-schema.js";
+import {
+  type GenerationLifecycleStatus,
+  generations,
+  isNonterminalGenerationStatus,
+  nonterminalGenerationStatuses,
+} from "../database/generation-schema.js";
 import { isPostgresError } from "../database/postgres-error.js";
 import { ApplicationError } from "../errors.js";
 import type { RequestActor } from "../identity/authorization.js";
@@ -36,7 +40,11 @@ import {
   type ResolvedTierPolicy,
 } from "../model-policy/service.js";
 import type { ApplicationTelemetry } from "../observability/telemetry-contract.js";
-import { lockConversationAdmission, lockDraftGenerationAdmission } from "./admission.js";
+import {
+  lockConversationAdmission,
+  lockDraftGenerationAdmission,
+  lockSessionAdmission,
+} from "./admission.js";
 import {
   type ContextPlan,
   ContextPlanTooLargeError,
@@ -45,6 +53,7 @@ import {
 } from "./context-planner.js";
 import { preloadDraftContext } from "./context-preload.js";
 import { boundContextWindow, type ContextWindow, loadContextWindow } from "./context-service.js";
+import { settleNonterminalGeneration } from "./lifecycle.js";
 import type {
   GatewayAccounting,
   GatewayCompletionReason,
@@ -54,11 +63,13 @@ import type {
 } from "./model-gateway.js";
 import { continueMessage, systemPrompt } from "./prompt.js";
 import { generationTuning } from "./settings.js";
+import { createTitleService, type NamingHandoff, type TitleService } from "./title-service.js";
 
 const generationCopy = {
   active: "Esta conversación ya tiene una respuesta en curso.",
   alreadyExists: "Esta solicitud de respuesta ya fue utilizada.",
   archived: "Desarchiva la conversación antes de generar una respuesta.",
+  authenticationRequired: "Inicia sesión para continuar.",
   changed: "La conversación cambió. Actualiza la información e inténtalo de nuevo.",
   draftChanged: "El borrador cambió en otra pestaña o dispositivo.",
   employeeGenerationLimit:
@@ -120,10 +131,12 @@ export interface DurableGenerationState {
   readonly errorCode: StoredGenerationErrorCode | null;
   readonly reason: "cancelled" | "content_filter" | "error" | "length" | "refusal" | "stop" | null;
   readonly revision: number | null;
-  readonly status: "active" | "cancelled" | "completed" | "failed" | "incomplete" | "preparing";
+  readonly status: GenerationLifecycleStatus;
 }
 
 export interface TerminalGenerationResult extends DurableGenerationState {
+  /** Present when a completed initial answer handed off to the naming phase. */
+  readonly naming?: NamingHandoff;
   readonly won: boolean;
 }
 
@@ -246,6 +259,7 @@ export interface GenerationServiceOptions {
         "recordCancellation" | "recordReservationSettlement" | "recordSettlement"
       >
     | undefined;
+  readonly titles?: TitleService;
 }
 
 export function createGenerationService(
@@ -255,11 +269,32 @@ export function createGenerationService(
   const budget = options.budget ?? createBudgetService(database);
   const mode = options.mode ?? "simulated";
   const modelPolicy = options.modelPolicy ?? createModelPolicyService(database);
+  const titles =
+    options.titles ??
+    createTitleService({ budget, database, mode, modelPolicy, telemetry: options.telemetry });
   function observe(action: () => void): void {
     try {
       action();
     } catch {
       // Telemetry cannot affect generation authority or persistence.
+    }
+  }
+
+  async function attemptOptionalNaming<TResult>(
+    transaction: DatabaseTransaction,
+    action: (savepoint: DatabaseTransaction) => Promise<TResult>,
+  ): Promise<TResult | null> {
+    try {
+      return await transaction.transaction((savepoint) => action(savepoint));
+    } catch (error: unknown) {
+      // A savepoint makes policy, lock-timeout, and handoff failures title-local. Prove the outer
+      // transaction is still usable before allowing the authoritative chat completion to proceed.
+      try {
+        await transaction.execute(sql`SELECT 1`);
+      } catch {
+        throw error;
+      }
+      return null;
     }
   }
   async function selectedPathMessage(
@@ -392,6 +427,19 @@ export function createGenerationService(
       const preloadedContext = await preloadSelectedContext(actor, conversationId, input);
       return await database.transaction(async (transaction) => {
         const startedAt = new Date();
+        const sessionCurrent = await lockSessionAdmission(
+          transaction,
+          actor.session.id,
+          actor.employee.id,
+          startedAt,
+        );
+        if (!sessionCurrent) {
+          throw new ApplicationError(
+            401,
+            "AUTHENTICATION_REQUIRED",
+            generationCopy.authenticationRequired,
+          );
+        }
         await budget.lockAdmissionAuthority(transaction, actor.workspace.id, actor.employee.id);
 
         // The ordinary draft path uses one fresh post-authority snapshot. Other sources keep their
@@ -620,6 +668,7 @@ export function createGenerationService(
           resolvedTier,
           estimatedInputTokens,
           startedAt,
+          { enforceEmployeeLimit: true, purpose: "chat" },
         );
 
         const contextParameters =
@@ -1084,6 +1133,8 @@ export function createGenerationService(
         conversationId: generations.conversationId,
         purpose: generations.purpose,
         requestedTier: generations.requestedTier,
+        userId: generations.userId,
+        workspaceId: generations.workspaceId,
       })
       .from(generations)
       .where(eq(generations.id, generationId))
@@ -1092,14 +1143,32 @@ export function createGenerationService(
     if (location === undefined) {
       throw new Error("Generation disappeared during terminalization");
     }
+    // A completed initial answer may hand off to naming, which reserves Fast budget. That path
+    // must take the workspace admission lock before the conversation row to keep the established
+    // workspace → conversation order, so candidacy is read ahead of the transaction.
+    const initialTitleCandidate = await titles.isTitleCandidate(database, generationId);
+    const namingCandidate =
+      input.status === "completed" &&
+      (input.reason === "stop" || input.reason === "length") &&
+      usefulText(input.content) &&
+      initialTitleCandidate;
 
     let settledReservation = false;
     const result = await database.transaction(async (transaction) => {
+      const namingAuthority =
+        namingCandidate &&
+        (await attemptOptionalNaming(transaction, async (savepoint) => {
+          await budget.lockAdmissionAuthority(savepoint, location.workspaceId, location.userId);
+          return true;
+        })) === true;
       const conversationRows =
         location.conversationId === null
           ? []
           : await transaction
-              .select({ revision: conversations.revision })
+              .select({
+                automaticTitlePending: conversations.automaticTitlePending,
+                revision: conversations.revision,
+              })
               .from(conversations)
               .where(eq(conversations.id, location.conversationId))
               .limit(1)
@@ -1200,6 +1269,64 @@ export function createGenerationService(
         }
         settledReservation = true;
       }
+      let naming: NamingHandoff | null = null;
+      if (namingAuthority && conversation.automaticTitlePending) {
+        const conversationId = generation.conversationId;
+        naming = await attemptOptionalNaming(transaction, async (savepoint) => {
+          if (!(await titles.isTitleCandidate(savepoint, generationId))) {
+            return null;
+          }
+          const promptRows = await savepoint.execute<{ readonly text: string }>(sql`
+            SELECT prompt.content->0->>'text' AS "text"
+            FROM messages AS answer
+            INNER JOIN messages AS prompt ON prompt.id = answer.parent_message_id
+              AND prompt.conversation_id = answer.conversation_id
+            WHERE answer.id = ${generation.assistantMessageId}::uuid
+              AND answer.conversation_id = ${generation.conversationId}::uuid
+            LIMIT 1
+          `);
+          const promptText = promptRows.rows[0]?.text;
+          if (promptText === undefined || !usefulText(promptText)) {
+            return null;
+          }
+          // The parent leaves `active` before the title child is inserted so the one-active-row
+          // index holds; a declined handoff falls through to the ordinary terminal update.
+          await savepoint
+            .update(generations)
+            .set({
+              completedAt: now,
+              errorCode: null,
+              firstTokenAt,
+              status: "finalizing",
+              terminalReason: input.reason,
+              updatedAt: now,
+            })
+            .where(and(eq(generations.id, generationId), eq(generations.status, "active")));
+          return titles.beginNaming(savepoint, {
+            answer: messageContent,
+            completedAt: now,
+            conversationId,
+            prompt: promptText,
+            userId: location.userId,
+            workspaceId: location.workspaceId,
+          });
+        });
+      }
+      if (naming !== null) {
+        // Naming handoff: the answer, its accounting, reason, and completion time are durable;
+        // the parent stays nonterminal as `finalizing` and the revision moves exactly once when
+        // naming settles.
+        return {
+          assistantMessageId: generation.assistantMessageId,
+          conversationId: generation.conversationId,
+          errorCode: null,
+          naming,
+          reason: input.reason,
+          revision: conversation.revision,
+          status: "finalizing" as const,
+          won: true,
+        };
+      }
       await transaction
         .update(generations)
         .set({
@@ -1210,10 +1337,20 @@ export function createGenerationService(
           terminalReason: input.reason,
           updatedAt: now,
         })
-        .where(and(eq(generations.id, generationId), eq(generations.status, "active")));
+        .where(
+          and(
+            eq(generations.id, generationId),
+            inArray(generations.status, ["active", "finalizing"]),
+          ),
+        );
       const updatedConversations = await transaction
         .update(conversations)
-        .set({ revision: conversation.revision + 1, updatedAt: now })
+        .set({
+          // The initial answer's one naming opportunity is consumed by any terminal outcome.
+          ...(initialTitleCandidate ? { automaticTitlePending: false } : {}),
+          revision: conversation.revision + 1,
+          updatedAt: now,
+        })
         .where(
           and(
             eq(conversations.id, generation.conversationId),
@@ -1282,6 +1419,7 @@ export function createGenerationService(
 
     let cancelledTier: GenerationModelTier | undefined;
     let releasedReservation = false;
+    const namingCandidate = await titles.isTitleCandidate(database, generationId);
     const cancelled = await database.transaction(async (transaction) => {
       const conversationRows = await transaction
         .select({ revision: conversations.revision })
@@ -1310,8 +1448,57 @@ export function createGenerationService(
       if (generation === undefined) {
         return notFound();
       }
-      if (generation.status !== "active" && generation.status !== "preparing") {
+      if (!isNonterminalGenerationStatus(generation.status)) {
         return false;
+      }
+      if (generation.status === "finalizing") {
+        // Stop during naming stops only the naming: the title child is cancelled and the already
+        // finished answer completes without a title change.
+        const titleRows = await transaction
+          .select({
+            accountingStatus: generations.accountingStatus,
+            createdAt: generations.createdAt,
+            firstTokenAt: generations.firstTokenAt,
+            id: generations.id,
+            purpose: generations.purpose,
+            startedAt: generations.startedAt,
+            status: generations.status,
+            updatedAt: generations.updatedAt,
+          })
+          .from(generations)
+          .where(
+            and(
+              eq(generations.conversationId, conversationId),
+              eq(generations.purpose, "title"),
+              eq(generations.status, "active"),
+            ),
+          )
+          .limit(1)
+          .for("update");
+        const stoppedAt = new Date();
+        const titleRow = titleRows[0];
+        if (titleRow !== undefined) {
+          await settleNonterminalGeneration(transaction, budget, titleRow, stoppedAt);
+        }
+        await settleNonterminalGeneration(transaction, budget, generation, stoppedAt);
+        const nextRevision = conversation.revision + 1;
+        await transaction
+          .update(conversations)
+          .set({
+            automaticTitlePending: false,
+            automaticTitleSettledRevision: nextRevision,
+            revision: nextRevision,
+            updatedAt: atOrAfter(stoppedAt, generation.updatedAt),
+          })
+          .where(eq(conversations.id, conversationId));
+        if (
+          generation.requestedTier === "fast" ||
+          generation.requestedTier === "balanced" ||
+          generation.requestedTier === "pro"
+        ) {
+          cancelledTier = generation.requestedTier;
+        }
+        return true;
       }
       const localPartial = captureLocalPartial?.();
       if (localPartial !== undefined && generation.status === "active") {
@@ -1374,7 +1561,11 @@ export function createGenerationService(
         );
       await transaction
         .update(conversations)
-        .set({ revision: conversation.revision + 1, updatedAt: now })
+        .set({
+          ...(namingCandidate ? { automaticTitlePending: false } : {}),
+          revision: conversation.revision + 1,
+          updatedAt: now,
+        })
         .where(eq(conversations.id, conversationId));
       if (
         generation.requestedTier === "fast" ||
@@ -1444,13 +1635,23 @@ export function createGenerationService(
             : [
                 [
                   row.messageId,
-                  {
-                    errorCode: row.errorCode,
-                    generationId: row.generationId,
-                    messageId: row.messageId,
-                    reason: row.reason,
-                    status: row.status === "preparing" ? "active" : row.status,
-                  } as ResponseState,
+                  // A finalizing parent already stores its chat reason, but the public active
+                  // state carries no reason or error until the response completes.
+                  (isNonterminalGenerationStatus(row.status)
+                    ? {
+                        errorCode: null,
+                        generationId: row.generationId,
+                        messageId: row.messageId,
+                        reason: null,
+                        status: "active",
+                      }
+                    : {
+                        errorCode: row.errorCode,
+                        generationId: row.generationId,
+                        messageId: row.messageId,
+                        reason: row.reason,
+                        status: row.status,
+                      }) as ResponseState,
                 ] as const,
               ],
         ),
@@ -1502,58 +1703,31 @@ export function createGenerationService(
         .where(
           and(
             eq(generations.conversationId, conversationId),
-            inArray(generations.status, ["preparing", "active"]),
+            inArray(generations.status, [...nonterminalGenerationStatuses]),
           ),
         )
+        .orderBy(
+          sql`CASE
+            WHEN ${generations.assistantMessageId} IS NOT NULL
+              AND (${generations.purpose} IS NULL OR ${generations.purpose} = 'chat') THEN 0
+            ELSE 1
+          END`,
+          asc(generations.id),
+        )
         .for("update");
+      // Deletion aborts the whole workflow: the local stream is fenced through the parent chat
+      // even while it is finalizing its title.
       const activeGenerationId =
         activeRows.find(({ purpose }) => purpose === null || purpose === "chat")?.id ?? null;
+      const deletedAt = new Date();
       for (const activeGeneration of activeRows) {
-        const now = atOrAfter(
-          new Date(),
-          activeGeneration.startedAt,
-          activeGeneration.firstTokenAt,
-          activeGeneration.createdAt,
-          activeGeneration.updatedAt,
+        const settled = await settleNonterminalGeneration(
+          transaction,
+          budget,
+          activeGeneration,
+          deletedAt,
         );
-        if (
-          activeGeneration.status === "preparing" &&
-          activeGeneration.accountingStatus === "reserved"
-        ) {
-          const settled = await budget.settleAuthoritativeUsageInTransaction(
-            transaction,
-            activeGeneration.id,
-            { completionTokens: 0, costUsd: "0", promptTokens: 0 },
-            now,
-          );
-          settledReservations += settled ? 1 : 0;
-        }
-        await transaction
-          .update(generations)
-          .set({
-            completedAt: now,
-            errorCode: null,
-            status: "cancelled",
-            terminalReason: "cancelled",
-            updatedAt: now,
-          })
-          .where(
-            and(
-              eq(generations.id, activeGeneration.id),
-              inArray(generations.status, ["preparing", "active"]),
-            ),
-          );
-        if (activeGeneration.purpose === "compaction") {
-          await transaction
-            .update(conversationCompactions)
-            .set({ completedAt: now, status: "cancelled", updatedAt: now })
-            .where(
-              and(
-                eq(conversationCompactions.generationId, activeGeneration.id),
-                eq(conversationCompactions.status, "active"),
-              ),
-            );
-        }
+        settledReservations += settled.releasedReservation ? 1 : 0;
       }
       await transaction
         .update(generations)
@@ -1561,7 +1735,7 @@ export function createGenerationService(
         .where(
           and(
             eq(generations.conversationId, conversationId),
-            eq(generations.purpose, "compaction"),
+            inArray(generations.purpose, ["compaction", "title"]),
           ),
         );
       const deleted = await transaction
@@ -1587,12 +1761,16 @@ export function createGenerationService(
   return Object.freeze({
     cancel,
     checkpoint,
+    finalizeNaming: titles.finalizeNaming,
     readState,
+    reconcileStaleNaming: titles.reconcileStaleNaming,
     recordProviderMetadata,
+    recordTitleObservation: titles.recordTitleObservation,
     removeConversation,
     responseStates,
     settleAccounting,
     settleDeterministicZero,
+    settleLateTitleAccounting: titles.settleLateTitleAccounting,
     startResponse,
     terminalize,
   });

@@ -158,7 +158,7 @@ function safeTier(value: GenerationModelTier): "balanced" | "fast" | "pro" | "un
 }
 
 function safePurpose(value: TelemetryPurpose): TelemetryPurpose | "unknown" {
-  return value === "chat" || value === "compaction" ? value : "unknown";
+  return value === "chat" || value === "compaction" || value === "title" ? value : "unknown";
 }
 
 function safeOutcome(value: TelemetryOutcome): TelemetryOutcome | "unknown" {

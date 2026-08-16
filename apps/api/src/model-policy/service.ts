@@ -957,6 +957,73 @@ export function createModelPolicyService(
     return Object.freeze({ admission, policies });
   }
 
+  /**
+   * Hidden-call admission for automatic titles: the Fast mapping must be approved, available,
+   * and privacy-verified, but the employee-facing enabled flag is not required, matching
+   * compaction. Returns null policy when Fast cannot serve a hidden call.
+   */
+  async function resolveHiddenFastAdmission(
+    transaction: AppTransaction,
+    workspaceId: string,
+    userId: string,
+    at: Date,
+    mode: ModelPolicyMode,
+  ): Promise<{ readonly admission: BudgetAdmission; readonly fast: ResolvedTierPolicy | null }> {
+    const rows = await transaction.execute<ResolvedGenerationAdmissionRow>(sql`
+      WITH admission_state AS MATERIALIZED (
+        ${budgetAdmissionStateQuery(workspaceId, userId, at)}
+      ),
+      resolved_tiers AS MATERIALIZED (
+        ${generationPolicyRowsQuery(workspaceId, ["fast"] as const, { lockRows: true })}
+      )
+      SELECT
+        admission_state."activeGenerationCount",
+        admission_state."consumedUsd",
+        admission_state."periodEnd",
+        admission_state."periodStart",
+        resolved_tiers."approvedCatalogId",
+        resolved_tiers."attestationVerifiedAt",
+        resolved_tiers."attestationVersion",
+        resolved_tiers.available,
+        resolved_tiers."catalogMaximumOutputTokens",
+        resolved_tiers."completionPricePerToken",
+        resolved_tiers."contextLength",
+        resolved_tiers."employeeActiveGenerationLimit",
+        resolved_tiers.enabled,
+        resolved_tiers."maximumOutputTokens",
+        resolved_tiers."metadataSource",
+        resolved_tiers."monthlyBudgetUsd",
+        resolved_tiers."promptPricePerToken",
+        resolved_tiers."requestPriceUsd",
+        resolved_tiers."reservationMarginBasisPoints",
+        resolved_tiers."resolvedModel",
+        resolved_tiers.tier
+      FROM admission_state
+      LEFT JOIN resolved_tiers ON true
+    `);
+    const first = rows.rows[0];
+    if (first === undefined) {
+      throw new Error("Hidden Fast admission returned no row");
+    }
+    const admission = budgetAdmissionFromState(first, workspaceId, userId);
+    const fastRow = rows.rows.find((row) => row.tier === "fast");
+    let fast: ResolvedTierPolicy | null = null;
+    try {
+      fast = toResolvedTierPolicy(
+        fastRow === undefined ? undefined : (fastRow as unknown as GenerationPolicyRow),
+        "fast",
+        mode,
+        now(),
+        false,
+      );
+    } catch (error: unknown) {
+      if (!(error instanceof ModelPolicyUnavailableError)) {
+        throw error;
+      }
+    }
+    return Object.freeze({ admission, fast });
+  }
+
   async function resolveTier(
     executor: AppDatabaseExecutor,
     workspaceId: string,
@@ -1038,6 +1105,7 @@ export function createModelPolicyService(
     resolveGenerationAdmission,
     resolveGenerationPolicyRows,
     resolveGenerationPolicies,
+    resolveHiddenFastAdmission,
     resolveTier,
     setPreferredTier,
   });

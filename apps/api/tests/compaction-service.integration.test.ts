@@ -807,7 +807,7 @@ describe.sequential("compaction lifecycle", () => {
       budget,
     ).cancelEmployeeWork(fixture.workspaceId, fixture.userId);
     const cancelledRows = await lifecycleRows(fixture);
-    expect(cancelledIds).toHaveLength(2);
+    expect(cancelledIds).toEqual([fixture.chatGenerationId]);
     expect(cancelledRows.hidden).toMatchObject({
       accountingStatus: "reserved",
       status: "cancelled",

@@ -1,7 +1,7 @@
 # Capstone Chat v1 PRD
 
 Status: locked decision baseline  
-Last updated: 2026-08-14
+Last updated: 2026-08-15
 
 This directory records only the Capstone Chat decisions explicitly approved during product discovery. It is the baseline for continued design and implementation.
 
@@ -45,6 +45,23 @@ plan are recorded in
 The Phase 3 and Phase 6 implementation plans remain historical records of their approved and
 implemented milestones; their earlier header placement and tier-control descriptions are not
 rewritten retroactively.
+
+The August 15, 2026 resilient-responses and employee-feedback decision (Phase 10) amends four
+locked contracts without changing model policy, budgets, persistence ownership, or the transport
+shape of existing events. First, the deterministic first-message title becomes a provisional
+fallback: a new conversation receives one bounded Fast title attempt inside an eight-second naming
+phase after its first completed root answer, during which the parent chat is internally
+`finalizing` (publicly still `active`) and generation actions stay fenced; manual renames always
+win, and `title` becomes a third accounted purpose shown to administrators as `Título`. Second,
+downstream disconnection no longer cancels generation: the browser reattaches to the same
+generation through a durable, cursor-based updates endpoint while explicit Stop, logout,
+deletion, deactivation, provider limits, the five-minute timeout, and shutdown still cancel work.
+Third, administrators receive one narrowly consented content exception: an employee may
+explicitly report one answer, sharing that answer and its direct prompt with a reason and optional
+note; administrators see only that pair and reporter metadata and gain no conversation access.
+Fourth, reports disappear with their source content. The exact contracts, guardrails, compatibility
+rollout boundary, pre-launch no-user exception, and verification plan are recorded in
+[the Phase 10 resilient responses and feedback plan](../implementation/10-resilient-responses-and-feedback-plan.md).
 
 The production-hosting decisions approved on 2026-08-11 replace the active raw-Droplet path with
 one DigitalOcean App Platform dynamic service in managed region `ric`, Dedicated Egress, and the

@@ -6,9 +6,10 @@ import { Navigate, Outlet, useNavigate } from "react-router";
 import { type SessionQueryResult, sessionQueryKey, sessionQueryOptions } from "../api/session";
 import {
   expireAuthenticatedSession,
-  isAuthenticationRequiredError,
   reportAuthenticationRequired,
-  subscribeAuthenticationRequired,
+  reportWorkspaceAccessDenied,
+  sessionBoundaryStatusForError,
+  subscribeSessionBoundary,
 } from "../api/session-boundary";
 import { copy } from "../copy";
 import { signOut } from "./auth-actions";
@@ -37,7 +38,8 @@ export function RequireSession({ standalone = false }: { readonly standalone?: b
   }, [queryClient, session.data]);
 
   useEffect(() => {
-    const expire = () => expireAuthenticatedSession(queryClient);
+    const expire = (status: "anonymous" | "denied") =>
+      expireAuthenticatedSession(queryClient, status);
     const errorFromEvent = (event: unknown): unknown => {
       if (typeof event !== "object" || event === null || !("action" in event)) {
         return undefined;
@@ -48,11 +50,14 @@ export function RequireSession({ standalone = false }: { readonly standalone?: b
         : undefined;
     };
     const expireForError = (event: unknown) => {
-      if (isAuthenticationRequiredError(errorFromEvent(event))) {
+      const status = sessionBoundaryStatusForError(errorFromEvent(event));
+      if (status === "anonymous") {
         reportAuthenticationRequired();
+      } else if (status === "denied") {
+        reportWorkspaceAccessDenied();
       }
     };
-    const unsubscribeAuthentication = subscribeAuthenticationRequired(expire);
+    const unsubscribeAuthentication = subscribeSessionBoundary(expire);
     const unsubscribeQueries = queryClient.getQueryCache().subscribe(expireForError);
     const unsubscribeMutations = queryClient.getMutationCache().subscribe(expireForError);
     return () => {

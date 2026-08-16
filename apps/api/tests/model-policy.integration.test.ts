@@ -1259,7 +1259,10 @@ describe.sequential("model policy and budget persistence", () => {
         "balanced",
         "openrouter",
       );
-      const reservation = budget.reserveResolvedTier(admission, policy, 1_000n, startedAt);
+      const reservation = budget.reserveResolvedTier(admission, policy, 1_000n, startedAt, {
+        enforceEmployeeLimit: true,
+        purpose: "chat",
+      });
       expect(reservation.reservedCostUsd).toBe("0.005");
       expect(reservation.reservationExpiresAt).toEqual(
         new Date(startedAt.getTime() + costControlTuning.reservationExpiryMs),

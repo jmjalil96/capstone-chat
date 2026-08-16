@@ -11,7 +11,7 @@ import {
   type ConversationService,
   createConversationService,
 } from "../src/conversations/service.js";
-import { user } from "../src/database/auth-schema.generated.js";
+import { session as authenticationSessions, user } from "../src/database/auth-schema.generated.js";
 import { conversations, drafts, messages } from "../src/database/conversation-schema.js";
 import { type AppDatabase, createDatabase } from "../src/database/database.js";
 import { generations } from "../src/database/generation-schema.js";
@@ -23,6 +23,7 @@ import {
   workspaceModelPolicies,
 } from "../src/database/model-policy-schema.js";
 import { ApplicationError } from "../src/errors.js";
+import { createGenerationAdministrationService } from "../src/generations/administration.js";
 import { lockDraftGenerationAdmission } from "../src/generations/admission.js";
 import { preloadDraftContext } from "../src/generations/context-preload.js";
 import { FakeModelGateway } from "../src/generations/fake-model-gateway.js";
@@ -43,12 +44,14 @@ import { createModelPolicyService } from "../src/model-policy/service.js";
 import { bootstrapSimulatedModelPolicy } from "./support/model-policy.js";
 
 function createActor(userId: string, workspaceId: string): RequestActor {
+  const now = Date.now();
   return {
     employee: { email: "member@example.test", id: userId, name: "Persona sintética" },
     role: "member",
     session: {
-      createdAt: new Date("2026-08-07T12:00:00.000Z"),
-      expiresAt: new Date("2026-08-14T12:00:00.000Z"),
+      createdAt: new Date(now - 1_000),
+      expiresAt: new Date(now + 24 * 60 * 60 * 1_000),
+      id: `session-${userId}`,
     },
     workspace: { id: workspaceId, identity: "synthetic", name: "Synthetic" },
   };
@@ -105,6 +108,27 @@ describe.sequential("generation lifecycle integration", () => {
   let generationService: GenerationService;
   let application: ApiApplication | undefined;
 
+  // These lifecycle tests exercise the terminal chat contract. When a completed initial answer
+  // hands off to naming, settle that phase immediately without a title so assertions keep
+  // describing the chat's own terminal row and single revision step.
+  async function terminalizeSettled(
+    generationId: string,
+    input: Parameters<GenerationService["terminalize"]>[1],
+  ): ReturnType<GenerationService["terminalize"]> {
+    const result = await generationService.terminalize(generationId, input);
+    if (!result.won || result.naming === undefined || result.conversationId === null) {
+      return result;
+    }
+    const finalized = await generationService.finalizeNaming({
+      conversationId: result.conversationId,
+      outcome: { errorCode: "GENERATION_FAILED", kind: "failed" },
+      parentGenerationId: generationId,
+      titleGenerationId: result.naming.titleGenerationId,
+    });
+    const { naming: _naming, ...settled } = result;
+    return { ...settled, revision: finalized.revision, status: "completed" };
+  }
+
   beforeAll(async () => {
     container = await new PostgreSqlContainer("postgres:18.4-alpine")
       .withDatabase("capstone_generations")
@@ -134,6 +158,15 @@ describe.sequential("generation lifecycle integration", () => {
       emailVerified: true,
       id: userId,
       name: "Member",
+    });
+    const sessionAt = new Date();
+    await database.insert(authenticationSessions).values({
+      createdAt: sessionAt,
+      expiresAt: new Date(sessionAt.getTime() + 24 * 60 * 60 * 1_000),
+      id: `session-${userId}`,
+      token: `token-${userId}`,
+      updatedAt: sessionAt,
+      userId,
     });
     await database.insert(workspaceMemberships).values({
       role: "member",
@@ -172,6 +205,210 @@ describe.sequential("generation lifecycle integration", () => {
     ).toMatchObject({ content, revision: draft.revision });
     return { conversation, draft };
   }
+
+  it("rejects response admission after the resolved session is durably invalidated", async () => {
+    const conversation = await conversationsService.create(actor);
+    await database
+      .delete(authenticationSessions)
+      .where(eq(authenticationSessions.id, actor.session.id));
+
+    await expectCode(
+      generationService.startResponse(actor, conversation.id, randomUUID(), {
+        content: [{ text: "No debe iniciar", type: "text" }],
+        draftRevision: 0,
+        modelTier: "balanced",
+        observedRevision: conversation.revision,
+        parentMessageId: null,
+        source: "draft",
+      }),
+      "AUTHENTICATION_REQUIRED",
+    );
+    expect(await database.select().from(generations)).toHaveLength(0);
+  });
+
+  it("admits first, then lets the session-fenced sign-out cancel the new work", async () => {
+    const conversation = await conversationsService.create(actor);
+    const draft = await conversationsService.saveDraft(
+      actor,
+      { conversationId: conversation.id, kind: "conversation" },
+      "Admisión ganadora",
+      0,
+    );
+    const budget = createBudgetService(database);
+    const admissionEntered = Promise.withResolvers<void>();
+    const releaseAdmission = Promise.withResolvers<void>();
+    const fencedService = createGenerationService(database, {
+      budget: {
+        ...budget,
+        async lockAdmissionAuthority(...argumentsList) {
+          admissionEntered.resolve();
+          await releaseAdmission.promise;
+          return budget.lockAdmissionAuthority(...argumentsList);
+        },
+      },
+    });
+    const startedPromise = fencedService.startResponse(actor, conversation.id, randomUUID(), {
+      content: [{ text: "Admisión ganadora", type: "text" }],
+      draftRevision: draft.revision,
+      modelTier: "balanced",
+      observedRevision: conversation.revision,
+      parentMessageId: null,
+      source: "draft",
+    });
+    await admissionEntered.promise;
+
+    const administration = createGenerationAdministrationService(database, budget);
+    const signOut = database.transaction(async (transaction) => {
+      const locked = await transaction
+        .select({ id: authenticationSessions.id })
+        .from(authenticationSessions)
+        .where(eq(authenticationSessions.id, actor.session.id))
+        .limit(1)
+        .for("update");
+      expect(locked).toHaveLength(1);
+      const settlement = await administration.settleEmployeeWorkInTransaction(
+        transaction,
+        null,
+        actor.employee.id,
+      );
+      await transaction
+        .delete(authenticationSessions)
+        .where(eq(authenticationSessions.id, actor.session.id));
+      return settlement;
+    });
+
+    releaseAdmission.resolve();
+    const startedResponse = await startedPromise;
+    const settlement = await signOut;
+
+    expect(settlement.parentGenerationIds).toEqual([startedResponse.generationId]);
+    await expect(fencedService.readState(startedResponse.generationId)).resolves.toMatchObject({
+      revision: 2,
+      status: "cancelled",
+    });
+  });
+
+  it("rejects admission when the session-fenced sign-out commits first", async () => {
+    const conversation = await conversationsService.create(actor);
+    const draft = await conversationsService.saveDraft(
+      actor,
+      { conversationId: conversation.id, kind: "conversation" },
+      "No debe atravesar el cierre",
+      0,
+    );
+    const budget = createBudgetService(database);
+    const administration = createGenerationAdministrationService(database, budget);
+    const sessionLocked = Promise.withResolvers<void>();
+    const releaseSignOut = Promise.withResolvers<void>();
+    const signOut = database.transaction(async (transaction) => {
+      const locked = await transaction
+        .select({ id: authenticationSessions.id })
+        .from(authenticationSessions)
+        .where(eq(authenticationSessions.id, actor.session.id))
+        .limit(1)
+        .for("update");
+      expect(locked).toHaveLength(1);
+      sessionLocked.resolve();
+      await releaseSignOut.promise;
+      await administration.settleEmployeeWorkInTransaction(transaction, null, actor.employee.id);
+      await transaction
+        .delete(authenticationSessions)
+        .where(eq(authenticationSessions.id, actor.session.id));
+    });
+    await sessionLocked.promise;
+
+    const start = generationService.startResponse(actor, conversation.id, randomUUID(), {
+      content: [{ text: "No debe atravesar el cierre", type: "text" }],
+      draftRevision: draft.revision,
+      modelTier: "balanced",
+      observedRevision: conversation.revision,
+      parentMessageId: null,
+      source: "draft",
+    });
+    releaseSignOut.resolve();
+    await signOut;
+
+    await expectCode(start, "AUTHENTICATION_REQUIRED");
+    expect(await database.select().from(generations)).toHaveLength(0);
+  });
+
+  it("cancels complete conversation batches beyond the 100-key boundary", async () => {
+    const fixtures = Array.from({ length: 101 }, (_, index) => ({
+      answerId: randomUUID(),
+      conversationId: randomUUID(),
+      generationId: randomUUID(),
+      index,
+      promptId: randomUUID(),
+    }));
+    await database.insert(conversations).values(
+      fixtures.map(({ conversationId, index }) => ({
+        id: conversationId,
+        title: `Conversación ${index}`,
+        userId: actor.employee.id,
+        workspaceId: actor.workspace.id,
+      })),
+    );
+    await database.insert(messages).values(
+      fixtures.map(({ conversationId, index, promptId }) => ({
+        content: [{ text: `Pregunta ${index}`, type: "text" }],
+        conversationId,
+        id: promptId,
+        parentMessageId: null,
+        role: "user" as const,
+      })),
+    );
+    await database.insert(messages).values(
+      fixtures.map(({ answerId, conversationId, promptId }) => ({
+        content: [{ text: "", type: "text" }],
+        conversationId,
+        id: answerId,
+        parentMessageId: promptId,
+        role: "assistant" as const,
+      })),
+    );
+    await database.insert(generations).values(
+      fixtures.map(({ answerId, conversationId, generationId }) => ({
+        assistantMessageId: answerId,
+        conversationId,
+        effectiveParameters: { context: { mode: "full" } },
+        id: generationId,
+        idempotencyKey: randomUUID(),
+        purpose: "chat",
+        requestedTier: "balanced",
+        status: "active" as const,
+        systemPromptVersion: "capstone-chat-v1",
+        userId: actor.employee.id,
+        workspaceId: actor.workspace.id,
+      })),
+    );
+
+    const cancelled = await createGenerationAdministrationService(
+      database,
+      createBudgetService(database),
+    ).cancelEmployeeWork(actor.workspace.id, actor.employee.id);
+
+    expect(new Set(cancelled)).toEqual(new Set(fixtures.map(({ generationId }) => generationId)));
+    await expect(
+      database
+        .select({ status: generations.status })
+        .from(generations)
+        .where(eq(generations.userId, actor.employee.id)),
+    ).resolves.toEqual(Array.from({ length: 101 }, () => ({ status: "cancelled" })));
+    const revised = await database
+      .select({
+        automaticTitlePending: conversations.automaticTitlePending,
+        revision: conversations.revision,
+      })
+      .from(conversations)
+      .where(eq(conversations.userId, actor.employee.id));
+    expect(revised).toHaveLength(101);
+    expect(revised).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ automaticTitlePending: false, revision: 1 }),
+      ]),
+    );
+    expect(revised.every((row) => row.revision === 1 && !row.automaticTitlePending)).toBe(true);
+  });
 
   async function longConversationDraft() {
     const conversation = await conversationsService.create(actor);
@@ -939,7 +1176,7 @@ describe.sequential("generation lifecycle integration", () => {
     });
 
     await expect(
-      generationService.terminalize(started.generationId, {
+      terminalizeSettled(started.generationId, {
         content: "",
         errorCode: "GENERATION_FAILED",
         firstTokenAt: null,
@@ -978,7 +1215,7 @@ describe.sequential("generation lifecycle integration", () => {
     });
 
     await expect(
-      generationService.terminalize(started.generationId, {
+      terminalizeSettled(started.generationId, {
         accounting: {
           metadata: {
             costUsd: "0.000123",
@@ -1053,7 +1290,7 @@ describe.sequential("generation lifecycle integration", () => {
     expect(await generationService.checkpoint(started.generationId, "Parcial", firstTokenAt)).toBe(
       true,
     );
-    const terminal = await generationService.terminalize(started.generationId, {
+    const terminal = await terminalizeSettled(started.generationId, {
       content: "Respuesta limitada",
       errorCode: null,
       firstTokenAt,
@@ -1120,7 +1357,7 @@ describe.sequential("generation lifecycle integration", () => {
       parentMessageId: null,
       source: "draft",
     });
-    await generationService.terminalize(first.generationId, {
+    await terminalizeSettled(first.generationId, {
       content: "Primera respuesta",
       errorCode: null,
       firstTokenAt: new Date(),
@@ -1142,7 +1379,7 @@ describe.sequential("generation lifecycle integration", () => {
       parentMessageId: first.messageId,
       source: "draft",
     });
-    await generationService.terminalize(second.generationId, {
+    await terminalizeSettled(second.generationId, {
       content: "Segunda respuesta original",
       errorCode: null,
       firstTokenAt: new Date(),
@@ -1184,7 +1421,7 @@ describe.sequential("generation lifecycle integration", () => {
     expect((await conversationsService.get(actor, conversation.id)).conversation.title).toBe(
       originalTitle,
     );
-    await generationService.terminalize(edited.generationId, {
+    await terminalizeSettled(edited.generationId, {
       content: "Segunda respuesta editada",
       errorCode: null,
       firstTokenAt: new Date(),
@@ -1208,7 +1445,7 @@ describe.sequential("generation lifecycle integration", () => {
       ],
       message: { role: "user", text: "Segunda pregunta editada" },
     });
-    await generationService.terminalize(retried.generationId, {
+    await terminalizeSettled(retried.generationId, {
       content: "Segunda respuesta reintentada",
       errorCode: null,
       firstTokenAt: new Date(),
@@ -1228,7 +1465,7 @@ describe.sequential("generation lifecycle integration", () => {
       history: [],
       message: { role: "user", text: "Pregunta raíz editada" },
     });
-    await generationService.terminalize(rootEdit.generationId, {
+    await terminalizeSettled(rootEdit.generationId, {
       content: "Primera respuesta editada",
       errorCode: null,
       firstTokenAt: new Date(),
@@ -1276,7 +1513,7 @@ describe.sequential("generation lifecycle integration", () => {
       parentMessageId: null,
       source: "draft",
     });
-    await generationService.terminalize(started.generationId, {
+    await terminalizeSettled(started.generationId, {
       content: "Respuesta original",
       errorCode: null,
       firstTokenAt: new Date(),
@@ -1546,6 +1783,20 @@ describe.sequential("generation lifecycle integration", () => {
   it("orders idempotency ahead of active conflicts and cancels idempotently", async () => {
     const { conversation, draft } = await adoptedConversation("Pregunta segura");
     const idempotencyKey = randomUUID();
+    const secondSessionAt = new Date();
+    const secondSessionId = `session-${randomUUID()}`;
+    await database.insert(authenticationSessions).values({
+      createdAt: secondSessionAt,
+      expiresAt: new Date(secondSessionAt.getTime() + 24 * 60 * 60 * 1_000),
+      id: secondSessionId,
+      token: `token-${randomUUID()}`,
+      updatedAt: secondSessionAt,
+      userId: actor.employee.id,
+    });
+    const actors = [
+      actor,
+      { ...actor, session: { ...actor.session, id: secondSessionId } },
+    ] as const;
     const input = {
       content: [{ text: "Pregunta segura", type: "text" as const }],
       draftRevision: draft.revision,
@@ -1574,8 +1825,8 @@ describe.sequential("generation lifecycle integration", () => {
       },
     });
     const concurrent = await Promise.allSettled(
-      [0, 1].map(() =>
-        concurrentService.startResponse(actor, conversation.id, idempotencyKey, input),
+      actors.map((requestActor) =>
+        concurrentService.startResponse(requestActor, conversation.id, idempotencyKey, input),
       ),
     );
     expect(arrivals).toBe(2);
@@ -1691,7 +1942,7 @@ describe.sequential("generation lifecycle integration", () => {
       ),
     ).toBe(false);
     expect(
-      await generationService.terminalize(started.generationId, {
+      await terminalizeSettled(started.generationId, {
         content: "Final tardío",
         errorCode: null,
         firstTokenAt: new Date(),
@@ -1717,7 +1968,7 @@ describe.sequential("generation lifecycle integration", () => {
       .set({ createdAt: databaseFloor, startedAt: databaseFloor, updatedAt: databaseFloor })
       .where(eq(generations.id, started.generationId));
 
-    const terminal = await generationService.terminalize(started.generationId, {
+    const terminal = await terminalizeSettled(started.generationId, {
       content: "Respuesta segura",
       errorCode: null,
       firstTokenAt: new Date(0),
@@ -1725,7 +1976,9 @@ describe.sequential("generation lifecycle integration", () => {
       status: "completed",
     });
     expect(terminal.won).toBe(true);
-    const stored = (await database.select().from(generations))[0];
+    const stored = (
+      await database.select().from(generations).where(eq(generations.id, started.generationId))
+    )[0];
     expect(stored?.firstTokenAt?.getTime()).toBeGreaterThanOrEqual(databaseFloor.getTime());
     expect(stored?.completedAt?.getTime()).toBeGreaterThanOrEqual(databaseFloor.getTime());
     expect(stored?.updatedAt.getTime()).toBeGreaterThanOrEqual(databaseFloor.getTime());
@@ -1876,7 +2129,7 @@ describe.sequential("generation lifecycle integration", () => {
     });
     const outcomes = await Promise.race([
       Promise.allSettled([
-        generationService.terminalize(started.generationId, {
+        terminalizeSettled(started.generationId, {
           content: "Respuesta de carrera",
           errorCode: null,
           firstTokenAt: new Date(),
@@ -1919,7 +2172,7 @@ describe.sequential("generation lifecycle integration", () => {
     });
     const firstTokenAt = new Date();
     const [completion, cancellation] = await Promise.all([
-      generationService.terminalize(started.generationId, {
+      terminalizeSettled(started.generationId, {
         content: "Respuesta completa ganadora",
         errorCode: null,
         firstTokenAt,
@@ -1932,11 +2185,15 @@ describe.sequential("generation lifecycle integration", () => {
       })),
     ]);
     expect(completion.won || cancellation).toBe(true);
-    expect(completion.won && cancellation).toBe(false);
 
     const state = await generationService.readState(started.generationId);
     const canonical = await conversationsService.get(actor, conversation.id);
     expect(state?.revision).toBe(2);
+    if (completion.won && cancellation) {
+      // Both may succeed only when Stop arrived during naming: it stops the title, never the
+      // already completed answer.
+      expect(state?.status).toBe("completed");
+    }
     if (state?.status === "completed") {
       expect(state.reason).toBe("stop");
       expect(canonical.messages.at(-1)?.content).toEqual([
@@ -1952,7 +2209,7 @@ describe.sequential("generation lifecycle integration", () => {
       await generationService.checkpoint(started.generationId, "checkpoint tardío", new Date()),
     ).toBe(false);
     expect(
-      await generationService.terminalize(started.generationId, {
+      await terminalizeSettled(started.generationId, {
         content: "terminal tardío",
         errorCode: "GENERATION_FAILED",
         firstTokenAt: new Date(),
@@ -1963,7 +2220,7 @@ describe.sequential("generation lifecycle integration", () => {
     expect((await conversationsService.get(actor, conversation.id)).conversation.revision).toBe(2);
   });
 
-  it("terminalizes from the latest revision after rename and archive mutations", async () => {
+  it("fences archive until terminalization and preserves the latest rename revision", async () => {
     const { conversation, draft } = await adoptedConversation("Pregunta con cambios estructurales");
     const started = await generationService.startResponse(actor, conversation.id, randomUUID(), {
       content: [{ text: "Pregunta con cambios estructurales", type: "text" }],
@@ -1980,17 +2237,21 @@ describe.sequential("generation lifecycle integration", () => {
       1,
     );
     expect(renamed.revision).toBe(2);
-    const archived = await conversationsService.setArchived(actor, conversation.id, true, 2);
-    expect(archived).toMatchObject({ isArchived: true, revision: 3 });
+    await expectCode(
+      conversationsService.setArchived(actor, conversation.id, true, 2),
+      "GENERATION_ACTIVE",
+    );
 
-    const terminal = await generationService.terminalize(started.generationId, {
+    const terminal = await terminalizeSettled(started.generationId, {
       content: "Respuesta después de cambios",
       errorCode: null,
       firstTokenAt: new Date(),
       reason: "stop",
       status: "completed",
     });
-    expect(terminal).toMatchObject({ reason: "stop", revision: 4, status: "completed", won: true });
+    expect(terminal).toMatchObject({ reason: "stop", revision: 3, status: "completed", won: true });
+    const archived = await conversationsService.setArchived(actor, conversation.id, true, 3);
+    expect(archived).toMatchObject({ isArchived: true, revision: 4 });
     expect((await conversationsService.get(actor, conversation.id)).conversation).toMatchObject({
       isArchived: true,
       revision: 4,
@@ -2010,7 +2271,7 @@ describe.sequential("generation lifecycle integration", () => {
     });
     const [state] = await Promise.all([
       generationService.responseStates(actor, conversation.id, [started.messageId]),
-      generationService.terminalize(started.generationId, {
+      terminalizeSettled(started.generationId, {
         content: "Respuesta final",
         errorCode: null,
         firstTokenAt: new Date(),
@@ -2038,6 +2299,7 @@ describe.sequential("generation lifecycle integration", () => {
               session: {
                 createdAt: actor.session.createdAt,
                 expiresAt: actor.session.expiresAt,
+                id: actor.session.id,
               },
               user: {
                 email: actor.employee.email,
@@ -2214,11 +2476,15 @@ describe.sequential("generation lifecycle integration", () => {
       "response.started",
       "content.delta",
       "content.delta",
+      "conversation.naming",
       "response.completed",
     ]);
-    expect(
-      (await conversationsService.get(actor, prepared.conversation.id)).messages.at(-1)?.content,
-    ).toEqual([{ text: "Respuesta simulada.", type: "text" }]);
+    const namedConversation = await conversationsService.get(actor, prepared.conversation.id);
+    expect(namedConversation.messages.at(-1)?.content).toEqual([
+      { text: "Respuesta simulada.", type: "text" },
+    ]);
+    expect(namedConversation.conversation.title).toBe("Conversación simulada");
+    expect(events.at(-1)?.revision).toBe(namedConversation.conversation.revision);
     const capturedLogs = logLines.join("\n");
     expect(capturedLogs).not.toContain("contenido-sensible-de-prueba");
     expect(capturedLogs).not.toContain("Respuesta simulada");
@@ -2322,11 +2588,26 @@ describe.sequential("generation lifecycle integration", () => {
     expect(retriedEvents.find((event) => event.type === "response.started")).toMatchObject({
       userMessageId: editedStarted.userMessageId,
     });
-    expect(observedRequests.slice(0, 3)).toMatchObject([
+    // The hidden title call follows the first answer; edits and retries never retitle.
+    expect(observedRequests.map((request) => request.purpose)).toEqual([
+      "chat",
+      "title",
+      "chat",
+      "chat",
+    ]);
+    expect(observedRequests.filter((request) => request.purpose === "chat")).toMatchObject([
       { history: [], message: { text: "contenido-sensible-de-prueba" } },
       { history: [], message: { text: "contenido editado por HTTP" } },
       { history: [], message: { text: "contenido editado por HTTP" } },
     ]);
+    expect(observedRequests[1]).toMatchObject({
+      history: [
+        { role: "user", text: "contenido-sensible-de-prueba" },
+        { role: "assistant", text: "Respuesta simulada." },
+      ],
+      modelTier: "fast",
+      purpose: "title",
+    });
 
     const oversizedConversation = await conversationsService.create(actor);
     const messageTooLarge = await fetch(

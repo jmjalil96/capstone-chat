@@ -4,6 +4,7 @@ import Fastify, { LogController } from "fastify";
 import type { Pool } from "pg";
 import { type Authentication, createAuthentication } from "./auth/authentication.js";
 import type { ApiConfig } from "./config.js";
+import { createAnswerReportService } from "./conversations/answer-reports.js";
 import { createCursorCodec } from "./conversations/cursor.js";
 import { type ConversationService, createConversationService } from "./conversations/service.js";
 import { type AppDatabase, createDatabase } from "./database/database.js";
@@ -24,6 +25,7 @@ import {
   createResponseStreamCoordinator,
   type ResponseStreamCoordinator,
 } from "./generations/response-stream.js";
+import { createResponseUpdatesService } from "./generations/response-updates.js";
 import { createGenerationService, type GenerationService } from "./generations/service.js";
 import { generationTuning } from "./generations/settings.js";
 import { OrdinaryRequestDrain } from "./http-request-drain.js";
@@ -57,6 +59,7 @@ import { OpenRouterGateway } from "./openrouter/openrouter-gateway.js";
 import { operationalErrorMetadata } from "./operator-error.js";
 import { registerAdminEmployeeRoutes } from "./routes/admin.js";
 import { registerAdminModelRoutes } from "./routes/admin-models.js";
+import { registerAnswerReportRoutes } from "./routes/answer-reports.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerClientErrorRoute } from "./routes/client-errors.js";
 import { registerConversationRoutes } from "./routes/conversations.js";
@@ -201,6 +204,11 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
     throw new Error("Resend email delivery is required in production");
   }
   const identity = dependencies.identity ?? createIdentityService(database);
+  const budget = dependencies.budget ?? createBudgetService(database, { telemetry });
+  const streamRegistry = dependencies.streamRegistry ?? new ActiveStreamRegistry();
+  const generationAdministration =
+    dependencies.generationAdministration ??
+    createGenerationAdministrationService(database, budget, telemetry);
   const authentication =
     dependencies.authentication ??
     createAuthentication({
@@ -216,10 +224,19 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
         },
       },
       identity,
+      workCancellation: {
+        settleUserWork: (transaction, userId) =>
+          generationAdministration.settleEmployeeWorkInTransaction(transaction, null, userId),
+        afterCommit(result) {
+          generationAdministration.recordSettlementTelemetry(result.settledReservations);
+          for (const generationId of result.parentGenerationIds) {
+            streamRegistry.abort(generationId, "cancelled");
+          }
+        },
+      },
     });
   const resolveActor = createActorResolver(authentication, identity);
   const cursorCodec = createCursorCodec(config.authSecret);
-  const budget = dependencies.budget ?? createBudgetService(database, { telemetry });
   const modelPolicy =
     dependencies.modelPolicy ?? createModelPolicyService(database, { cursorCodec });
   const readinessPolicyMode =
@@ -261,13 +278,9 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
       mode: config.modelGateway === "openrouter" ? "openrouter" : "simulated",
       telemetry,
     });
-  const streamRegistry = dependencies.streamRegistry ?? new ActiveStreamRegistry();
   const employeeAdministration =
     dependencies.employeeAdministration ??
     createEmployeeAdministrationService(database, cursorCodec);
-  const generationAdministration =
-    dependencies.generationAdministration ??
-    createGenerationAdministrationService(database, budget, telemetry);
   const usage = dependencies.usage ?? createUsageService(database, cursorCodec);
   const responseStreams =
     dependencies.responseStreams ??
@@ -290,6 +303,7 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
       onFailure(metadata) {
         server.log.warn(metadata, "cost-control maintenance failed");
       },
+      reconcileNaming: () => generations.reconcileStaleNaming(),
       refreshCatalog:
         dependencies.refreshCatalog ??
         (catalogClient === undefined
@@ -414,11 +428,16 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
     resolveActor,
   });
   registerConversationRoutes(server, { conversations, resolveActor });
+  registerAnswerReportRoutes(server, {
+    reports: createAnswerReportService(database, cursorCodec),
+    resolveActor,
+  });
   registerResponseRoutes(server, {
     generations,
     registry: streamRegistry,
     resolveActor,
     streams: responseStreams,
+    updates: createResponseUpdatesService(database, cursorCodec),
   });
   if (emailSender instanceof FakeEmailSender) {
     registerDevelopmentMailboxRoute(server, config, emailSender);

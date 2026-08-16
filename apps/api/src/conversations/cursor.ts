@@ -38,6 +38,13 @@ export function createCursorCodec(secret: string) {
     let payload: unknown;
     try {
       suppliedSignature = Buffer.from(encodedSignature, "base64url");
+      const encodedPayloadBytes = Buffer.from(encodedPayload, "base64url");
+      if (
+        suppliedSignature.toString("base64url") !== encodedSignature ||
+        encodedPayloadBytes.toString("base64url") !== encodedPayload
+      ) {
+        return invalidCursor();
+      }
       const expectedSignature = signature(encodedPayload);
       if (
         suppliedSignature.length !== expectedSignature.length ||
@@ -45,7 +52,7 @@ export function createCursorCodec(secret: string) {
       ) {
         return invalidCursor();
       }
-      payload = JSON.parse(Buffer.from(encodedPayload, "base64url").toString("utf8"));
+      payload = JSON.parse(encodedPayloadBytes.toString("utf8"));
     } catch {
       return invalidCursor();
     }

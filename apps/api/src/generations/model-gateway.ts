@@ -63,7 +63,7 @@ export interface GenerationDerivedContext {
   readonly summary: string;
 }
 
-export type GenerationPurpose = "chat" | "compaction";
+export type GenerationPurpose = "chat" | "compaction" | "title";
 
 interface GenerationRequestBase {
   readonly history: readonly GenerationContextMessage[];
@@ -88,7 +88,16 @@ export interface CompactionGenerationRequest extends GenerationRequestBase {
   readonly purpose: "compaction";
 }
 
-export type GenerationRequest = ChatGenerationRequest | CompactionGenerationRequest;
+export interface TitleGenerationRequest extends GenerationRequestBase {
+  readonly derivedContext?: never;
+  readonly modelTier: "fast";
+  readonly purpose: "title";
+}
+
+export type GenerationRequest =
+  | ChatGenerationRequest
+  | CompactionGenerationRequest
+  | TitleGenerationRequest;
 
 export interface GatewayRequestMessage {
   readonly content: string;

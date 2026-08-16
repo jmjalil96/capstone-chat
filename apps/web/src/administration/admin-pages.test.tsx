@@ -17,6 +17,7 @@ import { AdminShell } from "./admin-shell";
 import { EmployeesPage } from "./employees-page";
 import { formatAdminUsd } from "./formatting";
 import { ModelsPage } from "./models-page";
+import { ReportsPage } from "./reports-page";
 import { UsagePage } from "./usage-page";
 
 const session = {
@@ -66,6 +67,7 @@ function renderAdministration(path: string) {
                   { path: "employees", Component: EmployeesPage },
                   { path: "models", Component: ModelsPage },
                   { path: "usage", Component: UsagePage },
+                  { path: "reports", Component: ReportsPage },
                 ],
               },
             ],
@@ -331,7 +333,7 @@ describe("administration pages", () => {
         new Intl.NumberFormat("es-EC", { maximumFractionDigits: 0 }).format(9_007_199_254_740_993n),
       ),
     ).toBeVisible();
-    expect(screen.getByText(copy.administration.usage.compaction)).toBeVisible();
+    expect(screen.getByText(copy.administration.usage.purposes.compaction)).toBeVisible();
     expect(
       within(
         screen.getByRole("region", {
@@ -339,5 +341,56 @@ describe("administration pages", () => {
         }),
       ).queryByRole("link"),
     ).not.toBeInTheDocument();
+  });
+
+  it("renders the read-only report inbox, opens the consented pair, and handles a vanished report", async () => {
+    const reportId = "3f6c1a1e-6d7c-4a1c-9d2e-6b2f6f0f5c11";
+    const item = {
+      id: reportId,
+      reporter: { name: "Luis Pérez", email: "luis@example.test" },
+      reason: "outdated",
+      note: "El monto cambió.",
+      createdAt: "2026-08-15T12:00:00.000Z",
+    } as const;
+    let detailCalls = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith(`/api/admin/answer-reports/${reportId}`)) {
+        detailCalls += 1;
+        if (detailCalls === 1) {
+          return json({ ...item, exchange: { prompt: "¿Prima?", answer: "La prima es 120." } });
+        }
+        return json({ code: "NOT_FOUND", message: "gone", requestId: "r" }, 404);
+      }
+      return json({ items: detailCalls === 0 ? [item] : [], nextCursor: null });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { user } = renderAdministration("/admin/reports");
+
+    expect(await screen.findByText("Luis Pérez")).toBeVisible();
+    expect(screen.getByText("El monto cambió.")).toBeVisible();
+    expect(screen.queryByRole("link", { name: /conversaci/iu })).not.toBeInTheDocument();
+    // The pair is fetched only when opened.
+    expect(detailCalls).toBe(0);
+    const open = screen.getByRole("button", { name: /Ver mensajes del reporte 1:/u });
+    expect(open).toHaveAccessibleName(/Luis Pérez.*Desactualizada/u);
+    await user.click(open);
+    const dialog = await screen.findByRole("dialog", {
+      name: copy.administration.reports.detailTitle,
+    });
+    expect(await within(dialog).findByText("La prima es 120.")).toBeVisible();
+    expect(within(dialog).getByText("¿Prima?")).toBeVisible();
+    await user.click(
+      within(dialog).getByRole("button", { name: copy.administration.reports.close }),
+    );
+    await waitFor(() => expect(dialog).not.toBeVisible());
+    await waitFor(() => expect(open).toHaveFocus());
+
+    // A report deleted with its source closes the dialog and refreshes the list.
+    await user.click(open);
+    const unavailable = await screen.findByText(copy.administration.reports.unavailable);
+    expect(unavailable).toBeVisible();
+    await waitFor(() => expect(unavailable).toHaveFocus());
+    await waitFor(() => expect(screen.getByText(copy.administration.reports.empty)).toBeVisible());
   });
 });

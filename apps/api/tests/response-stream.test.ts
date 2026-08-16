@@ -15,6 +15,7 @@ import type {
   StartedResponse,
 } from "../src/generations/service.js";
 import { generationTuning } from "../src/generations/settings.js";
+import { buildTitleRequest } from "../src/generations/title-service.js";
 
 const started: StartedResponse = {
   admittedAt: new Date(),
@@ -259,6 +260,345 @@ afterEach(async () => {
 });
 
 describe("response stream normalization", () => {
+  it("does not call the provider when cancellation committed before stream registration", async () => {
+    const memory = memoryGenerationService("cancelled");
+    memory.state = {
+      ...memory.state,
+      reason: "cancelled",
+      revision: 2,
+      status: "cancelled",
+    };
+    const gatewayStream = vi.fn<ModelGateway["stream"]>(() => {
+      throw new Error("Provider must not start after durable cancellation");
+    });
+
+    const events = await eventsFrom(
+      await fetch(await streamUrl({ stream: gatewayStream }, memory), { method: "POST" }),
+    );
+
+    expect(events.map((event) => event.type)).toEqual(["response.started", "response.cancelled"]);
+    expect(gatewayStream).not.toHaveBeenCalled();
+  });
+
+  it("tracks deferred title accounting after the response until the shutdown fence can release", async () => {
+    const memory = memoryGenerationService();
+    const registry = new ActiveStreamRegistry();
+    const baseTerminalize = memory.service.terminalize.bind(memory.service);
+    const titleStarted = Promise.withResolvers<void>();
+    const releaseTitle = Promise.withResolvers<void>();
+    const settlementStarted = Promise.withResolvers<void>();
+    const releaseSettlement = Promise.withResolvers<void>();
+    const observations: unknown[] = [];
+    const finalizationInputs: Parameters<GenerationService["finalizeNaming"]>[0][] = [];
+    const lateAccounting = {
+      cachedTokens: 1,
+      costUsd: "0.0004",
+      metadata: {
+        provider: "synthetic-provider",
+        resolvedModel: "synthetic/title-model",
+      },
+      reasoningTokens: 0,
+    } as const;
+    const finalizeNaming = vi.fn<GenerationService["finalizeNaming"]>(async (input) => {
+      finalizationInputs.push(input);
+      if (memory.state.status === "finalizing") {
+        memory.state = { ...memory.state, revision: 2, status: "completed" };
+        return { kind: "finalized", revision: 2, titleApplied: false };
+      }
+      return { kind: "lost-cas", revision: memory.state.revision, titleApplied: false };
+    });
+    const settleLateTitleAccounting = vi.fn<GenerationService["settleLateTitleAccounting"]>(
+      async () => {
+        settlementStarted.resolve();
+        await releaseSettlement.promise;
+        return true;
+      },
+    );
+    memory.service = {
+      ...memory.service,
+      finalizeNaming,
+      recordTitleObservation: vi.fn(async (_generationId, observation) => {
+        observations.push(observation);
+        return true;
+      }),
+      settleLateTitleAccounting,
+      terminalize: async (generationId, input) => {
+        const result = await baseTerminalize(generationId, input);
+        if (!result.won || result.status !== "completed") {
+          return result;
+        }
+        memory.state = { ...memory.state, revision: 1, status: "finalizing" };
+        const providerDeadlineAt = new Date(Date.now() + 50);
+        return {
+          ...result,
+          naming: {
+            deadlineAt: new Date(providerDeadlineAt.getTime() + 40),
+            providerDeadlineAt,
+            request: { ...buildTitleRequest("Pregunta", input.content) },
+            titleGenerationId: "00000000-0000-4000-8000-000000000099",
+          },
+          revision: 1,
+          status: "finalizing" as const,
+        };
+      },
+    } as GenerationService;
+    const gateway: ModelGateway = {
+      async *stream(request) {
+        if (request.purpose === "chat") {
+          yield { text: "Respuesta útil", type: "content.delta" };
+          yield {
+            reason: "stop",
+            type: "response.completed",
+            usage: { inputTokens: 4, outputTokens: 2 },
+          };
+          return;
+        }
+        yield {
+          metadata: { providerGenerationId: "late-title-provider-id" },
+          type: "generation.metadata",
+        };
+        titleStarted.resolve();
+        await releaseTitle.promise;
+        yield { text: "Título tardío", type: "content.delta" };
+        yield {
+          accounting: lateAccounting,
+          reason: "stop",
+          type: "response.completed",
+          usage: { inputTokens: 3, outputTokens: 2 },
+        };
+      },
+    };
+
+    const eventsPromise = fetch(await streamUrl(gateway, memory, registry), {
+      method: "POST",
+    }).then(eventsFrom);
+    await titleStarted.promise;
+    const events = await eventsPromise;
+
+    expect(events.map((event) => event.type)).toEqual([
+      "response.started",
+      "content.delta",
+      "conversation.naming",
+      "response.completed",
+    ]);
+    expect(finalizationInputs[0]?.outcome).toMatchObject({
+      errorCode: "GENERATION_TIMEOUT",
+      kind: "failed",
+    });
+    expect(observations).toEqual([
+      { metadata: { providerGenerationId: "late-title-provider-id" } },
+    ]);
+    expect(registry.size).toBe(1);
+    registry.beginDraining();
+    const shutdownFence = registry.waitForIdle(1_000);
+
+    releaseTitle.resolve();
+    await settlementStarted.promise;
+    expect(finalizeNaming).toHaveBeenCalledTimes(2);
+    expect(finalizationInputs[1]?.outcome).toMatchObject({
+      firstTokenAt: expect.any(Date),
+      kind: "titled",
+      metadata: { providerGenerationId: "late-title-provider-id" },
+      title: "Título tardío",
+    });
+    expect(settleLateTitleAccounting).toHaveBeenCalledOnce();
+    expect(settleLateTitleAccounting).toHaveBeenCalledWith(
+      "00000000-0000-4000-8000-000000000099",
+      { inputTokens: 3, outputTokens: 2 },
+      lateAccounting,
+      {
+        firstTokenAt: expect.any(Date),
+        metadata: {
+          provider: "synthetic-provider",
+          providerGenerationId: "late-title-provider-id",
+          resolvedModel: "synthetic/title-model",
+        },
+      },
+    );
+    expect(registry.size).toBe(1);
+    await expect(registry.waitForIdle(1)).resolves.toBe(false);
+
+    releaseSettlement.resolve();
+    await expect(shutdownFence).resolves.toBe(true);
+    expect(registry.size).toBe(0);
+  });
+
+  it("keeps an answer-durable finalizing parent out of failed workflow telemetry", async () => {
+    const memory = memoryGenerationService();
+    const baseTerminalize = memory.service.terminalize.bind(memory.service);
+    const failedAccounting = {
+      costUsd: "0.0002",
+      metadata: {
+        provider: "synthetic-provider",
+        providerGenerationId: "failed-title-provider-id",
+        resolvedModel: "synthetic/title-model",
+      },
+    } as const;
+    const finalizeNaming = vi.fn<GenerationService["finalizeNaming"]>(async () => {
+      throw new Error("Synthetic naming persistence failure");
+    });
+    const settleLateTitleAccounting = vi.fn<GenerationService["settleLateTitleAccounting"]>(
+      async () => true,
+    );
+    memory.service = {
+      ...memory.service,
+      finalizeNaming,
+      recordTitleObservation: vi.fn(async () => true),
+      settleLateTitleAccounting,
+      terminalize: async (generationId, input) => {
+        const result = await baseTerminalize(generationId, input);
+        if (!result.won || result.status !== "completed") {
+          return result;
+        }
+        memory.state = { ...memory.state, revision: 1, status: "finalizing" };
+        const providerDeadlineAt = new Date(Date.now() + 10);
+        return {
+          ...result,
+          naming: {
+            deadlineAt: new Date(providerDeadlineAt.getTime() + 10),
+            providerDeadlineAt,
+            request: { ...buildTitleRequest("Pregunta", input.content) },
+            titleGenerationId: "00000000-0000-4000-8000-000000000098",
+          },
+          revision: 1,
+          status: "finalizing" as const,
+        };
+      },
+    } as GenerationService;
+    const recordGeneration = vi.fn();
+    const telemetry = {
+      changeActiveEmployeeStreams: vi.fn(),
+      changeActiveProviderCalls: vi.fn(),
+      recordContextDecision: vi.fn(),
+      recordGeneration,
+      recordResponseStarted: vi.fn(),
+      startModelCall: vi.fn(() => ({
+        cancelRequested: vi.fn(),
+        firstToken: vi.fn(),
+        requestSent: vi.fn(),
+        responseStarted: vi.fn(),
+        settle: vi.fn(),
+      })),
+    } satisfies ResponseStreamTelemetry;
+    const gateway: ModelGateway = {
+      async *stream(request) {
+        if (request.purpose === "chat") {
+          yield { text: "Respuesta durable", type: "content.delta" };
+          yield {
+            reason: "stop",
+            type: "response.completed",
+            usage: { inputTokens: 4, outputTokens: 2 },
+          };
+          return;
+        }
+        yield {
+          accounting: { actual: failedAccounting, spendRisk: "unknown" },
+          errorCode: "GENERATION_FAILED",
+          type: "response.failed",
+          usage: { inputTokens: 2, outputTokens: 0 },
+        };
+      },
+    };
+
+    const events = await eventsFrom(
+      await fetch(
+        await streamUrl(gateway, memory, undefined, undefined, started, undefined, telemetry),
+        {
+          method: "POST",
+        },
+      ),
+    );
+
+    expect(events.map((event) => event.type)).toEqual([
+      "response.started",
+      "content.delta",
+      "conversation.naming",
+    ]);
+    expect(memory.state.status).toBe("finalizing");
+    expect(finalizeNaming).toHaveBeenCalledTimes(2);
+    expect(settleLateTitleAccounting).toHaveBeenCalledOnce();
+    expect(settleLateTitleAccounting).toHaveBeenCalledWith(
+      "00000000-0000-4000-8000-000000000098",
+      { inputTokens: 2, outputTokens: 0 },
+      failedAccounting,
+      {
+        firstTokenAt: null,
+        metadata: failedAccounting.metadata,
+      },
+    );
+    expect(
+      finalizeNaming.mock.calls.every(([input]) => input.persistenceDeadlineAt instanceof Date),
+    ).toBe(true);
+    expect(recordGeneration).toHaveBeenCalledWith(
+      "balanced",
+      "chat",
+      "completed",
+      expect.any(Number),
+    );
+  });
+
+  it("stops awaiting a finalizer that cannot acquire a pool client at the persistence deadline", async () => {
+    const memory = memoryGenerationService();
+    const baseTerminalize = memory.service.terminalize.bind(memory.service);
+    const blockedFinalization =
+      Promise.withResolvers<Awaited<ReturnType<GenerationService["finalizeNaming"]>>>();
+    const finalizeNaming = vi.fn<GenerationService["finalizeNaming"]>(
+      () => blockedFinalization.promise,
+    );
+    memory.service = {
+      ...memory.service,
+      finalizeNaming,
+      recordTitleObservation: vi.fn(async () => true),
+      terminalize: async (generationId, input) => {
+        const result = await baseTerminalize(generationId, input);
+        if (!result.won || result.status !== "completed") {
+          return result;
+        }
+        memory.state = { ...memory.state, revision: 1, status: "finalizing" };
+        const providerDeadlineAt = new Date(Date.now() + 30);
+        return {
+          ...result,
+          naming: {
+            deadlineAt: new Date(providerDeadlineAt.getTime() + 30),
+            providerDeadlineAt,
+            request: { ...buildTitleRequest("Pregunta", input.content) },
+            titleGenerationId: "00000000-0000-4000-8000-000000000097",
+          },
+          revision: 1,
+          status: "finalizing" as const,
+        };
+      },
+    } as GenerationService;
+    const gateway: ModelGateway = {
+      async *stream(request) {
+        if (request.purpose === "chat") {
+          yield { text: "Respuesta durable", type: "content.delta" };
+          yield {
+            reason: "stop",
+            type: "response.completed",
+            usage: { inputTokens: 4, outputTokens: 2 },
+          };
+          return;
+        }
+        yield { errorCode: "GENERATION_FAILED", type: "response.failed" };
+      },
+    };
+
+    const startedAt = performance.now();
+    const events = await eventsFrom(
+      await fetch(await streamUrl(gateway, memory), { method: "POST" }),
+    );
+
+    expect(performance.now() - startedAt).toBeLessThan(500);
+    expect(events.map((event) => event.type)).toEqual([
+      "response.started",
+      "content.delta",
+      "conversation.naming",
+    ]);
+    expect(finalizeNaming).toHaveBeenCalledTimes(2);
+    blockedFinalization.resolve({ kind: "lost-cas", revision: 1, titleApplied: false });
+  });
+
   it("keeps a silent provider stream alive with content-free heartbeats", async () => {
     const memory = memoryGenerationService();
     let deltaAt = 0;
@@ -395,7 +735,7 @@ describe("response stream normalization", () => {
       ...memory.service,
       readState: (generationId: string) => {
         stateReads += 1;
-        if (stateReads === 1) {
+        if (stateReads === 2) {
           stateReadStarted.resolve();
           return stalePreparingRead.promise;
         }
@@ -457,7 +797,7 @@ describe("response stream normalization", () => {
       ...memory.service,
       readState: (generationId: string) => {
         stateReads += 1;
-        if (stateReads === 1) {
+        if (stateReads === 2) {
           stateReadStarted.resolve();
           return stalePreparingRead.promise;
         }
@@ -979,8 +1319,9 @@ describe("response stream normalization", () => {
     expect(memory.state.status).toBe("completed");
   });
 
-  it("interrupts a real HTTP stream when maximum-line backpressure never drains", async () => {
+  it("detaches a stalled maximum-line socket at the backpressure timeout without aborting the provider", async () => {
     const allowDelta = Promise.withResolvers<void>();
+    const allowCompletion = Promise.withResolvers<void>();
     const maximumLineText = "x".repeat(65_501);
     expect(
       Buffer.byteLength(
@@ -998,6 +1339,7 @@ describe("response stream normalization", () => {
         await allowDelta.promise;
         yield { text: maximumLineText, type: "content.delta" };
         gatewayPulls += 1;
+        await allowCompletion.promise;
         yield {
           reason: "stop",
           type: "response.completed",
@@ -1033,44 +1375,43 @@ describe("response stream normalization", () => {
       expect(gatewayPulls).toBe(1);
       expect(gatewaySignal?.aborted).toBe(false);
       expect(memory.state.status).toBe("active");
-      expect(rawResponse.writableLength).toBe(stalledBytes);
+      expect(rawResponse.destroyed).toBe(false);
 
       await vi.advanceTimersByTimeAsync(1);
-      for (
-        let attempt = 0;
-        attempt < 100 && (memory.state.status === "active" || gatewaySignal?.aborted !== true);
-        attempt += 1
-      ) {
+      for (let attempt = 0; attempt < 100 && gatewayPulls < 2; attempt += 1) {
         await Promise.resolve();
       }
     } finally {
       vi.useRealTimers();
     }
 
-    expect(gatewayPulls).toBe(1);
-    expect(gatewaySignal?.aborted).toBe(true);
+    // The stalled reader is disconnected explicitly while the provider keeps producing.
+    expect(rawResponse.destroyed).toBe(true);
+    expect(gatewayPulls).toBe(2);
+    expect(gatewaySignal?.aborted).toBe(false);
+    expect(memory.state.status).toBe("active");
+    await reader.read().catch(() => undefined);
+
+    allowCompletion.resolve();
+    await waitForState(memory, "completed");
     expect(memory.content).toBe(maximumLineText);
-    expect(memory.state).toMatchObject({
-      errorCode: "STREAM_INTERRUPTED",
-      reason: "error",
-      status: "incomplete",
-    });
-    while (!(await reader.read()).done) {
-      // Drain the response after the coordinator releases the cork on end.
-    }
+    expect(memory.state).toMatchObject({ reason: "stop", status: "completed" });
   });
 
-  it("marks an unexplained downstream disconnect incomplete", async () => {
+  it("keeps generating after an unexplained downstream disconnect and completes durably", async () => {
+    const allowCompletion = Promise.withResolvers<void>();
+    let gatewaySignal: AbortSignal | undefined;
     const gateway: ModelGateway = {
       async *stream(_request, signal) {
+        gatewaySignal = signal;
         yield { text: "Durable partial", type: "content.delta" };
-        await new Promise<void>((_resolve, reject) => {
-          signal.addEventListener(
-            "abort",
-            () => reject(new DOMException("aborted", "AbortError")),
-            { once: true },
-          );
-        });
+        await allowCompletion.promise;
+        yield { text: " and the rest", type: "content.delta" };
+        yield {
+          reason: "stop",
+          type: "response.completed",
+          usage: { inputTokens: 1, outputTokens: 2 },
+        };
       },
     };
     const memory = memoryGenerationService();
@@ -1094,9 +1435,14 @@ describe("response stream normalization", () => {
     }
     controller.abort();
     await reader.read().catch(() => undefined);
-    await waitForState(memory, "incomplete");
-    expect(memory.state).toMatchObject({ errorCode: "STREAM_INTERRUPTED", reason: "error" });
-    expect(memory.content).toBe("Durable partial");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(gatewaySignal?.aborted).toBe(false);
+    expect(memory.state.status).toBe("active");
+
+    allowCompletion.resolve();
+    await waitForState(memory, "completed");
+    expect(memory.content).toBe("Durable partial and the rest");
+    expect(memory.state).toMatchObject({ errorCode: null, reason: "stop", status: "completed" });
   });
 
   it("suppresses the next delta after the bounded fence observes cross-replica cancellation", async () => {
@@ -1201,7 +1547,7 @@ describe("response stream normalization", () => {
   });
 
   it("settles a completed provider event that arrives after durable cancellation exactly once", async () => {
-    const memory = memoryGenerationService("cancelled");
+    const memory = memoryGenerationService();
     const accounting = {
       costUsd: "0.000321",
       metadata: {
@@ -1214,6 +1560,14 @@ describe("response stream normalization", () => {
     memory.service = { ...memory.service, settleAccounting } as GenerationService;
     const gateway: ModelGateway = {
       async *stream() {
+        yield { text: "Respuesta parcial", type: "content.delta" };
+        memory.state = {
+          ...memory.state,
+          errorCode: null,
+          reason: "cancelled",
+          revision: 2,
+          status: "cancelled",
+        };
         yield {
           accounting,
           reason: "stop",
@@ -1229,7 +1583,11 @@ describe("response stream normalization", () => {
       }),
     );
 
-    expect(events.map((event) => event.type)).toEqual(["response.started", "response.cancelled"]);
+    expect(events.map((event) => event.type)).toEqual([
+      "response.started",
+      "content.delta",
+      "response.cancelled",
+    ]);
     expect(settleAccounting).toHaveBeenCalledOnce();
     expect(settleAccounting).toHaveBeenCalledWith(
       started.generationId,

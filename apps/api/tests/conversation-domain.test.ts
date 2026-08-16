@@ -201,7 +201,29 @@ describe("opaque cursor codec", () => {
 
   it("rejects tampering and cross-route reuse", () => {
     const cursor = codec.encode({ id: "synthetic", kind: "history", version: 1 });
-    expectCode(() => codec.decode(`${cursor.slice(0, -1)}A`, "history"), "INVALID_CURSOR");
+    const [payload, signature] = cursor.split(".");
+    if (payload === undefined || signature === undefined) {
+      throw new Error("Signed cursor fixture was malformed");
+    }
+    const base64urlAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const finalSignatureCharacter = signature.at(-1);
+    const finalSignatureIndex =
+      finalSignatureCharacter === undefined
+        ? -1
+        : base64urlAlphabet.indexOf(finalSignatureCharacter);
+    if (finalSignatureIndex < 0) {
+      throw new Error("Signed cursor fixture used an invalid alphabet");
+    }
+    const noncanonicalAlias = base64urlAlphabet[finalSignatureIndex ^ 1];
+    if (noncanonicalAlias === undefined) {
+      throw new Error("Signed cursor fixture could not create a noncanonical alias");
+    }
+    expectCode(
+      () => codec.decode(`${payload}.${signature.slice(0, -1)}${noncanonicalAlias}`, "history"),
+      "INVALID_CURSOR",
+    );
+    const tamperedSignature = `${signature.startsWith("A") ? "B" : "A"}${signature.slice(1)}`;
+    expectCode(() => codec.decode(`${payload}.${tamperedSignature}`, "history"), "INVALID_CURSOR");
     expectCode(() => codec.decode(cursor, "search"), "INVALID_CURSOR");
   });
 });

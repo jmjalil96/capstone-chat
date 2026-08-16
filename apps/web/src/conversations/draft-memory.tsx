@@ -12,7 +12,7 @@ import {
   useState,
 } from "react";
 
-import { subscribeAuthenticationRequired } from "../api/session-boundary";
+import { subscribeSessionBoundary } from "../api/session-boundary";
 import {
   ConversationApiError,
   type ConversationQueryScope,
@@ -228,7 +228,7 @@ export function DraftMemoryProvider({ children, queryScope }: DraftMemoryProvide
   }, [queryClient, queryScope, scopeKey]);
   useLayoutEffect(
     () =>
-      subscribeAuthenticationRequired(() => {
+      subscribeSessionBoundary(() => {
         const generation = generationRef.current;
         if (!generation?.active) {
           return;

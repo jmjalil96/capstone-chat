@@ -148,7 +148,11 @@ describe("graceful shutdown", () => {
         send: vi.fn(async () => undefined),
       },
       maintenance: {
-        runOnce: vi.fn(async () => ({ catalogRefresh: null, reconciliation: null })),
+        runOnce: vi.fn(async () => ({
+          catalogRefresh: null,
+          namingReconciliation: null,
+          reconciliation: null,
+        })),
         start: vi.fn(),
         stop: stopMaintenance,
       },
@@ -656,7 +660,11 @@ describe("graceful shutdown", () => {
   it("stops HTTP and closes the database pool once", async () => {
     let maintenanceStopped = false;
     const maintenance: CostControlMaintenance = {
-      runOnce: vi.fn(async () => ({ catalogRefresh: null, reconciliation: null })),
+      runOnce: vi.fn(async () => ({
+        catalogRefresh: null,
+        namingReconciliation: null,
+        reconciliation: null,
+      })),
       start: vi.fn(),
       stop: vi.fn(async () => {
         maintenanceStopped = true;

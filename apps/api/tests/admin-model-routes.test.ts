@@ -140,6 +140,7 @@ function actor(role: "admin" | "member", fresh = true): RequestActor {
     session: Object.freeze({
       createdAt: new Date(current - (fresh ? 1_000 : 60 * 60 * 1_000)),
       expiresAt: new Date(current + 60 * 60 * 1_000),
+      id: "admin-session",
     }),
     workspace: Object.freeze({
       id: workspaceId,

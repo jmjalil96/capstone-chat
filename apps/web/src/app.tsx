@@ -39,6 +39,11 @@ const ModelsPage = lazy(() =>
     default: Component,
   })),
 );
+const ReportsPage = lazy(() =>
+  import("./administration/reports-page").then(({ ReportsPage: Component }) => ({
+    default: Component,
+  })),
+);
 const UsagePage = lazy(() =>
   import("./administration/usage-page").then(({ UsagePage: Component }) => ({
     default: Component,
@@ -99,6 +104,7 @@ export const appRoutes = [
                   { path: "employees", Component: EmployeesPage },
                   { path: "models", Component: ModelsPage },
                   { path: "usage", Component: UsagePage },
+                  { path: "reports", Component: ReportsPage },
                 ],
               },
             ],

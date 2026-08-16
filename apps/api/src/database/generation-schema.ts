@@ -21,11 +21,43 @@ import { workspaces } from "./identity-schema.js";
 export const generationStatus = pgEnum("generation_status", [
   "preparing",
   "active",
+  "finalizing",
   "completed",
   "cancelled",
   "incomplete",
   "failed",
 ]);
+
+/** Generation statuses that still own a conversation workflow slot. */
+export const nonterminalGenerationStatuses = Object.freeze([
+  "preparing",
+  "active",
+  "finalizing",
+] as const);
+
+/** Generation statuses whose row is settled and immutable except for late accounting. */
+export const terminalGenerationStatuses = Object.freeze([
+  "completed",
+  "cancelled",
+  "incomplete",
+  "failed",
+] as const);
+
+export type NonterminalGenerationStatus = (typeof nonterminalGenerationStatuses)[number];
+export type TerminalGenerationStatus = (typeof terminalGenerationStatuses)[number];
+export type GenerationLifecycleStatus = NonterminalGenerationStatus | TerminalGenerationStatus;
+
+export function isNonterminalGenerationStatus(
+  status: GenerationLifecycleStatus,
+): status is NonterminalGenerationStatus {
+  return (nonterminalGenerationStatuses as readonly string[]).includes(status);
+}
+
+export function isTerminalGenerationStatus(
+  status: GenerationLifecycleStatus,
+): status is TerminalGenerationStatus {
+  return !isNonterminalGenerationStatus(status);
+}
 
 export const generationTerminalReason = pgEnum("generation_terminal_reason", [
   "stop",
@@ -124,10 +156,16 @@ export const generations = pgTable(
     uniqueIndex("generations_chat_workflow_conversation_unique")
       .on(table.conversationId)
       .where(
-        sql`${table.status} IN ('preparing', 'active')
+        sql`${table.status} IN ('preparing', 'active', 'finalizing')
           AND ${table.conversationId} IS NOT NULL
           AND ${table.assistantMessageId} IS NOT NULL`,
       ),
+    uniqueIndex("generations_title_conversation_unique")
+      .on(table.conversationId)
+      .where(sql`${table.purpose} = 'title' AND ${table.conversationId} IS NOT NULL`),
+    index("generations_finalizing_completed_idx")
+      .on(table.completedAt)
+      .where(sql`${table.status} = 'finalizing'`),
     uniqueIndex("generations_openrouter_generation_id_unique")
       .on(table.openRouterGenerationId)
       .where(sql`${table.openRouterGenerationId} IS NOT NULL`),
@@ -154,7 +192,7 @@ export const generations = pgTable(
           ${table.conversationId} IS NOT NULL
           AND ${table.assistantMessageId} IS NULL
           AND ${table.purpose} IS NOT NULL
-          AND ${table.purpose} = 'compaction'
+          AND ${table.purpose} IN ('compaction', 'title')
         )`,
     ),
     check(
@@ -167,6 +205,10 @@ export const generations = pgTable(
           ${table.purpose} IS NOT NULL
           AND ${table.purpose} = 'compaction'
           AND ${table.systemPromptVersion} = 'capstone-compaction-v1'
+        ) OR (
+          ${table.purpose} IS NOT NULL
+          AND ${table.purpose} = 'title'
+          AND ${table.systemPromptVersion} = 'capstone-title-v1'
         ) OR (
           (${table.purpose} IS NULL OR ${table.purpose} = 'chat')
           AND ${table.systemPromptVersion} = 'capstone-chat-v1'
@@ -182,8 +224,7 @@ export const generations = pgTable(
           ${table.accountingStatus} IS NULL
           AND (
             ${table.purpose} IS NULL
-            OR ${table.purpose} = 'chat'
-            OR ${table.purpose} = 'compaction'
+            OR ${table.purpose} IN ('chat', 'compaction', 'title')
           )
           AND ${table.requestedModel} IS NULL
           AND ${table.resolvedModel} IS NULL
@@ -210,7 +251,7 @@ export const generations = pgTable(
           ${table.accountingStatus} IS NOT NULL
           AND ${table.accountingStatus} IN ('reserved', 'actual', 'estimated')
           AND ${table.purpose} IS NOT NULL
-          AND ${table.purpose} IN ('chat', 'compaction')
+          AND ${table.purpose} IN ('chat', 'compaction', 'title')
           AND ${table.requestedModel} IS NOT NULL
           AND ${table.requestedModel} ~ '[^[:space:]]'
           AND ${table.resolvedModel} IS NOT NULL
@@ -282,9 +323,19 @@ export const generations = pgTable(
             OR (
               ${table.assistantMessageId} IS NULL
               AND ${table.purpose} IS NOT NULL
-              AND ${table.purpose} = 'compaction'
+              AND ${table.purpose} IN ('compaction', 'title')
             )
           )
+        ) OR (
+          ${table.status} = 'finalizing'
+          AND ${table.purpose} IS NOT NULL
+          AND ${table.purpose} = 'chat'
+          AND ${table.terminalReason} IS NOT NULL
+          AND ${table.terminalReason} IN ('stop', 'length')
+          AND ${table.errorCode} IS NULL
+          AND ${table.completedAt} IS NOT NULL
+          AND ${table.conversationId} IS NOT NULL
+          AND ${table.assistantMessageId} IS NOT NULL
         ) OR (
           ${table.status} = 'completed'
           AND ${table.terminalReason} IS NOT NULL

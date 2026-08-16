@@ -3,17 +3,18 @@ import Value from "typebox/value";
 
 import { STREAM_MAX_LINE_BYTES } from "./config";
 
-const knownEventTypes = new Set([
-  "response.started",
-  "context.compacting",
-  "context.compacted",
-  "context.warning",
-  "stream.heartbeat",
-  "content.delta",
-  "response.completed",
-  "response.cancelled",
-  "response.failed",
-]);
+const knownEventTypes = {
+  "content.delta": true,
+  "context.compacted": true,
+  "context.compacting": true,
+  "context.warning": true,
+  "conversation.naming": true,
+  "response.cancelled": true,
+  "response.completed": true,
+  "response.failed": true,
+  "response.started": true,
+  "stream.heartbeat": true,
+} satisfies Record<StreamEvent["type"], true>;
 
 const terminalEventTypes = new Set(["response.completed", "response.cancelled", "response.failed"]);
 
@@ -133,6 +134,7 @@ export async function* parseResponseStream(
   let terminal = false;
   let contentSeen = false;
   let compaction: "none" | "compacting" | "settled" = "none";
+  let namingSeen = false;
   const cancelReader = () => void reader.cancel().catch(() => undefined);
   signal.addEventListener("abort", cancelReader, { once: true });
 
@@ -178,7 +180,7 @@ export async function* parseResponseStream(
         if (terminal) {
           throw new StreamReadError("STREAM_PROTOCOL_ERROR");
         }
-        if (!knownEventTypes.has(parsed.type)) {
+        if (!Object.hasOwn(knownEventTypes, parsed.type)) {
           continue;
         }
         if (!Value.Check(StreamEventSchema, parsed)) {
@@ -196,25 +198,30 @@ export async function* parseResponseStream(
         }
 
         if (event.type === "context.compacting") {
-          if (compaction !== "none" || contentSeen) {
+          if (compaction !== "none" || contentSeen || namingSeen) {
             throw new StreamReadError("STREAM_PROTOCOL_ERROR");
           }
           compaction = "compacting";
         } else if (event.type === "context.compacted") {
-          if (compaction !== "compacting") {
+          if (compaction !== "compacting" || namingSeen) {
             throw new StreamReadError("STREAM_PROTOCOL_ERROR");
           }
           compaction = "settled";
         } else if (event.type === "context.warning") {
-          if (compaction === "settled" || contentSeen) {
+          if (compaction === "settled" || contentSeen || namingSeen) {
             throw new StreamReadError("STREAM_PROTOCOL_ERROR");
           }
           compaction = "settled";
         } else if (event.type === "content.delta") {
-          if (compaction === "compacting") {
+          if (compaction === "compacting" || namingSeen) {
             throw new StreamReadError("STREAM_PROTOCOL_ERROR");
           }
           contentSeen = true;
+        } else if (event.type === "conversation.naming") {
+          if (!contentSeen || compaction === "compacting" || namingSeen) {
+            throw new StreamReadError("STREAM_PROTOCOL_ERROR");
+          }
+          namingSeen = true;
         }
 
         if (terminalEventTypes.has(event.type)) {

@@ -6,6 +6,7 @@ import {
   ConversationSearchResponseSchema,
   CreateConversationResponseSchema,
   DraftStateSchema,
+  ResponseUpdatesResponseSchema,
   type StreamEvent,
   StreamEventSchema,
 } from "@capstone/protocol";
@@ -13,12 +14,14 @@ import Value from "typebox/value";
 import { session as authenticationSessions, user } from "../src/database/auth-schema.generated.js";
 import { createDatabase } from "../src/database/database.js";
 import { createDatabasePool } from "../src/database/pool.js";
+import { responseUpdatesTuning } from "../src/generations/response-updates.js";
 import { createIdentityService } from "../src/identity/service.js";
 import {
   BoundedNdjsonDecoder,
   diagnosticsAuthorization,
   hasMonotonicMemoryGrowth,
   type LoadOptions,
+  maximumDurableUpdatePolls,
   parseLoadOptions,
   StreamLifecycleGuard,
 } from "../src/load/harness-safety.js";
@@ -39,7 +42,7 @@ const streamTimeoutMilliseconds = 2 * 60 * 1_000;
 // the strict post-baseline leak signal without changing the measured workload or its gates.
 const warmupWaveCount = 10;
 
-type Scenario = "cancel" | "failure" | "large" | "normal" | "seed" | "slow";
+type Scenario = "cancel" | "failure" | "large" | "normal" | "reattach" | "seed" | "slow";
 
 interface LoadEmployee {
   readonly cookie: string;
@@ -51,7 +54,7 @@ interface PreparedConversation {
   readonly conversationIndex: number;
   readonly draftRevision: number;
   readonly observedRevision: number;
-  readonly parentMessageId: string;
+  readonly parentMessageId: string | null;
   readonly scenario: Scenario;
 }
 
@@ -90,6 +93,8 @@ interface StartedEvent {
 
 interface StreamResult {
   readonly compacted: boolean;
+  /** Durable update polls made after the deliberate mid-stream disconnect (reattach scenario). */
+  readonly updatePolls: number;
   readonly conversationId: string;
   readonly conversationIndex: number;
   readonly employeeIndex: number;
@@ -102,6 +107,14 @@ interface StreamResult {
   readonly terminalAt: number;
   readonly terminalType: "response.cancelled" | "response.completed" | "response.failed";
   readonly wave: number;
+}
+
+interface DurablePollingResult {
+  readonly conversationIndex: number;
+  readonly durableUpdatePolls: number;
+  readonly employeeIndex: number;
+  readonly maximumDurableUpdatePolls: number;
+  readonly reattachmentMilliseconds: number;
 }
 
 interface StreamControl {
@@ -127,7 +140,21 @@ interface LoadDiagnosticsSnapshot {
     readonly waiting: number;
   };
   readonly streams: { readonly active: number; readonly peakActive: number };
+  readonly updates: { readonly active: number; readonly peakActive: number };
 }
+
+interface DatabaseState {
+  readonly activeChatWorkflows: number;
+  readonly activeCompactions: number;
+  readonly activeTitles: number;
+  readonly connections: number;
+  readonly finalizingChatParents: number;
+  readonly reservedChatAccounting: number;
+  readonly reservedCompactionAccounting: number;
+  readonly reservedTitleAccounting: number;
+}
+
+type DatabaseWorkPeaks = Omit<DatabaseState, "connections">;
 
 class LoadMeasurementError extends Error {
   constructor(
@@ -195,7 +222,9 @@ function loadDiagnosticsSnapshot(value: unknown): value is LoadDiagnosticsSnapsh
     nonnegativeNumber(snapshot.pool.total) &&
     nonnegativeNumber(snapshot.pool.waiting) &&
     nonnegativeNumber(snapshot.streams?.active) &&
-    nonnegativeNumber(snapshot.streams.peakActive)
+    nonnegativeNumber(snapshot.streams.peakActive) &&
+    nonnegativeNumber(snapshot.updates?.active) &&
+    nonnegativeNumber(snapshot.updates.peakActive)
   );
 }
 
@@ -611,8 +640,13 @@ function startStream(input: {
     let startedMessageId: string | undefined;
     let sawStarted = false;
     let compacted = false;
+    let reattachAfterDelta = false;
+    let updatePolls = 0;
     try {
       while (true) {
+        if (reattachAfterDelta) {
+          break;
+        }
         const read = await reader.read();
         const lines = decoder.push(read.value, read.done);
         for (const line of lines) {
@@ -636,6 +670,9 @@ function startStream(input: {
             firstDeltaAt = performance.now();
             firstDeltaResolved = true;
             firstDeltaSignal.resolve();
+            if (input.scenario === "reattach") {
+              reattachAfterDelta = true;
+            }
           }
           if (
             event.type === "content.delta" &&
@@ -672,7 +709,71 @@ function startStream(input: {
     } finally {
       reader.releaseLock();
     }
-    lifecycle.finish();
+    if (reattachAfterDelta && startedMessageId !== undefined) {
+      // Deliberate downstream loss: the socket closes, the generation must keep producing, and
+      // the same generation is followed through the durable updates endpoint until terminal.
+      streamController.abort(new DOMException("Synthetic disconnect", "AbortError"));
+      const generationId = (await startedSignal.promise).generationId;
+      let cursor: string | null = null;
+      let durableText = "";
+      while (terminalType === undefined) {
+        const poll = await fetch(
+          new URL(
+            `/api/conversations/${input.conversationId}/responses/${generationId}/updates`,
+            input.target,
+          ),
+          {
+            body: JSON.stringify({ cursor }),
+            headers: {
+              ...requestHeaders(input.target, input.employee),
+              "content-type": "application/json",
+            },
+            method: "POST",
+            redirect: "error",
+            signal: AbortSignal.timeout(streamTimeoutMilliseconds),
+          },
+        );
+        updatePolls += 1;
+        const payload: unknown = await poll.json().catch(() => null);
+        if (poll.status !== 200 || !Value.Check(ResponseUpdatesResponseSchema, payload)) {
+          throw new Error(`A durable update poll failed (${poll.status})`);
+        }
+        if (payload.response.messageId !== startedMessageId) {
+          throw new Error("A durable update referenced a different message");
+        }
+        durableText =
+          payload.content.mode === "replace"
+            ? payload.content.text
+            : durableText + payload.content.text;
+        const foreign = durableText
+          .split("LOAD_RESPONSE:")
+          .slice(1)
+          .some((segment) => !`LOAD_RESPONSE:${segment}`.startsWith(`${expectedCanary}:`));
+        if (foreign) {
+          throw new Error("Durable update data crossed an employee boundary");
+        }
+        if (payload.response.status !== "active") {
+          terminalType =
+            payload.response.status === "completed"
+              ? "response.completed"
+              : payload.response.status === "cancelled"
+                ? "response.cancelled"
+                : "response.failed";
+          terminalMessageId = payload.response.messageId;
+          terminalRevision = payload.revision;
+          if (payload.nextCursor !== null) {
+            throw new Error("A terminal durable update still offered a cursor");
+          }
+          break;
+        }
+        if (payload.nextCursor === null) {
+          throw new Error("An active durable update ended without a cursor");
+        }
+        cursor = payload.nextCursor;
+      }
+    } else {
+      lifecycle.finish();
+    }
     if (
       !sawStarted ||
       terminalType === undefined ||
@@ -692,6 +793,7 @@ function startStream(input: {
       conversationIndex: input.conversationIndex,
       employeeIndex: input.employee.index,
       firstDeltaAt,
+      updatePolls,
       responseStartedAt,
       revision: terminalRevision,
       scenario: input.scenario,
@@ -763,41 +865,51 @@ function measuredScenario(employeeIndex: number, conversationIndex: number): Sce
   if (employeeIndex === 2 && conversationIndex === 0) {
     return "failure";
   }
-  return employeeIndex === 3 && conversationIndex === 1 ? "slow" : "normal";
+  if (employeeIndex === 3 && conversationIndex === 1) {
+    return "slow";
+  }
+  // Roughly half of the measured streams disconnect after their first delta and follow the same
+  // generation through durable updates instead of the NDJSON transport.
+  return conversationIndex === 1 ? "reattach" : "normal";
 }
 
 async function prepareConversationFixture(input: {
   readonly branch?: {
     readonly conversationId: string;
-    readonly parentMessageId: string;
+    readonly parentMessageId: string | null;
     readonly revision: number;
   };
   readonly conversationIndex: number;
   readonly employee: LoadEmployee;
   readonly runId: string;
+  readonly seedHistory?: boolean;
   readonly target: URL;
   readonly wave: number;
 }): Promise<PreparedConversation> {
   let branch = input.branch;
   if (branch === undefined) {
     const conversationId = await createConversation(input.target, input.employee);
-    const seeded = await startStream({
-      conversationId,
-      conversationIndex: input.conversationIndex,
-      employee: input.employee,
-      runId: input.runId,
-      scenario: "seed",
-      target: input.target,
-      wave: 0,
-    }).result;
-    if (seeded.terminalType !== "response.completed") {
-      throw new Error("A synthetic conversation history could not be prepared");
+    if (input.seedHistory === false) {
+      branch = { conversationId, parentMessageId: null, revision: 0 };
+    } else {
+      const seeded = await startStream({
+        conversationId,
+        conversationIndex: input.conversationIndex,
+        employee: input.employee,
+        runId: input.runId,
+        scenario: "seed",
+        target: input.target,
+        wave: 0,
+      }).result;
+      if (seeded.terminalType !== "response.completed") {
+        throw new Error("A synthetic conversation history could not be prepared");
+      }
+      branch = {
+        conversationId,
+        parentMessageId: seeded.selectedLeafMessageId,
+        revision: seeded.revision,
+      };
     }
-    branch = {
-      conversationId,
-      parentMessageId: seeded.selectedLeafMessageId,
-      revision: seeded.revision,
-    };
   }
   const scenario = measuredScenario(input.employee.index, input.conversationIndex);
   const draft = await jsonRequest(
@@ -851,6 +963,7 @@ async function prepareWaveFixtures(
             conversationIndex,
             employee,
             runId,
+            seedHistory: conversationIndex === 0 && employee.index % 2 === 0,
             target,
             wave,
           }),
@@ -934,6 +1047,59 @@ function verifySerializedIsolation(
   }
 }
 
+function durablePollingResults(
+  streamResults: readonly StreamResult[],
+): readonly DurablePollingResult[] {
+  const measurements: DurablePollingResult[] = [];
+  for (const result of streamResults) {
+    if (result.scenario !== "reattach") {
+      if (result.updatePolls !== 0) {
+        throw new LoadMeasurementError(
+          "A direct stream unexpectedly used durable updates",
+          "durable-updates-unexpected",
+          {
+            conversationIndex: result.conversationIndex,
+            durableUpdatePolls: result.updatePolls,
+            employeeIndex: result.employeeIndex,
+            wave: result.wave,
+          },
+        );
+      }
+      continue;
+    }
+    const reattachmentMilliseconds =
+      result.firstDeltaAt === null ? 0 : Math.max(0, result.terminalAt - result.firstDeltaAt);
+    const maximumPolls = maximumDurableUpdatePolls(
+      reattachmentMilliseconds,
+      responseUpdatesTuning.pollIntervalMilliseconds,
+    );
+    const evidence = {
+      conversationIndex: result.conversationIndex,
+      durableUpdatePolls: result.updatePolls,
+      employeeIndex: result.employeeIndex,
+      maximumDurableUpdatePolls: maximumPolls,
+      reattachmentMilliseconds: Number(reattachmentMilliseconds.toFixed(2)),
+      wave: result.wave,
+    };
+    if (result.firstDeltaAt === null || result.updatePolls === 0) {
+      throw new LoadMeasurementError(
+        "A reattached stream did not use durable updates",
+        "durable-updates-missing",
+        evidence,
+      );
+    }
+    if (result.updatePolls > maximumPolls) {
+      throw new LoadMeasurementError(
+        "A reattached stream exceeded the durable polling cadence",
+        "durable-updates-hot-polling",
+        evidence,
+      );
+    }
+    measurements.push(evidence);
+  }
+  return measurements;
+}
+
 async function runWave(
   target: URL,
   employees: readonly LoadEmployee[],
@@ -944,11 +1110,15 @@ async function runWave(
 ): Promise<{
   readonly apiMeasurements: readonly OrdinaryMeasurement[];
   readonly cancellationMilliseconds: readonly number[];
+  readonly durablePolling: readonly DurablePollingResult[];
   readonly peakActiveChatWorkflows: number;
   readonly peakActiveCompactions: number;
+  readonly peakActiveTitles: number;
   readonly peakActiveStreams: number;
+  readonly peakFinalizingChatParents: number;
   readonly peakReservedChatAccounting: number;
   readonly peakReservedCompactionAccounting: number;
+  readonly peakReservedTitleAccounting: number;
   readonly reconciliation: {
     readonly inspected: number;
     readonly settled: number;
@@ -1177,10 +1347,30 @@ async function runWave(
     }),
   );
 
-  const [streamResults, groupedReads] = await Promise.all([
-    Promise.all(controls.map(({ result }) => result)),
-    Promise.all(ordinaryTraffic),
-  ]);
+  const {
+    peaks: sampledPeakState,
+    result: [streamResults, groupedReads],
+  } = await withDatabaseWorkSampling(databaseUrl, peakState, () =>
+    Promise.all([
+      Promise.all(controls.map(({ result }) => result)),
+      Promise.all(ordinaryTraffic),
+    ] as const),
+  );
+  if (
+    sampledPeakState.finalizingChatParents === 0 ||
+    sampledPeakState.activeTitles === 0 ||
+    sampledPeakState.reservedTitleAccounting === 0
+  ) {
+    throw new LoadMeasurementError(
+      "The measured wave did not exercise the durable naming lifecycle",
+      "durable-naming-lifecycle-missing",
+      {
+        peakActiveTitles: sampledPeakState.activeTitles,
+        peakFinalizingChatParents: sampledPeakState.finalizingChatParents,
+        peakReservedTitleAccounting: sampledPeakState.reservedTitleAccounting,
+      },
+    );
+  }
   const reads = groupedReads.flat();
   if (reads.some(({ status }) => status !== 200)) {
     throw new Error("Representative ordinary traffic returned an unexpected status");
@@ -1207,6 +1397,7 @@ async function runWave(
   if (fixture.expectsCompaction && !streamResults.some(({ compacted }) => compacted)) {
     throw new Error("The prepared long branch did not exercise hidden context compaction");
   }
+  const durablePolling = durablePollingResults(streamResults);
   const reconciliation = await reconcileExpiredReservations(databaseUrl);
   if (
     reconciliation.inspected !== 1 ||
@@ -1234,11 +1425,15 @@ async function runWave(
       }
       return result.terminalAt - requestedAt;
     }),
-    peakActiveChatWorkflows: peakState.activeChatWorkflows,
-    peakActiveCompactions: peakState.activeCompactions,
+    durablePolling,
+    peakActiveChatWorkflows: sampledPeakState.activeChatWorkflows,
+    peakActiveCompactions: sampledPeakState.activeCompactions,
+    peakActiveTitles: sampledPeakState.activeTitles,
     peakActiveStreams: peakDiagnostics.streams.active,
-    peakReservedChatAccounting: peakState.reservedChatAccounting,
-    peakReservedCompactionAccounting: peakState.reservedCompactionAccounting,
+    peakFinalizingChatParents: sampledPeakState.finalizingChatParents,
+    peakReservedChatAccounting: sampledPeakState.reservedChatAccounting,
+    peakReservedCompactionAccounting: sampledPeakState.reservedCompactionAccounting,
+    peakReservedTitleAccounting: sampledPeakState.reservedTitleAccounting,
     reconciliation,
     streamResults,
   };
@@ -1295,41 +1490,113 @@ async function conversationSideEffectState(
   }
 }
 
-async function databaseState(databaseUrl: string): Promise<{
-  readonly activeChatWorkflows: number;
-  readonly activeCompactions: number;
-  readonly connections: number;
-  readonly reservedChatAccounting: number;
-  readonly reservedCompactionAccounting: number;
-}> {
-  const pool = createDatabasePool(databaseUrl);
+async function databaseState(
+  databaseUrl: string,
+  existingPool?: ReturnType<typeof createDatabasePool>,
+): Promise<DatabaseState> {
+  const pool = existingPool ?? createDatabasePool(databaseUrl);
   try {
     const result = await pool.query<{
       readonly active_chat_workflows: string;
       readonly active_compactions: string;
+      readonly active_titles: string;
       readonly connections: string;
+      readonly finalizing_chat_parents: string;
       readonly reserved_chat_accounting: string;
       readonly reserved_compaction_accounting: string;
+      readonly reserved_title_accounting: string;
     }>(`
       SELECT
         (SELECT count(*)::text FROM generations
           WHERE status IN ('preparing', 'active') AND purpose = 'chat') AS active_chat_workflows,
         (SELECT count(*)::text FROM generations
           WHERE status IN ('preparing', 'active') AND purpose = 'compaction') AS active_compactions,
+        (SELECT count(*)::text FROM generations
+          WHERE status IN ('preparing', 'active') AND purpose = 'title') AS active_titles,
+        (SELECT count(*)::text FROM generations
+          WHERE status = 'finalizing' AND purpose = 'chat') AS finalizing_chat_parents,
         (SELECT count(*)::text FROM pg_stat_activity WHERE datname = current_database()) AS connections,
         (SELECT count(*)::text FROM generations
           WHERE accounting_status = 'reserved' AND purpose = 'chat') AS reserved_chat_accounting,
         (SELECT count(*)::text FROM generations
-          WHERE accounting_status = 'reserved' AND purpose = 'compaction') AS reserved_compaction_accounting
+          WHERE accounting_status = 'reserved' AND purpose = 'compaction') AS reserved_compaction_accounting,
+        (SELECT count(*)::text FROM generations
+          WHERE accounting_status = 'reserved' AND purpose = 'title') AS reserved_title_accounting
     `);
     return {
       activeChatWorkflows: Number(result.rows[0]?.active_chat_workflows ?? "0"),
       activeCompactions: Number(result.rows[0]?.active_compactions ?? "0"),
+      activeTitles: Number(result.rows[0]?.active_titles ?? "0"),
       connections: Number(result.rows[0]?.connections ?? "0"),
+      finalizingChatParents: Number(result.rows[0]?.finalizing_chat_parents ?? "0"),
       reservedChatAccounting: Number(result.rows[0]?.reserved_chat_accounting ?? "0"),
       reservedCompactionAccounting: Number(result.rows[0]?.reserved_compaction_accounting ?? "0"),
+      reservedTitleAccounting: Number(result.rows[0]?.reserved_title_accounting ?? "0"),
     };
   } finally {
+    if (existingPool === undefined) {
+      await pool.end();
+    }
+  }
+}
+
+function databaseWorkState(state: DatabaseState): DatabaseWorkPeaks {
+  return {
+    activeChatWorkflows: state.activeChatWorkflows,
+    activeCompactions: state.activeCompactions,
+    activeTitles: state.activeTitles,
+    finalizingChatParents: state.finalizingChatParents,
+    reservedChatAccounting: state.reservedChatAccounting,
+    reservedCompactionAccounting: state.reservedCompactionAccounting,
+    reservedTitleAccounting: state.reservedTitleAccounting,
+  };
+}
+
+function mergeDatabaseWorkPeaks(peaks: DatabaseWorkPeaks, state: DatabaseState): DatabaseWorkPeaks {
+  return {
+    activeChatWorkflows: Math.max(peaks.activeChatWorkflows, state.activeChatWorkflows),
+    activeCompactions: Math.max(peaks.activeCompactions, state.activeCompactions),
+    activeTitles: Math.max(peaks.activeTitles, state.activeTitles),
+    finalizingChatParents: Math.max(peaks.finalizingChatParents, state.finalizingChatParents),
+    reservedChatAccounting: Math.max(peaks.reservedChatAccounting, state.reservedChatAccounting),
+    reservedCompactionAccounting: Math.max(
+      peaks.reservedCompactionAccounting,
+      state.reservedCompactionAccounting,
+    ),
+    reservedTitleAccounting: Math.max(peaks.reservedTitleAccounting, state.reservedTitleAccounting),
+  };
+}
+
+async function withDatabaseWorkSampling<T>(
+  databaseUrl: string,
+  initialState: DatabaseState,
+  work: () => Promise<T>,
+): Promise<{ readonly peaks: DatabaseWorkPeaks; readonly result: T }> {
+  const pool = createDatabasePool(databaseUrl);
+  let peaks = databaseWorkState(initialState);
+  let stopped = false;
+  let samplingError: Error | undefined;
+  const sampling = (async () => {
+    while (!stopped) {
+      peaks = mergeDatabaseWorkPeaks(peaks, await databaseState(databaseUrl, pool));
+      await pause(50);
+    }
+  })().catch((error: unknown) => {
+    samplingError =
+      error instanceof Error ? error : new Error("Durable work sampling failed", { cause: error });
+  });
+
+  try {
+    const result = await work();
+    stopped = true;
+    await sampling;
+    if (samplingError !== undefined) {
+      throw samplingError;
+    }
+    return { peaks, result };
+  } finally {
+    stopped = true;
+    await sampling;
     await pool.end();
   }
 }
@@ -1435,8 +1702,11 @@ async function main(): Promise<void> {
   if (
     warmedState.activeChatWorkflows !== 0 ||
     warmedState.activeCompactions !== 0 ||
+    warmedState.activeTitles !== 0 ||
+    warmedState.finalizingChatParents !== 0 ||
     warmedState.reservedChatAccounting !== 0 ||
-    warmedState.reservedCompactionAccounting !== 0
+    warmedState.reservedCompactionAccounting !== 0 ||
+    warmedState.reservedTitleAccounting !== 0
   ) {
     throw new Error("The warmed load fixture left active work or unsettled reservations");
   }
@@ -1447,6 +1717,7 @@ async function main(): Promise<void> {
   );
   if (
     warmedPostIdleDiagnostics.streams.active !== 0 ||
+    warmedPostIdleDiagnostics.updates.active !== 0 ||
     warmedPostIdleDiagnostics.pool.waiting !== 0 ||
     warmedPostIdleDiagnostics.pool.idle !== warmedPostIdleDiagnostics.pool.total
   ) {
@@ -1463,8 +1734,11 @@ async function main(): Promise<void> {
     if (
       beforeWave.activeChatWorkflows !== 0 ||
       beforeWave.activeCompactions !== 0 ||
+      beforeWave.activeTitles !== 0 ||
+      beforeWave.finalizingChatParents !== 0 ||
       beforeWave.reservedChatAccounting !== 0 ||
-      beforeWave.reservedCompactionAccounting !== 0
+      beforeWave.reservedCompactionAccounting !== 0 ||
+      beforeWave.reservedTitleAccounting !== 0
     ) {
       throw new Error("A measured wave began with active work or unsettled reservations");
     }
@@ -1486,6 +1760,22 @@ async function main(): Promise<void> {
       "read",
       diagnosticsHeaders,
     );
+    if (
+      result.durablePolling.length === 0 ||
+      activeWaveDiagnostics.updates.peakActive === 0 ||
+      activeWaveDiagnostics.updates.peakActive > result.durablePolling.length
+    ) {
+      throw new LoadMeasurementError(
+        "Durable update request concurrency did not match the reattached streams",
+        "durable-updates-request-concurrency",
+        {
+          activeUpdateRequests: activeWaveDiagnostics.updates.active,
+          peakActiveUpdateRequests: activeWaveDiagnostics.updates.peakActive,
+          reattachedStreams: result.durablePolling.length,
+          wave: wave + 1,
+        },
+      );
+    }
     await pause(2_000);
     const durableState = await databaseState(databaseUrl);
     const postIdleDiagnostics = await diagnosticsRequest(
@@ -1496,10 +1786,15 @@ async function main(): Promise<void> {
     if (
       durableState.activeChatWorkflows !== 0 ||
       durableState.activeCompactions !== 0 ||
+      durableState.activeTitles !== 0 ||
+      durableState.finalizingChatParents !== 0 ||
       durableState.reservedChatAccounting !== 0 ||
       durableState.reservedCompactionAccounting !== 0 ||
+      durableState.reservedTitleAccounting !== 0 ||
       activeWaveDiagnostics.streams.active !== 0 ||
-      postIdleDiagnostics.streams.active !== 0
+      activeWaveDiagnostics.updates.active !== 0 ||
+      postIdleDiagnostics.streams.active !== 0 ||
+      postIdleDiagnostics.updates.active !== 0
     ) {
       throw new Error("A measured wave left active work or unsettled reservations behind");
     }
@@ -1567,6 +1862,7 @@ async function main(): Promise<void> {
             activeWaveDiagnostics.eventLoop.maximumDelayMilliseconds,
           targetEventLoopP99DelayMilliseconds: activeWaveDiagnostics.eventLoop.p99DelayMilliseconds,
           targetPeakActiveStreams: activeWaveDiagnostics.streams.peakActive,
+          targetPeakActiveUpdateRequests: activeWaveDiagnostics.updates.peakActive,
           targetPeakPoolWaiting: activeWaveDiagnostics.pool.peakWaiting,
           targetPoolTotal: activeWaveDiagnostics.pool.total,
           ...Object.fromEntries(
@@ -1594,9 +1890,12 @@ async function main(): Promise<void> {
         ...durableState,
         peakActiveChatWorkflows: result.peakActiveChatWorkflows,
         peakActiveCompactions: result.peakActiveCompactions,
+        peakActiveTitles: result.peakActiveTitles,
         peakActiveStreams: result.peakActiveStreams,
+        peakFinalizingChatParents: result.peakFinalizingChatParents,
         peakReservedChatAccounting: result.peakReservedChatAccounting,
         peakReservedCompactionAccounting: result.peakReservedCompactionAccounting,
+        peakReservedTitleAccounting: result.peakReservedTitleAccounting,
         reconciliation: result.reconciliation,
       },
       firstDelta: {
@@ -1619,6 +1918,12 @@ async function main(): Promise<void> {
         completed: result.streamResults.filter(
           ({ terminalType }) => terminalType === "response.completed",
         ).length,
+        reattached: result.streamResults.filter(({ scenario }) => scenario === "reattach").length,
+        durableUpdatePolls: result.streamResults.reduce(
+          (total, { updatePolls }) => total + updatePolls,
+          0,
+        ),
+        durableUpdatePollsByStream: result.durablePolling,
         failed: result.streamResults.filter(
           ({ terminalType }) => terminalType === "response.failed",
         ).length,

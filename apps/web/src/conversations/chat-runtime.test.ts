@@ -1,13 +1,16 @@
-import type {
-  ConversationDetailResponse,
-  CreateResponseRequest,
-  ResponseStateResponse,
+import {
+  type ConversationDetailResponse,
+  type CreateResponseRequest,
+  RESPONSE_UPDATES_MAX_TEXT_UTF8_BYTES,
+  type ResponseStateResponse,
+  type ResponseUpdatesResponse,
 } from "@capstone/protocol";
 import { QueryClient } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   ConversationApiError,
+  ConversationHttpError,
   ConversationStreamProtocolError,
   conversationQueryKeys,
 } from "./api";
@@ -122,6 +125,33 @@ function compactionTerminalState(status: "cancelled" | "failed"): ResponseStateR
   };
 }
 
+function updates(
+  input: {
+    readonly cursor?: string | null;
+    readonly mode?: "append" | "replace";
+    readonly phase?: "naming" | "responding";
+    readonly status?: "active" | "cancelled" | "completed" | "incomplete";
+    readonly text?: string;
+  } = {},
+): ResponseUpdatesResponse {
+  const status = input.status ?? "active";
+  return {
+    conversationId,
+    revision: status === "active" ? 1 : 2,
+    phase: input.phase ?? "responding",
+    response:
+      status === "active"
+        ? { generationId, messageId, status, reason: null, errorCode: null }
+        : status === "cancelled"
+          ? { generationId, messageId, status, reason: "cancelled", errorCode: null }
+          : status === "incomplete"
+            ? { generationId, messageId, status, reason: "error", errorCode: "STREAM_INTERRUPTED" }
+            : { generationId, messageId, status, reason: "stop", errorCode: null },
+    content: { mode: input.mode ?? "replace", text: input.text ?? "" },
+    nextCursor: status === "active" ? (input.cursor ?? "bmV4dA.c2ln") : null,
+  };
+}
+
 function completedEvent() {
   return {
     type: "response.completed",
@@ -214,6 +244,24 @@ describe("ChatRuntime", () => {
 
     expect(listener).toHaveBeenCalledTimes(1);
     expect(runtime.getSnapshot(conversationId)?.text).toBe("Respuesta");
+    runtime.dispose();
+  });
+
+  it("observes the encoded naming event through the stream parser", async () => {
+    const source = controlledStream();
+    const { runtime } = createRuntime({ openResponse: vi.fn(async () => source.stream) });
+    const pending = runtime.startResponse(conversationId, request);
+    source.controller.enqueue(line(started()));
+    await pending;
+    source.controller.enqueue(line({ text: "Respuesta", type: "content.delta" }));
+    source.controller.enqueue(line({ type: "conversation.naming" }));
+
+    await vi.waitFor(() =>
+      expect(runtime.getSnapshot(conversationId)).toMatchObject({
+        phase: "naming",
+        text: "Respuesta",
+      }),
+    );
     runtime.dispose();
   });
 
@@ -394,6 +442,49 @@ describe("ChatRuntime", () => {
     expect(cancel).toHaveBeenCalledTimes(2);
     expect(streamSignal?.aborted).toBe(true);
     expect(runtime.getSnapshot(conversationId)).toBeUndefined();
+    runtime.dispose();
+  });
+
+  it("does not revive generation after its durable attachment fails during Stop", async () => {
+    const cancellation = Promise.withResolvers<void>();
+    const nextUpdate = Promise.withResolvers<ResponseUpdatesResponse>();
+    const fetchResponseUpdates = vi
+      .fn()
+      .mockResolvedValueOnce(updates({ text: "Durable" }))
+      .mockImplementationOnce(async () => nextUpdate.promise);
+    const { runtime } = createRuntime({
+      cancel: vi.fn(async () => cancellation.promise),
+      fetchConversation: vi.fn(async () => {
+        throw new TypeError("canonical unavailable");
+      }),
+      fetchResponseUpdates,
+    });
+    (
+      runtime as unknown as {
+        waitForAttachAttempt: () => Promise<void>;
+      }
+    ).waitForAttachAttempt = async () => undefined;
+    runtime.attachRemote(conversationId, { generationId, messageId });
+    await vi.waitFor(() => expect(fetchResponseUpdates).toHaveBeenCalledTimes(2));
+
+    const stopping = runtime.stopResponse(conversationId);
+    expect(runtime.getSnapshot(conversationId)?.phase).toBe("stopping");
+    nextUpdate.reject(new ConversationApiError(409, "GENERATION_ACTIVE"));
+    await vi.waitFor(() =>
+      expect(runtime.getSnapshot(conversationId)).toMatchObject({
+        errorCode: "STREAM_PROTOCOL_ERROR",
+        phase: "protocol-failure",
+        recoveryRequired: true,
+      }),
+    );
+
+    cancellation.reject(new TypeError("cancellation unavailable"));
+    await stopping;
+    expect(runtime.getSnapshot(conversationId)).toMatchObject({
+      errorCode: "STREAM_PROTOCOL_ERROR",
+      phase: "protocol-failure",
+      recoveryRequired: true,
+    });
     runtime.dispose();
   });
 
@@ -593,9 +684,13 @@ describe("ChatRuntime", () => {
         ],
       }),
     );
+    const fetchResponseUpdates = vi.fn(async () =>
+      updates({ status: "incomplete", text: "Parcial visible" }),
+    );
     const { queryClient, runtime } = createRuntime({
       fetchConversation,
       fetchResponseStates,
+      fetchResponseUpdates,
       openResponse: vi.fn(async () => stream),
     });
     const startPromise = runtime.startResponse(conversationId, request);
@@ -607,11 +702,19 @@ describe("ChatRuntime", () => {
     expect(runtime.getSnapshot(conversationId)?.text).toBe("Parcial visible");
 
     await vi.advanceTimersByTimeAsync(STREAM_INACTIVITY_TIMEOUT_MS);
-    for (let attempt = 0; attempt < 20 && runtime.getSnapshot(conversationId); attempt += 1) {
+    for (let attempt = 0; attempt < 40 && runtime.getSnapshot(conversationId); attempt += 1) {
       await Promise.resolve();
     }
 
+    // The silent transport is abandoned, but the generation is followed durably instead of
+    // being declared interrupted by the browser alone.
     expect(cancelled).toBe(true);
+    expect(fetchResponseUpdates).toHaveBeenCalledWith(
+      conversationId,
+      generationId,
+      { cursor: null },
+      expect.any(AbortSignal),
+    );
     expect(fetchConversation).toHaveBeenCalledOnce();
     expect(fetchResponseStates).toHaveBeenCalledOnce();
     expect(runtime.getSnapshot(conversationId)).toBeUndefined();
@@ -1063,41 +1166,425 @@ describe("ChatRuntime", () => {
     runtime.dispose();
   });
 
-  it("keeps recovery for a response-state rollout 404 but discards a deleted conversation", async () => {
+  it("hands a transport loss back to canonical polling when durable updates answer 404", async () => {
     const rolloutStream = controlledStream();
+    const fetchResponseUpdates = vi.fn(async () => {
+      throw new ConversationApiError(404, "NOT_FOUND");
+    });
+    const fetchConversation = vi.fn(async () => canonical());
+    const fetchResponseStates = vi.fn(async () => responseState("active"));
     const rollout = createRuntime({
-      fetchConversation: vi.fn(async () => canonical()),
-      fetchResponseStates: vi.fn(async () => {
-        throw new ConversationApiError(404, "NOT_FOUND");
-      }),
+      fetchConversation,
+      fetchResponseStates,
+      fetchResponseUpdates,
       openResponse: vi.fn(async () => rolloutStream.stream),
     });
     const rolloutStarted = rollout.runtime.startResponse(conversationId, request);
     rolloutStream.controller.enqueue(line(started()));
     await rolloutStarted;
     rolloutStream.controller.error(new TypeError("connection lost"));
-    await vi.waitFor(() =>
-      expect(rollout.runtime.getSnapshot(conversationId)?.phase).toBe("interrupted"),
-    );
+    await vi.waitFor(() => expect(rollout.runtime.getSnapshot(conversationId)).toBeUndefined());
+    expect(fetchResponseUpdates).toHaveBeenCalledOnce();
+    expect(fetchConversation).toHaveBeenCalledOnce();
+    expect(fetchResponseStates).toHaveBeenCalledOnce();
     expect(
-      rollout.queryClient.getQueryData(conversationQueryKeys.detail(queryScope, conversationId)),
-    ).toBeDefined();
+      rollout.queryClient.getQueryData(
+        conversationQueryKeys.responseState(queryScope, conversationId, [messageId]),
+      ),
+    ).toEqual(responseState("active"));
+    // Rediscovery of the same generation never re-attaches; polling owns it.
+    rollout.runtime.attachRemote(conversationId, { generationId, messageId });
+    expect(rollout.runtime.getSnapshot(conversationId)).toBeUndefined();
+    expect(fetchResponseUpdates).toHaveBeenCalledOnce();
     rollout.runtime.dispose();
+  });
 
-    const deletedStream = controlledStream();
-    const deleted = createRuntime({
-      fetchConversation: vi.fn(async () => {
+  it("hands a status-only durable updates 404 to canonical polling", async () => {
+    const fetchResponseUpdates = vi.fn(async () => {
+      throw new ConversationHttpError(404);
+    });
+    const fetchConversation = vi.fn(async () => canonical());
+    const fetchResponseStates = vi.fn(async () => responseState("active"));
+    const { runtime } = createRuntime({
+      fetchConversation,
+      fetchResponseStates,
+      fetchResponseUpdates,
+    });
+
+    runtime.attachRemote(conversationId, { generationId, messageId });
+    await vi.waitFor(() => expect(runtime.getSnapshot(conversationId)).toBeUndefined());
+
+    expect(fetchResponseUpdates).toHaveBeenCalledOnce();
+    expect(fetchConversation).toHaveBeenCalledOnce();
+    expect(fetchResponseStates).toHaveBeenCalledOnce();
+    runtime.dispose();
+  });
+
+  it("retains a recoverable overlay when the 404 canonical handoff is unavailable", async () => {
+    const rolloutStream = controlledStream();
+    const fetchConversation = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError("canonical unavailable"))
+      .mockResolvedValueOnce(canonical());
+    const fetchResponseStates = vi.fn(async () => responseState("active"));
+    const fetchResponseUpdates = vi.fn(async () => {
+      throw new ConversationApiError(404, "NOT_FOUND");
+    });
+    const { runtime } = createRuntime({
+      fetchConversation,
+      fetchResponseStates,
+      fetchResponseUpdates,
+      openResponse: vi.fn(async () => rolloutStream.stream),
+    });
+    const pending = runtime.startResponse(conversationId, request);
+    rolloutStream.controller.enqueue(line(started()));
+    await pending;
+    rolloutStream.controller.enqueue(line({ text: "Parcial", type: "content.delta" }));
+    await vi.waitFor(() =>
+      expect(runtime.getSnapshot(conversationId)).toMatchObject({ text: "Parcial" }),
+    );
+    rolloutStream.controller.error(new TypeError("connection lost"));
+
+    await vi.waitFor(() =>
+      expect(runtime.getSnapshot(conversationId)).toMatchObject({
+        errorCode: "STREAM_INTERRUPTED",
+        phase: "interrupted",
+        recoveryRequired: true,
+        text: "Parcial",
+      }),
+    );
+    await runtime.recoverConversation(conversationId);
+    expect(runtime.getSnapshot(conversationId)).toBeUndefined();
+    expect(fetchConversation).toHaveBeenCalledTimes(2);
+    expect(fetchResponseStates).toHaveBeenCalledOnce();
+    expect(fetchResponseUpdates).toHaveBeenCalledOnce();
+    runtime.dispose();
+  });
+
+  it("converges to missing when the 404 handoff confirms the conversation was deleted", async () => {
+    const rolloutStream = controlledStream();
+    const fetchConversation = vi.fn(async () => {
+      throw new ConversationApiError(404, "NOT_FOUND");
+    });
+    const fetchResponseStates = vi.fn(async () => responseState("active"));
+    const { runtime } = createRuntime({
+      fetchConversation,
+      fetchResponseStates,
+      fetchResponseUpdates: vi.fn(async () => {
         throw new ConversationApiError(404, "NOT_FOUND");
       }),
-      fetchResponseStates: vi.fn(async () => responseState()),
-      openResponse: vi.fn(async () => deletedStream.stream),
+      openResponse: vi.fn(async () => rolloutStream.stream),
     });
-    const deletedStarted = deleted.runtime.startResponse(conversationId, request);
-    deletedStream.controller.enqueue(line(started()));
-    await deletedStarted;
-    deletedStream.controller.error(new TypeError("connection lost"));
-    await vi.waitFor(() => expect(deleted.runtime.getSnapshot(conversationId)).toBeUndefined());
-    deleted.runtime.dispose();
+    const pending = runtime.startResponse(conversationId, request);
+    rolloutStream.controller.enqueue(line(started()));
+    await pending;
+    rolloutStream.controller.error(new TypeError("connection lost"));
+
+    await vi.waitFor(() => expect(runtime.getSnapshot(conversationId)).toBeUndefined());
+    expect(fetchConversation).toHaveBeenCalledOnce();
+    expect(fetchResponseStates).not.toHaveBeenCalled();
+    runtime.dispose();
+  });
+
+  it("drops every scoped runtime when reattachment reports workspace denial", async () => {
+    const source = controlledStream();
+    const fetchResponseUpdates = vi.fn(async () => {
+      throw new ConversationApiError(403, "WORKSPACE_ACCESS_DENIED");
+    });
+    const { runtime } = createRuntime({
+      fetchResponseUpdates,
+      openResponse: vi.fn(async () => source.stream),
+    });
+    const pending = runtime.startResponse(conversationId, request);
+    source.controller.enqueue(line(started()));
+    await pending;
+    source.controller.error(new TypeError("connection lost"));
+
+    await vi.waitFor(() => expect(runtime.getSnapshot(conversationId)).toBeUndefined());
+    expect(fetchResponseUpdates).toHaveBeenCalledOnce();
+  });
+
+  it("does not poll while hidden and resumes the same generation when visible", async () => {
+    let visibility: DocumentVisibilityState = "hidden";
+    vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
+    const fetchResponseUpdates = vi.fn(async () => updates({ status: "completed", text: "Listo" }));
+    const { runtime } = createRuntime({
+      fetchConversation: vi.fn(async () => canonical()),
+      fetchResponseStates: vi.fn(async () => responseState("completed")),
+      fetchResponseUpdates,
+    });
+
+    runtime.attachRemote(conversationId, { generationId, messageId });
+    await Promise.resolve();
+    expect(fetchResponseUpdates).not.toHaveBeenCalled();
+
+    visibility = "visible";
+    document.dispatchEvent(new Event("visibilitychange"));
+    await vi.waitFor(() => expect(fetchResponseUpdates).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(runtime.getSnapshot(conversationId)).toBeUndefined());
+    runtime.dispose();
+  });
+
+  it("gates the next successful long poll when the tab becomes hidden", async () => {
+    let visibility: DocumentVisibilityState = "visible";
+    vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
+    const first = Promise.withResolvers<ResponseUpdatesResponse>();
+    const fetchResponseUpdates = vi
+      .fn()
+      .mockImplementationOnce(async () => first.promise)
+      .mockResolvedValueOnce(updates({ status: "completed", text: " final" }));
+    const { runtime } = createRuntime({
+      fetchConversation: vi.fn(async () => canonical()),
+      fetchResponseStates: vi.fn(async () => responseState("completed")),
+      fetchResponseUpdates,
+    });
+    runtime.attachRemote(conversationId, { generationId, messageId });
+    await vi.waitFor(() => expect(fetchResponseUpdates).toHaveBeenCalledOnce());
+
+    visibility = "hidden";
+    document.dispatchEvent(new Event("visibilitychange"));
+    first.resolve(updates({ cursor: "next", text: "Durable" }));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(fetchResponseUpdates).toHaveBeenCalledOnce();
+
+    visibility = "visible";
+    document.dispatchEvent(new Event("visibilitychange"));
+    await vi.waitFor(() => expect(fetchResponseUpdates).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(runtime.getSnapshot(conversationId)).toBeUndefined());
+    runtime.dispose();
+  });
+
+  it("requires both retry backoff and restored connectivity", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    let online = true;
+    vi.spyOn(navigator, "onLine", "get").mockImplementation(() => online);
+    const fetchResponseUpdates = vi.fn(async () => {
+      if (fetchResponseUpdates.mock.calls.length === 1) {
+        online = false;
+        throw new TypeError("offline");
+      }
+      return updates({ status: "completed", text: "Recuperada" });
+    });
+    const { runtime } = createRuntime({
+      fetchConversation: vi.fn(async () => canonical()),
+      fetchResponseStates: vi.fn(async () => responseState("completed")),
+      fetchResponseUpdates,
+    });
+    runtime.attachRemote(conversationId, { generationId, messageId });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchResponseUpdates).toHaveBeenCalledOnce();
+
+    await vi.advanceTimersByTimeAsync(200);
+    online = true;
+    window.dispatchEvent(new Event("online"));
+    await vi.advanceTimersByTimeAsync(299);
+    expect(fetchResponseUpdates).toHaveBeenCalledOnce();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fetchResponseUpdates).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(runtime.getSnapshot(conversationId)).toBeUndefined();
+    runtime.dispose();
+  });
+
+  it("keeps retrying unparseable 5xx updates across successful polls", async () => {
+    const cursors: (string | null)[] = [];
+    const fetchResponseUpdates = vi.fn(
+      async (_conversation: string, _generation: string, input: { cursor: string | null }) => {
+        cursors.push(input.cursor);
+        if (fetchResponseUpdates.mock.calls.length === 1) {
+          throw new ConversationHttpError(502);
+        }
+        if (fetchResponseUpdates.mock.calls.length === 2) {
+          return updates({ cursor: "cursor-1", text: "Durable" });
+        }
+        if (fetchResponseUpdates.mock.calls.length === 3) {
+          throw new ConversationHttpError(503);
+        }
+        return updates({ status: "completed", text: "Final" });
+      },
+    );
+    const { runtime } = createRuntime({
+      fetchConversation: vi.fn(async () => canonical()),
+      fetchResponseStates: vi.fn(async () => responseState("completed")),
+      fetchResponseUpdates,
+    });
+    (
+      runtime as unknown as {
+        waitForAttachAttempt: () => Promise<void>;
+      }
+    ).waitForAttachAttempt = async () => undefined;
+
+    runtime.attachRemote(conversationId, { generationId, messageId });
+    await vi.waitFor(() => expect(runtime.getSnapshot(conversationId)).toBeUndefined());
+
+    expect(fetchResponseUpdates).toHaveBeenCalledTimes(4);
+    expect(cursors).toEqual([null, null, "cursor-1", "cursor-1"]);
+    runtime.dispose();
+  });
+
+  it("rejects cumulative durable updates beyond the shared answer limit", async () => {
+    const fetchResponseUpdates = vi
+      .fn()
+      .mockResolvedValueOnce(updates({ text: "a".repeat(RESPONSE_UPDATES_MAX_TEXT_UTF8_BYTES) }))
+      .mockResolvedValueOnce(updates({ mode: "append", text: "b" }));
+    const { runtime } = createRuntime({
+      fetchConversation: vi.fn(async () => {
+        throw new TypeError("canonical unavailable");
+      }),
+      fetchResponseUpdates,
+    });
+    runtime.attachRemote(conversationId, { generationId, messageId });
+
+    await vi.waitFor(
+      () =>
+        expect(runtime.getSnapshot(conversationId)).toMatchObject({
+          errorCode: "STREAM_PROTOCOL_ERROR",
+          phase: "protocol-failure",
+          recoveryRequired: true,
+          text: "a".repeat(RESPONSE_UPDATES_MAX_TEXT_UTF8_BYTES),
+        }),
+      { timeout: 2_000 },
+    );
+    expect(fetchResponseUpdates).toHaveBeenCalledTimes(2);
+    runtime.dispose();
+  });
+
+  it("reattaches durably after a transport loss and finishes on the terminal update", async () => {
+    const stream = controlledStream();
+    const cursors: (string | null)[] = [];
+    const fetchResponseUpdates = vi.fn(
+      async (_conversation: string, _generation: string, input: { cursor: string | null }) => {
+        cursors.push(input.cursor);
+        if (input.cursor === null) {
+          return updates({ cursor: "c1", text: "Durable " });
+        }
+        if (input.cursor === "c1") {
+          return updates({ cursor: "c2", mode: "append", text: "partial" });
+        }
+        if (input.cursor === "c2") {
+          return updates({ cursor: "c3", mode: "append", phase: "naming", text: "" });
+        }
+        return updates({ mode: "append", status: "completed", text: " done" });
+      },
+    );
+    const { runtime } = createRuntime({
+      fetchConversation: vi.fn(async () => canonical()),
+      fetchResponseStates: vi.fn(async () => responseState("completed")),
+      fetchResponseUpdates,
+      openResponse: vi.fn(async () => stream.stream),
+    });
+    const phases: string[] = [];
+    runtime.subscribe(() => {
+      const phase = runtime.getSnapshot(conversationId)?.phase;
+      if (phase && phases.at(-1) !== phase) {
+        phases.push(phase);
+      }
+    });
+    const startPromise = runtime.startResponse(conversationId, request);
+    stream.controller.enqueue(line(started()));
+    await startPromise;
+    stream.controller.enqueue(line({ text: "Volatile", type: "content.delta" }));
+    stream.controller.error(new TypeError("connection lost"));
+    await vi.waitFor(() => expect(runtime.getSnapshot(conversationId)).toBeUndefined());
+    expect(cursors).toEqual([null, "c1", "c2", "c3"]);
+    expect(phases).toEqual([
+      "starting",
+      "generating",
+      "reattaching",
+      "generating",
+      "naming",
+      "completed",
+    ]);
+    runtime.dispose();
+  });
+
+  it("follows a discovered remote response read-only and stops it globally", async () => {
+    const release = Promise.withResolvers<void>();
+    const cancel = vi.fn(async () => {
+      release.resolve();
+    });
+    let calls = 0;
+    const fetchResponseUpdates = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) {
+        return updates({ text: "Remote text" });
+      }
+      // The server long-polls; the test holds the poll open until Stop commits.
+      await release.promise;
+      return updates({ status: "cancelled", text: "Remote text" });
+    });
+    const { runtime } = createRuntime({
+      cancel,
+      fetchConversation: vi.fn(async () => canonical()),
+      fetchResponseStates: vi.fn(async () => responseState("cancelled")),
+      fetchResponseUpdates,
+    });
+    runtime.attachRemote(conversationId, { generationId, messageId });
+    expect(runtime.getSnapshot(conversationId)).toMatchObject({
+      locallyOwned: false,
+      phase: "reattaching",
+    });
+    await vi.waitFor(() =>
+      expect(runtime.getSnapshot(conversationId)).toMatchObject({
+        phase: "generating",
+        text: "Remote text",
+      }),
+    );
+    await runtime.stopResponse(conversationId, { generationId, messageId });
+    expect(cancel).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(runtime.getSnapshot(conversationId)).toBeUndefined());
+    runtime.dispose();
+  });
+
+  it("resets one invalid cursor and retries transport failures with backoff", async () => {
+    const stream = controlledStream();
+    const waits: number[] = [];
+    let calls = 0;
+    const fetchResponseUpdates = vi.fn(
+      async (_c: string, _g: string, input: { cursor: string | null }) => {
+        calls += 1;
+        if (calls === 1) {
+          throw new TypeError("offline");
+        }
+        if (calls === 2) {
+          return updates({ cursor: "stale", text: "One" });
+        }
+        if (calls === 3) {
+          expect(input.cursor).toBe("stale");
+          throw new ConversationApiError(400, "INVALID_CURSOR");
+        }
+        expect(input.cursor).toBeNull();
+        return updates({ status: "completed", text: "One two" });
+      },
+    );
+    const runtimeOptions = createRuntime({
+      fetchConversation: vi.fn(async () => canonical()),
+      fetchResponseStates: vi.fn(async () => responseState("completed")),
+      fetchResponseUpdates,
+      openResponse: vi.fn(async () => stream.stream),
+    });
+    const { runtime } = runtimeOptions;
+    (
+      runtime as unknown as {
+        waitForAttachAttempt: (notBefore: number) => Promise<void>;
+      }
+    ).waitForAttachAttempt = async (notBefore: number) => {
+      waits.push(notBefore - Date.now());
+    };
+    const startPromise = runtime.startResponse(conversationId, request);
+    stream.controller.enqueue(line(started()));
+    await startPromise;
+    stream.controller.error(new TypeError("connection lost"));
+    await vi.waitFor(() => expect(runtime.getSnapshot(conversationId)).toBeUndefined());
+    expect(calls).toBe(4);
+    const retryWaits = waits.filter((milliseconds) => milliseconds > 0);
+    expect(retryWaits).toHaveLength(1);
+    expect(retryWaits[0]).toBeGreaterThanOrEqual(400);
+    expect(retryWaits[0]).toBeLessThanOrEqual(600);
+    runtime.dispose();
   });
 
   it("aborts recovery and rejects an unsettled start when the auth scope is disposed", async () => {

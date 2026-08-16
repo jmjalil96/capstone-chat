@@ -22,6 +22,8 @@ import Value from "typebox/value";
 
 import { copy } from "../copy";
 import { useConversationAlternativeContexts } from "./alternative-contexts";
+import { AnswerReportDialog, type AnswerReportTarget } from "./answer-report-dialog";
+import { useConversationAnswerReports } from "./answer-reports";
 import {
   ConversationApiError,
   conversationQueryKeys,
@@ -30,6 +32,7 @@ import {
   undoConversation,
 } from "./api";
 import { subscribeCanonicalAdoption } from "./canonical-adoption";
+import { isActiveRuntimePhase } from "./chat-runtime";
 import { useOptionalChatRuntime, useOptionalConversationRuntime } from "./chat-runtime-provider";
 import { orderedBranchMessages } from "./collection";
 import { SEARCH_MATCH_FADE_MS, SEARCH_MATCH_HOLD_MS } from "./config";
@@ -265,6 +268,8 @@ export function ConversationPage() {
     return pages;
   }, [detail.data?.pages, runtimeSnapshot?.messageId]);
   const responseStates = useConversationResponseStates(conversationId, assistantMessageIdPages);
+  const answerReports = useConversationAnswerReports(conversationId, assistantMessageIdPages);
+  const [reportTarget, setReportTarget] = useState<AnswerReportTarget>();
   const alternativeContexts = useConversationAlternativeContexts(
     conversationId,
     conversation?.revision,
@@ -274,10 +279,7 @@ export function ConversationPage() {
     ? responseStates.byMessageId.get(runtimeSnapshot.messageId)
     : undefined;
   const runtimeActive =
-    runtimeSnapshot?.phase === "starting" ||
-    runtimeSnapshot?.phase === "generating" ||
-    runtimeSnapshot?.phase === "compacting" ||
-    runtimeSnapshot?.phase === "stopping";
+    isActiveRuntimePhase(runtimeSnapshot?.phase) || runtimeSnapshot?.phase === "stopping";
   const remoteActive = [...responseStates.byMessageId.values()].find(
     (state) =>
       state.status === "active" &&
@@ -449,6 +451,7 @@ export function ConversationPage() {
       setLifecycleRefreshPending(false);
       setMutationError(undefined);
       setMutationStatus(undefined);
+      setReportTarget(undefined);
       setSearchHighlight(undefined);
       setSearchPositionError(false);
       setSearchPositionPending(false);
@@ -459,6 +462,33 @@ export function ConversationPage() {
       }
     }
   }, [conversationId, searchPositionIntent?.conversationId]);
+
+  const remoteActiveGenerationId = remoteActive?.generationId;
+  const remoteActiveMessageId = remoteActive?.messageId;
+  useEffect(() => {
+    // An active response discovered canonically (reload, new tab, another device) is followed
+    // durably instead of being polled; the runtime hands presentation back if the API predates
+    // durable updates.
+    if (
+      runtime &&
+      remoteActiveGenerationId &&
+      remoteActiveMessageId &&
+      !runtimeSnapshot &&
+      !composerIncoherent
+    ) {
+      runtime.attachRemote(conversationId, {
+        generationId: remoteActiveGenerationId,
+        messageId: remoteActiveMessageId,
+      });
+    }
+  }, [
+    composerIncoherent,
+    conversationId,
+    remoteActiveGenerationId,
+    remoteActiveMessageId,
+    runtime,
+    runtimeSnapshot,
+  ]);
 
   useEffect(
     () =>
@@ -1009,6 +1039,7 @@ export function ConversationPage() {
       generationError ||
       runtimeRecoveryActionRequired ||
       alternativeContexts.isError ||
+      answerReports.isError ||
       searchPositionError ||
       mutationStatus ? (
         <div className="conversation-alert">
@@ -1064,6 +1095,26 @@ export function ConversationPage() {
                 onClick={() =>
                   void queryClient.invalidateQueries({
                     queryKey: conversationQueryKeys.alternativeContexts(queryScope),
+                  })
+                }
+              >
+                {copy.conversations.common.retry}
+              </button>
+            </p>
+          ) : null}
+          {answerReports.isError ? (
+            <p className="inline-alert" role="alert">
+              <span>{copy.conversations.report.stateLoadFailed}</span>
+              <button
+                className="text-button"
+                type="button"
+                disabled={answerReports.isFetching}
+                onClick={() =>
+                  void queryClient.invalidateQueries({
+                    queryKey: conversationQueryKeys.answerReportStatesForConversation(
+                      queryScope,
+                      conversationId,
+                    ),
                   })
                 }
               >
@@ -1217,6 +1268,17 @@ export function ConversationPage() {
                       !composerIncoherent
                     }
                     canCopy={contentStable}
+                    canReport={
+                      message.role === "assistant" &&
+                      !runtimeMatches &&
+                      state !== undefined &&
+                      state.status !== "active" &&
+                      /\S/u.test(source) &&
+                      answerReports.knownMessageIds.has(message.id) &&
+                      !answerReports.reportedMessageIds.has(message.id)
+                    }
+                    reported={answerReports.reportedMessageIds.has(message.id)}
+                    onReport={(trigger) => setReportTarget({ messageId: message.id, trigger })}
                     canEdit={
                       message.role === "user" &&
                       modelTier.available &&
@@ -1313,6 +1375,12 @@ export function ConversationPage() {
           </span>
         </button>
       ) : null}
+      <AnswerReportDialog
+        target={reportTarget}
+        onClose={() => setReportTarget(undefined)}
+        onSubmit={(messageId, input, signal) => answerReports.report(messageId, input, signal)}
+        onSubmitted={() => setMutationStatus(copy.conversations.report.success)}
+      />
       <div className="conversation-draft-dock" data-empty={!hasPresentedMessages}>
         <DraftEditor
           scope={{ kind: "conversation", conversationId }}

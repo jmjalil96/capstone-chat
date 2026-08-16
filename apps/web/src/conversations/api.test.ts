@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { subscribeSessionBoundary } from "../api/session-boundary";
 import {
+  ConversationHttpError,
   ConversationStreamProtocolError,
   conversationActorScope,
   conversationQueryKeys,
@@ -9,6 +11,7 @@ import {
   fetchConversationPreferredTier,
   fetchModelTierPolicy,
   fetchResponseStates,
+  fetchResponseUpdates,
   openConversationResponse,
   searchConversations,
   undoConversation,
@@ -167,6 +170,44 @@ describe("conversation browser requests", () => {
     );
   });
 
+  it("preserves an unparseable error response status without accepting malformed success", async () => {
+    const conversationId = "33333333-3333-4333-8333-333333333333";
+    const generationId = "44444444-4444-4444-8444-444444444444";
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response("Bad gateway", {
+          status: 502,
+          headers: { "content-type": "text/html" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: "upstream unavailable" }), {
+          status: 503,
+          headers: { "content-type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response("not-json", {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const unavailable = fetchResponseUpdates(conversationId, generationId, { cursor: null });
+    await expect(unavailable).rejects.toBeInstanceOf(ConversationHttpError);
+    await expect(unavailable).rejects.toMatchObject({ status: 502 });
+
+    const nonconformingError = fetchResponseUpdates(conversationId, generationId, { cursor: null });
+    await expect(nonconformingError).rejects.toBeInstanceOf(ConversationHttpError);
+    await expect(nonconformingError).rejects.toMatchObject({ status: 503 });
+
+    const malformedSuccess = fetchResponseUpdates(conversationId, generationId, { cursor: null });
+    await expect(malformedSuccess).rejects.toThrow("was not valid JSON");
+    await expect(malformedSuccess).rejects.not.toBeInstanceOf(ConversationHttpError);
+  });
+
   it("sends the exact streaming headers and rejects a successful non-stream response", async () => {
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
@@ -238,6 +279,54 @@ describe("conversation browser requests", () => {
         messageIds: ["66666666-6666-4666-8666-666666666666"],
       }),
     ).rejects.toThrow("requested messages");
+  });
+
+  it("reports only workspace-denied 403 responses as a denied session boundary", async () => {
+    const conversationId = "33333333-3333-4333-8333-333333333333";
+    const generationId = "44444444-4444-4444-8444-444444444444";
+    const boundaries: string[] = [];
+    const unsubscribe = subscribeSessionBoundary((status) => boundaries.push(status));
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            code: "WORKSPACE_ACCESS_DENIED",
+            message: "Workspace access denied",
+            requestId: "request-denied",
+          }),
+          { status: 403, headers: { "content-type": "application/json" } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            code: "SESSION_REFRESH_REQUIRED",
+            message: "Fresh session required",
+            requestId: "request-fresh",
+          }),
+          { status: 403, headers: { "content-type": "application/json" } },
+        ),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      await expect(
+        fetchResponseUpdates(conversationId, generationId, { cursor: null }),
+      ).rejects.toMatchObject({
+        code: "WORKSPACE_ACCESS_DENIED",
+        status: 403,
+      });
+      await expect(
+        fetchResponseUpdates(conversationId, generationId, { cursor: null }),
+      ).rejects.toMatchObject({
+        code: "SESSION_REFRESH_REQUIRED",
+        status: 403,
+      });
+      expect(boundaries).toEqual(["denied"]);
+    } finally {
+      unsubscribe();
+    }
   });
 
   it("binds alternative-context caches to actor, revision, and a sorted message set", () => {

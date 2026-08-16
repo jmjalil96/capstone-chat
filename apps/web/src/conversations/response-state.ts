@@ -3,6 +3,7 @@ import { type Query, useQueries, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo } from "react";
 
 import { ConversationApiError, conversationQueryKeys, fetchResponseStates } from "./api";
+import { isActiveRuntimePhase } from "./chat-runtime";
 import { useOptionalConversationRuntime } from "./chat-runtime-provider";
 import { RESPONSE_STATE_POLL_INTERVAL_MS } from "./config";
 import { useDraftMemory } from "./draft-memory";
@@ -21,12 +22,11 @@ export function useConversationResponseStates(
   const { queryScope } = useDraftMemory();
   const queryClient = useQueryClient();
   const localRuntime = useOptionalConversationRuntime(conversationId);
+  // A locally started or durably attached response is authoritative presentation, so canonical
+  // polling pauses until that runtime entry reconciles or hands presentation back.
   const localGenerationActive =
-    localRuntime?.locallyOwned === true &&
-    (localRuntime.phase === "starting" ||
-      localRuntime.phase === "generating" ||
-      localRuntime.phase === "compacting" ||
-      localRuntime.phase === "stopping");
+    localRuntime !== undefined &&
+    (isActiveRuntimePhase(localRuntime.phase) || localRuntime.phase === "stopping");
   const requests = useMemo(
     () =>
       messageIdPages

@@ -3,6 +3,7 @@ export const costControlTuning = Object.freeze({
   catalogRefreshIntervalMs: 60 * 60 * 1_000,
   catalogRefreshLeaseMs: 2 * 60 * 1_000,
   privacyAttestationLifetimeMs: 30 * 24 * 60 * 60 * 1_000,
+  namingReconciliationIntervalMs: 500,
   reconciliationBatchSize: 25,
   reconciliationIntervalMs: 30_000,
   reservationExpiryMs: 15 * 60 * 1_000,

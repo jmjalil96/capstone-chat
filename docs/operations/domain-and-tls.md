@@ -50,8 +50,10 @@ challenges, credentials, full provider responses, employee content, or identity-
     route fails closed. `Forwarded`, every `X-Forwarded-*`, `X-Real-IP`, `CF-Connecting-IP`, and the
     retired `X-Capstone-Client-IP` must not become authority.
 11. Exercise incremental NDJSON, a quiet stream with 15-second heartbeats, a stream through the
-    five-minute application ceiling, 35-second browser silence recovery after truncation, Stop,
-    disconnect, slow-reader backpressure, and durable partial recovery through the real edge.
+    five-minute application ceiling, 35-second browser silence detection followed by durable
+    reattachment through `POST …/responses/:generationId/updates`, Stop, disconnect without
+    provider abort, slow-reader backpressure detach, and durable partial recovery through the real
+    edge.
 12. Exercise a deployment during a healthy long stream and a stalled stream. Verify readiness
     routing, 110-second edge drain, `SIGTERM`, bounded 300-second grace, no duplicate work, and
     canonical recovery after forced termination.

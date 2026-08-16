@@ -1,4 +1,5 @@
-import { type SQL, sql } from "drizzle-orm";
+import { and, eq, gt, type SQL, sql } from "drizzle-orm";
+import { session as authenticationSessions } from "../database/auth-schema.generated.js";
 import { type AppTransaction, executePrepared } from "../database/database.js";
 import {
   type BudgetAdmissionStateRow,
@@ -67,6 +68,32 @@ type NullableGenerationPolicyRow = {
   readonly [Key in keyof GenerationPolicyRow]: GenerationPolicyRow[Key] | null;
 };
 
+/**
+ * Locks the exact authenticated session before any generation admission authority. A request
+ * resolved just before sign-out must revalidate here so it cannot insert work after the session
+ * has been durably invalidated.
+ */
+export async function lockSessionAdmission(
+  transaction: AppTransaction,
+  sessionId: string,
+  userId: string,
+  at: Date,
+): Promise<boolean> {
+  const rows = await transaction
+    .select({ id: authenticationSessions.id })
+    .from(authenticationSessions)
+    .where(
+      and(
+        eq(authenticationSessions.id, sessionId),
+        eq(authenticationSessions.userId, userId),
+        gt(authenticationSessions.expiresAt, at),
+      ),
+    )
+    .limit(1)
+    .for("update");
+  return rows.length === 1;
+}
+
 interface DraftGenerationAdmissionRow
   extends ConversationAdmissionRow,
     NullableBudgetAdmissionStateRow,
@@ -105,7 +132,7 @@ function conversationAdmissionCtes(input: ConversationAdmissionInput): SQL {
           SELECT 1
           FROM generations AS active_generation
           WHERE active_generation.conversation_id = conversation.id
-            AND active_generation.status IN ('preparing', 'active')
+            AND active_generation.status IN ('preparing', 'active', 'finalizing')
             AND active_generation.assistant_message_id IS NOT NULL
             AND (active_generation.purpose IS NULL OR active_generation.purpose = 'chat')
         ) AS active_generation

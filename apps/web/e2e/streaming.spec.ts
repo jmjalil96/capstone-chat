@@ -408,6 +408,99 @@ test("@critical-stream reloads canonical active state and remotely stops without
   expect(fixture.cancellations).toEqual([{ conversationId, generationId }]);
 });
 
+test("@critical-stream reattaches durably after a reload and follows the answer to completion", async ({
+  page,
+}) => {
+  const conversationId = browserUuid(70);
+  const userMessageId = browserUuid(71);
+  const assistantMessageId = browserUuid(72);
+  const generationId = browserUuid(73);
+  const active = {
+    generationId,
+    messageId: assistantMessageId,
+    status: "active",
+    reason: null,
+    errorCode: null,
+  } as const;
+  const fixture = await installStreamingFixture(page, [
+    {
+      id: conversationId,
+      title: "Respuesta durable",
+      revision: 1,
+      selectedLeafId: assistantMessageId,
+      draft: { content: "Borrador que sobrevive.", revision: 2, updatedAt: null },
+      messages: [
+        browserMessage({
+          id: userMessageId,
+          parentMessageId: null,
+          role: "user",
+          text: "Solicitud que sigue generando.",
+        }),
+        browserMessage({
+          id: assistantMessageId,
+          parentMessageId: userMessageId,
+          role: "assistant",
+          text: "Salida durable",
+        }),
+      ],
+      responses: [active],
+      updates: [
+        {
+          revision: 1,
+          phase: "responding",
+          response: active,
+          content: { mode: "replace", text: "Salida durable" },
+          nextCursor: "ZHVyYWJsZQ.dW5v",
+        },
+        {
+          revision: 1,
+          phase: "responding",
+          response: active,
+          content: { mode: "append", text: " continúa tras recargar" },
+          nextCursor: "ZHVyYWJsZQ.ZG9z",
+        },
+        {
+          revision: 1,
+          phase: "naming",
+          response: active,
+          content: { mode: "append", text: "" },
+          nextCursor: "ZHVyYWJsZQ.dHJlcw",
+        },
+        {
+          revision: 2,
+          phase: "responding",
+          response: {
+            generationId,
+            messageId: assistantMessageId,
+            status: "completed",
+            reason: "stop",
+            errorCode: null,
+          },
+          content: { mode: "append", text: " y termina." },
+          nextCursor: null,
+        },
+      ],
+    },
+  ]);
+
+  await page.goto(`/c/${conversationId}`);
+  const draft = page.getByRole("textbox", { name: copy.conversations.draft.label });
+  await expect(
+    page.getByText("Salida durable continúa tras recargar y termina.", { exact: true }),
+  ).toBeVisible();
+  await expect(draft).toHaveValue("Borrador que sobrevive.");
+  await expect(
+    page.getByRole("button", { name: copy.conversations.generation.actions.send }),
+  ).toBeVisible();
+  expect(fixture.updateRequests.map((request) => request.cursor)).toEqual([
+    null,
+    "ZHVyYWJsZQ.dW5v",
+    "ZHVyYWJsZQ.ZG9z",
+    "ZHVyYWJsZQ.dHJlcw",
+  ]);
+  expect(fixture.cancellations).toEqual([]);
+});
+
 test("@critical-stream recovers canonical interrupted output without retrying the generation", async ({
   page,
 }) => {

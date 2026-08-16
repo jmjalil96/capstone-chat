@@ -12,9 +12,10 @@ import {
   type ConversationService,
   createConversationService,
 } from "../src/conversations/service.js";
-import { user } from "../src/database/auth-schema.generated.js";
+import { session as authenticationSessions, user } from "../src/database/auth-schema.generated.js";
 import { conversations, drafts, messages } from "../src/database/conversation-schema.js";
 import { type AppDatabase, createDatabase } from "../src/database/database.js";
+import { generations } from "../src/database/generation-schema.js";
 import { workspaceMemberships, workspaces } from "../src/database/identity-schema.js";
 import { migrateDatabase } from "../src/database/migrate.js";
 import * as databaseSchema from "../src/database/schema.js";
@@ -33,12 +34,14 @@ function actor(input: {
   userId: string;
   workspaceId: string;
 }): RequestActor {
+  const now = Date.now();
   return {
     employee: { email: input.email, id: input.userId, name: "Persona sintética" },
     role: input.role ?? "member",
     session: {
-      createdAt: new Date("2026-08-06T20:00:00.000Z"),
-      expiresAt: new Date("2026-08-13T20:00:00.000Z"),
+      createdAt: new Date(now - 1_000),
+      expiresAt: new Date(now + 24 * 60 * 60 * 1_000),
+      id: `session-${input.userId}`,
     },
     workspace: { id: input.workspaceId, identity: "synthetic", name: "Synthetic" },
   };
@@ -124,6 +127,17 @@ describe.sequential("conversation core integration", () => {
         name: "Workspace",
       },
     ]);
+    const sessionAt = new Date();
+    await database.insert(authenticationSessions).values(
+      [primaryUserId, otherUserId, workspaceUserId].map((userId) => ({
+        createdAt: sessionAt,
+        expiresAt: new Date(sessionAt.getTime() + 24 * 60 * 60 * 1_000),
+        id: `session-${userId}`,
+        token: `token-${userId}`,
+        updatedAt: sessionAt,
+        userId,
+      })),
+    );
     await database.insert(workspaceMemberships).values([
       { role: "member", userId: primaryUserId, workspaceId: primaryWorkspaceId },
       { role: "admin", userId: otherUserId, workspaceId: primaryWorkspaceId },
@@ -491,6 +505,51 @@ describe.sequential("conversation core integration", () => {
       statusCode: 404,
     });
   });
+
+  it.each(["preparing", "active", "finalizing"] as const)(
+    "fences archive mutations while a %s workflow is nonterminal",
+    async (status) => {
+      const conversation = await service.create(primary);
+      const prompt = await service.insertImmutableMessage(primary, {
+        content: text("pregunta todavía en curso"),
+        conversationId: conversation.id,
+        parentMessageId: null,
+        role: "user",
+      });
+      const answer = await service.insertImmutableMessage(primary, {
+        content: text(status === "finalizing" ? "respuesta terminada" : ""),
+        conversationId: conversation.id,
+        parentMessageId: prompt.id,
+        role: "assistant",
+      });
+      const now = new Date();
+      await database.insert(generations).values({
+        assistantMessageId: answer.id,
+        completedAt: status === "finalizing" ? now : null,
+        conversationId: conversation.id,
+        createdAt: now,
+        effectiveParameters: { context: { mode: "full" } },
+        idempotencyKey: randomUUID(),
+        purpose: "chat",
+        requestedTier: "balanced",
+        startedAt: now,
+        status,
+        systemPromptVersion: "capstone-chat-v1",
+        terminalReason: status === "finalizing" ? "stop" : null,
+        updatedAt: now,
+        userId: primary.employee.id,
+        workspaceId: primary.workspace.id,
+      });
+
+      await expectApplicationError(service.setArchived(primary, conversation.id, true, 0), {
+        code: "GENERATION_ACTIVE",
+        statusCode: 409,
+      });
+      await expect(service.get(primary, conversation.id)).resolves.toMatchObject({
+        conversation: { isArchived: false, revision: 0 },
+      });
+    },
+  );
 
   it("uses independent durable draft CAS revisions and rejects cross-owner rows", async () => {
     const conversation = await service.create(primary);

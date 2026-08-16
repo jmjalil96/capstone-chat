@@ -124,7 +124,7 @@ require a web deployment.
 - Employees select only Fast, Balanced, or Pro.
 - V1 does not expose temperature, top-p, reasoning-effort, context-size, or output-length controls.
 - Fastify sends only parameters supported by the resolved OpenRouter model.
-- Provider defaults govern sampling and reasoning unless a model mapping requires an explicit backend override.
+- Provider defaults govern sampling and reasoning unless a model mapping requires an explicit backend override. Hidden automatic-title calls are the one fixed override: they disable reasoning entirely so the small output cap is spent on the visible title.
 - Workspace tier policy controls maximum output.
 - Raw chain-of-thought or hidden reasoning content is not requested, stored, or displayed.
 - Reasoning-token counts and cost may be recorded when OpenRouter reports them.
@@ -172,11 +172,12 @@ Every known stream event is validated against its shared TypeBox schema in the b
 4. It starts the OpenRouter request and normalizes upstream events.
 5. It forwards deltas and periodically checkpoints partial output.
 6. It records final content, usage, cost, and timing.
-7. On browser cancellation or disconnection, it aborts upstream processing when supported and preserves the useful partial answer.
+7. On explicit browser cancellation it aborts upstream processing when supported and preserves the useful partial answer. Under the August 15, 2026 amendment, browser disconnection alone no longer aborts upstream processing: it detaches presentation, and provider consumption, checkpointing, accounting, and terminalization continue.
+8. After an eligible first root answer completes, the generation moves to an internal `finalizing` naming phase of at most eight seconds (see the Phase 10 plan); the ordinary `response.completed` event follows once naming settles.
 
 The idempotency key prevents an accidental browser retry from creating a duplicate generation.
 
-An interrupted downstream stream is not resumed in v1. Fastify cancels the upstream request, retains checkpointed partial output as incomplete, and the browser refetches the canonical conversation state. The server emits a content-free heartbeat every 15 seconds while a connected response is otherwise silent. The browser treats 35 seconds without any response bytes as interruption, cancels its reader, and adopts canonical durable state. Any replacement generation requires an explicit employee action.
+Under the August 15, 2026 amendment, an interrupted downstream stream is reattached rather than resumed byte-for-byte: the browser calls the durable `POST …/responses/:generationId/updates` endpoint with a signed cursor, receives the checkpointed content as a full replacement followed by long-polled appends, and continues presenting the same generation. Reloads and new tabs discover an active generation through response-state loading and attach the same way; multiple tabs may attach read-only, and Stop from any tab is global. If the producing API process dies, existing reconciliation still converts the work to retained partial/interrupted state. The server emits a content-free heartbeat every 15 seconds while a connected response is otherwise silent. The browser treats 35 seconds without any response bytes as interruption of that transport, cancels its reader, and reattaches through the updates endpoint (falling back to canonical durable state and two-second polling against an older API). Any replacement generation requires an explicit employee action.
 
 ## Stream persistence and backpressure
 
@@ -188,8 +189,8 @@ An interrupted downstream stream is not resumed in v1. Fastify cancels the upstr
 - Only one checkpoint write may be outstanding per generation; later deltas coalesce into the next checkpoint.
 - Checkpoints update the assistant placeholder rather than creating token or chunk rows.
 - Checkpoint updates are conditional on the generation remaining active, so a late write cannot overwrite a terminal state.
-- Fastify honors downstream write backpressure instead of buffering an unlimited response for a slow browser.
-- A stalled or disconnected browser reaches the configured timeout and cancellation path.
+- Fastify honors downstream write backpressure instead of buffering an unlimited response for a slow browser. A five-second backpressure stall detaches the writer and destroys the socket; the browser reattaches through the updates endpoint.
+- A stalled or disconnected browser no longer cancels the generation (August 15, 2026 amendment). Explicit Stop, logout, deletion, deactivation, provider limits and errors, the five-minute total timeout, and shutdown remain the cancellation paths; sign-out durably cancels the user's preparing, active, and finalizing work across devices before the session is invalidated.
 - Final assistant content, generation status, usage, and cost are committed transactionally.
 - `response.completed` is emitted only after the final database commit succeeds.
 - Final-persistence failure produces a protocol failure and causes the browser to refetch canonical state.

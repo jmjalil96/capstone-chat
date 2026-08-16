@@ -6,6 +6,7 @@ import type {
   GenerationModelTier,
   ResponseStartedEvent,
   ResponseState,
+  ResponseUpdatesResponse,
   StreamEvent,
 } from "@capstone/protocol";
 import type { Page, Route } from "@playwright/test";
@@ -54,6 +55,11 @@ export interface StreamingConversationSeed {
   readonly draft?: Partial<Pick<DraftState, "content" | "revision" | "updatedAt">>;
   readonly responses?: readonly ResponseState[];
   readonly streams?: readonly StreamPlan[];
+  /**
+   * Scripted durable-update pages served in order to `POST …/responses/:generationId/updates`.
+   * Omit it to emulate an API without durable updates (404 → canonical polling fallback).
+   */
+  readonly updates?: readonly Omit<ResponseUpdatesResponse, "conversationId">[];
 }
 
 interface StoredConversation {
@@ -66,6 +72,7 @@ interface StoredConversation {
   readonly messages: ConversationMessage[];
   readonly responses: Map<string, ResponseState>;
   readonly streams: StreamPlan[];
+  readonly updates: Omit<ResponseUpdatesResponse, "conversationId">[] | null;
   hasStartedResponse: boolean;
   preferredTier: GenerationModelTier;
   selectedLeafId: string | null;
@@ -85,6 +92,7 @@ export interface CapturedResponseStart {
 export interface StreamingFixture {
   readonly cancellations: readonly { conversationId: string; generationId: string }[];
   readonly draftWrites: readonly { conversationId: string; content: string }[];
+  readonly updateRequests: readonly { conversationId: string; cursor: string | null }[];
   readonly starts: readonly CapturedResponseStart[];
   conversation(conversationId: string): {
     readonly draft: DraftState;
@@ -142,6 +150,7 @@ function json(route: Route, body: unknown, status = 200): Promise<void> {
 class StreamingBackend implements StreamingFixture {
   readonly cancellations: { conversationId: string; generationId: string }[] = [];
   readonly draftWrites: { conversationId: string; content: string }[] = [];
+  readonly updateRequests: { conversationId: string; cursor: string | null }[] = [];
   readonly starts: CapturedResponseStart[] = [];
   readonly #conversations = new Map<string, StoredConversation>();
   #nextEntity = 4_096;
@@ -162,6 +171,7 @@ class StreamingBackend implements StreamingFixture {
         preferredTier: "balanced",
         selectedLeafId: seed.selectedLeafId ?? null,
         streams: [...(seed.streams ?? [])],
+        updates: seed.updates === undefined ? null : [...seed.updates],
         summary: {
           id: seed.id,
           title: seed.title,
@@ -232,6 +242,46 @@ class StreamingBackend implements StreamingFixture {
         await json(route, { conversationId, modelTier: conversation.preferredTier });
         return;
       }
+    }
+
+    const updatesMatch = url.pathname.match(
+      /^\/api\/conversations\/([0-9a-f-]+)\/responses\/([0-9a-f-]+)\/updates$/u,
+    );
+    if (updatesMatch && method === "POST") {
+      const conversationId = updatesMatch[1] ?? "";
+      const conversation = this.#conversations.get(conversationId);
+      if (!conversation || conversation.updates === null) {
+        await this.#notFound(route);
+        return;
+      }
+      this.updateRequests.push({
+        conversationId,
+        cursor: (request.postDataJSON() as { cursor: string | null }).cursor,
+      });
+      const next =
+        conversation.updates.length > 1 ? conversation.updates.shift() : conversation.updates[0];
+      if (next === undefined) {
+        await this.#notFound(route);
+        return;
+      }
+      // Mirror the durable content into the canonical message so reconciliation after the terminal
+      // update presents the same text the runtime followed.
+      const message = conversation.messages.find((entry) => entry.id === next.response.messageId);
+      if (message) {
+        const current = message.content[0]?.text ?? "";
+        message.content = [
+          {
+            type: "text",
+            text: next.content.mode === "replace" ? next.content.text : current + next.content.text,
+          },
+        ];
+      }
+      if (next.response.status !== "active") {
+        conversation.responses.set(next.response.messageId, next.response);
+        conversation.summary = { ...conversation.summary, revision: next.revision };
+      }
+      await json(route, { ...next, conversationId });
+      return;
     }
 
     const match = url.pathname.match(

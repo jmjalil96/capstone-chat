@@ -1,7 +1,7 @@
 import type { ClientErrorKind, ClientErrorRoute, GenerationModelTier } from "@capstone/protocol";
 
 export type TelemetryEnvironment = "development" | "managed-rehearsal" | "production" | "test";
-export type TelemetryPurpose = "chat" | "compaction";
+export type TelemetryPurpose = "chat" | "compaction" | "title";
 export type TelemetryContextMode = "compacted" | "fallback" | "full";
 export type TelemetryOutcome = "cancelled" | "completed" | "failed" | "incomplete" | "rejected";
 export type LogMirrorDropReason = "delivery" | "invalid" | "overflow" | "oversize" | "shutdown";
@@ -9,6 +9,8 @@ export type LogMirrorDropReason = "delivery" | "invalid" | "overflow" | "oversiz
 export const telemetrySafeHttpRoutes = new Set([
   "/",
   "/*",
+  "/api/admin/answer-reports",
+  "/api/admin/answer-reports/:reportId",
   "/api/admin/employees",
   "/api/admin/employees/:approvalId/deactivate",
   "/api/admin/employees/:approvalId/invitation",
@@ -23,11 +25,14 @@ export const telemetrySafeHttpRoutes = new Set([
   "/api/conversations",
   "/api/conversations/:conversationId",
   "/api/conversations/:conversationId/alternative-contexts",
+  "/api/conversations/:conversationId/answer-report-states",
   "/api/conversations/:conversationId/archive",
   "/api/conversations/:conversationId/draft",
+  "/api/conversations/:conversationId/messages/:messageId/report",
   "/api/conversations/:conversationId/preferred-tier",
   "/api/conversations/:conversationId/responses",
   "/api/conversations/:conversationId/responses/:generationId/cancel",
+  "/api/conversations/:conversationId/responses/:generationId/updates",
   "/api/conversations/:conversationId/response-states",
   "/api/conversations/:conversationId/selection",
   "/api/conversations/:conversationId/title",

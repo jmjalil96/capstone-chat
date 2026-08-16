@@ -56,6 +56,156 @@ afterEach(() => {
 });
 
 describe("conversation recovery lifecycle", () => {
+  it("closes an answer report dialog when the conversation route changes", async () => {
+    const firstUserMessageId = "33333333-3333-4333-8333-333333333333";
+    const firstAssistantMessageId = "44444444-4444-4444-8444-444444444444";
+    const secondUserMessageId = "55555555-5555-4555-8555-555555555555";
+    const secondAssistantMessageId = "66666666-6666-4666-8666-666666666666";
+    const messageIdsByConversation = {
+      [firstConversationId]: {
+        assistant: firstAssistantMessageId,
+        user: firstUserMessageId,
+      },
+      [secondConversationId]: {
+        assistant: secondAssistantMessageId,
+        user: secondUserMessageId,
+      },
+    } as const;
+    let finishReport!: (response: Response) => void;
+    let reportSignal: AbortSignal | null | undefined;
+    const reportResponse = new Promise<Response>((resolve) => {
+      finishReport = resolve;
+    });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input.toString();
+        const conversationId = url.includes(firstConversationId)
+          ? firstConversationId
+          : secondConversationId;
+        const messageIds = messageIdsByConversation[conversationId];
+        if (url.endsWith(`/messages/${firstAssistantMessageId}/report`)) {
+          reportSignal = init?.signal;
+          return reportResponse;
+        }
+        if (url.endsWith("/answer-report-states")) {
+          return json({ conversationId, reportedMessageIds: [] });
+        }
+        if (url.endsWith("/response-states")) {
+          return json({
+            conversationId,
+            revision: 1,
+            responses: [
+              {
+                generationId: `${conversationId.slice(0, 8)}-7777-4777-8777-777777777777`,
+                messageId: messageIds.assistant,
+                status: "completed",
+                reason: "stop",
+                errorCode: null,
+              },
+            ],
+          });
+        }
+        if (url.endsWith("/draft")) {
+          return json({
+            scope: { kind: "conversation", conversationId },
+            content: "",
+            revision: 0,
+            updatedAt: null,
+          });
+        }
+        if (url.endsWith(`/api/conversations/${conversationId}`)) {
+          return json({
+            conversation: {
+              id: conversationId,
+              title:
+                conversationId === firstConversationId
+                  ? "Primera conversación"
+                  : "Segunda conversación",
+              isArchived: false,
+              revision: 1,
+              createdAt: "2026-08-07T12:00:00.000Z",
+              updatedAt: "2026-08-07T12:00:01.000Z",
+            },
+            selectedLeafId: messageIds.assistant,
+            messages: [
+              {
+                id: messageIds.user,
+                parentMessageId: null,
+                role: "user",
+                content: [{ type: "text", text: "Pregunta" }],
+                createdAt: "2026-08-07T12:00:00.000Z",
+                siblingCount: 0,
+              },
+              {
+                id: messageIds.assistant,
+                parentMessageId: messageIds.user,
+                role: "assistant",
+                content: [{ type: "text", text: "Respuesta" }],
+                createdAt: "2026-08-07T12:00:01.000Z",
+                siblingCount: 0,
+              },
+            ],
+            nextCursor: null,
+          });
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      }),
+    );
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    seedModelTierQueries(queryClient, queryScope, [firstConversationId, secondConversationId]);
+    const router = createMemoryRouter(
+      [
+        {
+          Component: TestLayout,
+          children: [{ path: "/c/:conversationId", Component: ConversationPage }],
+        },
+      ],
+      { initialEntries: [`/c/${firstConversationId}`] },
+    );
+    const user = userEvent.setup();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>,
+    );
+
+    await user.click(
+      await screen.findByRole("button", { name: copy.conversations.messages.report }),
+    );
+    expect(screen.getByRole("dialog", { name: copy.conversations.report.title })).toBeVisible();
+    await user.click(
+      screen.getByRole("radio", { name: copy.conversations.report.reasons.incorrect }),
+    );
+    await user.click(screen.getByRole("button", { name: copy.conversations.report.submit }));
+    await waitFor(() => expect(reportSignal).toBeInstanceOf(AbortSignal));
+
+    await act(async () => {
+      await router.navigate(`/c/${secondConversationId}`);
+    });
+
+    await screen.findByRole("heading", { level: 1, name: "Segunda conversación" });
+    expect(
+      screen.queryByRole("dialog", { name: copy.conversations.report.title }),
+    ).not.toBeInTheDocument();
+    expect(reportSignal?.aborted).toBe(true);
+
+    await act(async () => {
+      finishReport(
+        json({
+          createdAt: "2026-08-07T12:00:02.000Z",
+          id: "88888888-8888-4888-8888-888888888888",
+          messageId: firstAssistantMessageId,
+          repeated: false,
+        }),
+      );
+      await reportResponse;
+      await Promise.resolve();
+    });
+    expect(screen.queryByText(copy.conversations.report.success)).not.toBeInTheDocument();
+  });
+
   it("does not let a previous route clear the current route's pending recovery", async () => {
     const firstRecovery = deferred();
     const secondRecovery = deferred();
@@ -87,6 +237,9 @@ describe("conversation recovery lifecycle", () => {
         const conversationId = url.includes(firstConversationId)
           ? firstConversationId
           : secondConversationId;
+        if (url.endsWith("/answer-report-states")) {
+          return json({ conversationId, reportedMessageIds: [] });
+        }
         if (url.endsWith("/draft")) {
           return json({
             scope: { kind: "conversation", conversationId },
@@ -194,6 +347,9 @@ describe("conversation recovery lifecycle", () => {
       "fetch",
       vi.fn(async (input: string | URL | Request) => {
         const url = typeof input === "string" ? input : input.toString();
+        if (url.endsWith("/answer-report-states")) {
+          return json({ conversationId: firstConversationId, reportedMessageIds: [] });
+        }
         if (url.endsWith("/draft")) {
           return json({
             scope: { kind: "conversation", conversationId: firstConversationId },
@@ -336,6 +492,9 @@ describe("conversation recovery lifecycle", () => {
       "fetch",
       vi.fn(async (input: string | URL | Request) => {
         const url = typeof input === "string" ? input : input.toString();
+        if (url.endsWith("/answer-report-states")) {
+          return json({ conversationId: firstConversationId, reportedMessageIds: [] });
+        }
         if (url.endsWith("/draft")) {
           return json({
             scope: { kind: "conversation", conversationId: firstConversationId },
@@ -481,6 +640,9 @@ describe("conversation recovery lifecycle", () => {
     });
     const fetchMock = vi.fn(async (input: string | URL | Request) => {
       const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/answer-report-states")) {
+        return json({ conversationId: firstConversationId, reportedMessageIds: [] });
+      }
       if (url.endsWith("/draft")) {
         return json({
           scope: { kind: "conversation", conversationId: firstConversationId },

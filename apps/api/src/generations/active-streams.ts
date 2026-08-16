@@ -12,6 +12,8 @@ export interface LocalCancellationCapture {
 }
 
 export interface ActiveStreamLease {
+  /** Keeps shutdown ownership after the HTTP stream itself finishes. */
+  defer(operation: Promise<unknown>): void;
   readonly signal: AbortSignal;
   pendingCancellation(): Promise<boolean> | undefined;
   release(): void;
@@ -27,6 +29,8 @@ interface CancellationFence {
 interface ActiveStreamEntry {
   cancellation: CancellationFence | undefined;
   readonly controller: AbortController;
+  deferredOperations: number;
+  released: boolean;
   readonly snapshot: (() => LocalStreamSnapshot) | undefined;
 }
 
@@ -55,6 +59,8 @@ export class ActiveStreamRegistry {
     const entry: ActiveStreamEntry = {
       cancellation: undefined,
       controller: new AbortController(),
+      deferredOperations: 0,
+      released: false,
       snapshot,
     };
     this.#active.set(generationId, entry);
@@ -62,25 +68,26 @@ export class ActiveStreamRegistry {
       entry.controller.abort("shutdown" satisfies StreamAbortReason);
     }
 
-    let released = false;
     return Object.freeze({
+      defer: (operation: Promise<unknown>) => {
+        if (entry.released) {
+          throw new Error("Generation stream ownership was already released");
+        }
+        entry.deferredOperations += 1;
+        void operation.then(
+          () => this.#settleDeferredOperation(generationId, entry),
+          () => this.#settleDeferredOperation(generationId, entry),
+        );
+      },
       pendingCancellation: () => entry.cancellation?.promise,
       signal: entry.controller.signal,
       release: () => {
-        if (released) {
+        if (entry.released) {
           return;
         }
-        released = true;
+        entry.released = true;
         this.#settleCancellation(entry, false);
-        if (this.#active.get(generationId) === entry) {
-          this.#active.delete(generationId);
-        }
-        if (this.#active.size === 0) {
-          for (const resolve of this.#idleWaiters) {
-            resolve();
-          }
-          this.#idleWaiters.clear();
-        }
+        this.#releaseIfSettled(generationId, entry);
       },
     });
   }
@@ -186,5 +193,25 @@ export class ActiveStreamRegistry {
     }
     entry.cancellation = undefined;
     fence.resolve(terminal);
+  }
+
+  #settleDeferredOperation(generationId: string, entry: ActiveStreamEntry): void {
+    entry.deferredOperations -= 1;
+    this.#releaseIfSettled(generationId, entry);
+  }
+
+  #releaseIfSettled(generationId: string, entry: ActiveStreamEntry): void {
+    if (!entry.released || entry.deferredOperations !== 0) {
+      return;
+    }
+    if (this.#active.get(generationId) === entry) {
+      this.#active.delete(generationId);
+    }
+    if (this.#active.size === 0) {
+      for (const resolve of this.#idleWaiters) {
+        resolve();
+      }
+      this.#idleWaiters.clear();
+    }
   }
 }

@@ -2,20 +2,32 @@ import type { QueryClient } from "@tanstack/react-query";
 
 import { type SessionQueryResult, sessionQueryKey } from "./session";
 
-const authenticationRequiredListeners = new Set<() => void>();
+export type SessionBoundaryStatus = "anonymous" | "denied";
 
-export function reportAuthenticationRequired(): void {
-  for (const listener of authenticationRequiredListeners) {
-    listener();
+const sessionBoundaryListeners = new Set<(status: SessionBoundaryStatus) => void>();
+
+export function reportSessionBoundary(status: SessionBoundaryStatus): void {
+  for (const listener of sessionBoundaryListeners) {
+    listener(status);
   }
 }
 
-export function subscribeAuthenticationRequired(listener: () => void): () => void {
-  authenticationRequiredListeners.add(listener);
-  return () => authenticationRequiredListeners.delete(listener);
+export function reportAuthenticationRequired(): void {
+  reportSessionBoundary("anonymous");
 }
 
-export function isAuthenticationRequiredError(error: unknown): boolean {
+export function reportWorkspaceAccessDenied(): void {
+  reportSessionBoundary("denied");
+}
+
+export function subscribeSessionBoundary(
+  listener: (status: SessionBoundaryStatus) => void,
+): () => void {
+  sessionBoundaryListeners.add(listener);
+  return () => sessionBoundaryListeners.delete(listener);
+}
+
+function isAuthenticationRequiredError(error: unknown): boolean {
   return (
     typeof error === "object" &&
     error !== null &&
@@ -24,7 +36,24 @@ export function isAuthenticationRequiredError(error: unknown): boolean {
   );
 }
 
-export function expireAuthenticatedSession(queryClient: QueryClient): void {
+export function sessionBoundaryStatusForError(error: unknown): SessionBoundaryStatus | undefined {
+  if (isAuthenticationRequiredError(error)) {
+    return "anonymous";
+  }
+  return typeof error === "object" &&
+    error !== null &&
+    "status" in error &&
+    Reflect.get(error, "status") === 403 &&
+    "code" in error &&
+    Reflect.get(error, "code") === "WORKSPACE_ACCESS_DENIED"
+    ? "denied"
+    : undefined;
+}
+
+export function expireAuthenticatedSession(
+  queryClient: QueryClient,
+  status: SessionBoundaryStatus = "anonymous",
+): void {
   const current = queryClient.getQueryData<SessionQueryResult>(sessionQueryKey);
   if (current?.status !== "authenticated") {
     return;
@@ -34,5 +63,5 @@ export function expireAuthenticatedSession(queryClient: QueryClient): void {
     predicate: (query) => query.queryKey[0] !== sessionQueryKey[0],
   });
   queryClient.getMutationCache().clear();
-  queryClient.setQueryData<SessionQueryResult>(sessionQueryKey, { status: "anonymous" });
+  queryClient.setQueryData<SessionQueryResult>(sessionQueryKey, { status });
 }

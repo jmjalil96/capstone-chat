@@ -413,6 +413,36 @@ describe("OpenRouterGateway", () => {
     ]);
   });
 
+  it("disables hidden reasoning only for title requests", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const sse = [
+      'data: {"id":"gen-title","choices":[{"index":0,"delta":{"content":"Título"},"finish_reason":null}]}\n\n',
+      'data: {"id":"gen-title","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"cost":"0"}}\n\n',
+      "data: [DONE]\n\n",
+    ].join("");
+    const gateway = new OpenRouterGateway({
+      apiKey: "test-key-never-sent",
+      fetch: async (_request, init) => {
+        bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return streamResponse([new TextEncoder().encode(sse)]);
+      },
+    });
+    const titleRequest: GenerationRequest = {
+      history: [],
+      message: { role: "user", text: "[synthetic-title-input]" },
+      modelTier: "fast",
+      purpose: "title",
+      ...(request.route === undefined ? {} : { route: request.route }),
+      systemPrompt: { text: "[synthetic-title-prompt]", version: "capstone-title-v1" },
+    };
+
+    await collectRequest(gateway, titleRequest);
+    await collectRequest(gateway, request);
+
+    expect(bodies[0]?.reasoning).toEqual({ enabled: false, exclude: true });
+    expect(bodies[1]?.reasoning).toEqual({ exclude: true });
+  });
+
   it("cancels an open upstream body after protocol completion", async () => {
     const cancelled = vi.fn();
     const sse = [

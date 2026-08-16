@@ -241,7 +241,7 @@ export function createCompactionService(input: {
           compactionPolicy,
           context.plan.compaction.estimatedInputTokens,
           startedAt,
-          false,
+          { enforceEmployeeLimit: false, purpose: "compaction" },
         );
         const generationRows = await transaction
           .insert(generations)

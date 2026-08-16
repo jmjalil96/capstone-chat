@@ -60,6 +60,7 @@ export function AdminShell() {
             <NavLink to="/admin/employees">{copy.administration.navigation.employees}</NavLink>
             <NavLink to="/admin/models">{copy.administration.navigation.models}</NavLink>
             <NavLink to="/admin/usage">{copy.administration.navigation.usage}</NavLink>
+            <NavLink to="/admin/reports">{copy.administration.navigation.reports}</NavLink>
           </nav>
           <Link className="admin-back-link" to="/">
             {copy.administration.navigation.backToChat}

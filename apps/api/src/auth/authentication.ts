@@ -2,9 +2,9 @@ import { drizzleAdapter } from "@better-auth/drizzle-adapter";
 import { betterAuth } from "better-auth";
 import { APIError, createAuthMiddleware } from "better-auth/api";
 import { generateRandomString } from "better-auth/crypto";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { ApiConfig } from "../config.js";
-import type { AppDatabase } from "../database/database.js";
+import type { AppDatabase, AppTransaction } from "../database/database.js";
 import * as databaseSchema from "../database/schema.js";
 import type { EmailPurpose, EmailSender } from "../identity/email.js";
 import { dispatchIdentityEmail } from "../identity/email.js";
@@ -37,7 +37,26 @@ const disabledAuthPaths = [
 
 export interface AuthenticationEvents {
   emailDeliveryFailed(purpose: EmailPurpose, errorName: string): void;
-  identityHookFailed(hook: "activation" | "registration-link", errorName: string): void;
+  identityHookFailed(
+    hook: "activation" | "registration-link" | "sign-out-cancellation",
+    errorName: string,
+  ): void;
+}
+
+export interface WorkCancellation {
+  /** Settles all user-owned work inside the caller's session-fenced transaction. */
+  settleUserWork(
+    transaction: AppTransaction,
+    userId: string,
+  ): Promise<{
+    readonly parentGenerationIds: readonly string[];
+    readonly settledReservations: number;
+  }>;
+  /** Runs only after the durable settlement and exact session deletion commit. */
+  afterCommit(result: {
+    readonly parentGenerationIds: readonly string[];
+    readonly settledReservations: number;
+  }): void;
 }
 
 export function createAuthentication(input: {
@@ -48,8 +67,9 @@ export function createAuthentication(input: {
   emailSender: EmailSender;
   events: AuthenticationEvents;
   identity: IdentityService;
+  workCancellation?: WorkCancellation | undefined;
 }) {
-  const { config, database, emailSender, events, identity } = input;
+  const { config, database, emailSender, events, identity, workCancellation } = input;
   const secureCookies =
     config.nodeEnv === "production" || config.deploymentProfile === "managed-rehearsal";
   const auth = betterAuth({
@@ -192,6 +212,68 @@ export function createAuthentication(input: {
               code: "INVALID_EMAIL_OR_PASSWORD",
               message: "Invalid email or password",
             });
+          }
+        }
+
+        if (context.path === "/sign-out" && workCancellation !== undefined) {
+          const sessionToken = await context.getSignedCookie(
+            context.context.authCookies.sessionToken.name,
+            context.context.secret,
+          );
+          if (typeof sessionToken === "string" && sessionToken.length > 0) {
+            let settlement: {
+              readonly parentGenerationIds: readonly string[];
+              readonly settledReservations: number;
+            } | null = null;
+            try {
+              settlement = await database.transaction(async (transaction) => {
+                const sessionRows = await transaction
+                  .select({ id: databaseSchema.session.id, userId: databaseSchema.session.userId })
+                  .from(databaseSchema.session)
+                  .where(eq(databaseSchema.session.token, sessionToken))
+                  .limit(1)
+                  .for("update");
+                const session = sessionRows[0];
+                if (session === undefined) {
+                  return null;
+                }
+                const result = await workCancellation.settleUserWork(transaction, session.userId);
+                const deleted = await transaction
+                  .delete(databaseSchema.session)
+                  .where(
+                    and(
+                      eq(databaseSchema.session.id, session.id),
+                      eq(databaseSchema.session.token, sessionToken),
+                    ),
+                  )
+                  .returning({ id: databaseSchema.session.id });
+                if (deleted.length !== 1) {
+                  throw new Error("The fenced sign-out session could not be invalidated");
+                }
+                return result;
+              });
+            } catch (error: unknown) {
+              events.identityHookFailed(
+                "sign-out-cancellation",
+                error instanceof Error ? error.name : "UnknownError",
+              );
+              throw new APIError("SERVICE_UNAVAILABLE", {
+                code: "SIGN_OUT_CANCELLATION_FAILED",
+                message: "Active work could not be cancelled",
+              });
+            }
+            if (settlement !== null) {
+              try {
+                workCancellation.afterCommit(settlement);
+              } catch (error: unknown) {
+                // Durable cancellation and session invalidation already committed. Local aborts
+                // are best effort; the response stream's durable preflight is the final fence.
+                events.identityHookFailed(
+                  "sign-out-cancellation",
+                  error instanceof Error ? error.name : "UnknownError",
+                );
+              }
+            }
           }
         }
 

@@ -2,6 +2,10 @@ import {
   type AdminAddModelCatalogRequest,
   type AdminAddModelCatalogResponse,
   AdminAddModelCatalogResponseSchema,
+  type AdminAnswerReportDetail,
+  AdminAnswerReportDetailSchema,
+  type AdminAnswerReportListResponse,
+  AdminAnswerReportListResponseSchema,
   type AdminApproveEmployeeRequest,
   type AdminApproveEmployeeResponse,
   AdminApproveEmployeeResponseSchema,
@@ -63,6 +67,10 @@ export const administrationQueryKeys = {
     [...administrationQueryKeys.all(scope), "policy"] as const,
   usage: (scope: AdministrationQueryScope) =>
     [...administrationQueryKeys.all(scope), "usage"] as const,
+  reports: (scope: AdministrationQueryScope) =>
+    [...administrationQueryKeys.all(scope), "answer-reports"] as const,
+  report: (scope: AdministrationQueryScope, reportId: string) =>
+    [...administrationQueryKeys.reports(scope), reportId] as const,
 };
 
 function jsonRequest(method: "POST" | "PUT", body: unknown, signal?: AbortSignal): RequestInit {
@@ -241,5 +249,25 @@ export async function fetchAdminUsage(
   return validated(
     await fetch(pageEndpoint("/api/admin/usage", cursor), readRequest(signal)),
     AdminUsageResponseSchema,
+  );
+}
+
+export async function fetchAdminAnswerReports(
+  cursor?: string,
+  signal?: AbortSignal,
+): Promise<AdminAnswerReportListResponse> {
+  return validated(
+    await fetch(pageEndpoint("/api/admin/answer-reports", cursor), readRequest(signal)),
+    AdminAnswerReportListResponseSchema,
+  );
+}
+
+export async function fetchAdminAnswerReport(
+  reportId: string,
+  signal?: AbortSignal,
+): Promise<AdminAnswerReportDetail> {
+  return validated(
+    await fetch(`/api/admin/answer-reports/${encodeURIComponent(reportId)}`, readRequest(signal)),
+    AdminAnswerReportDetailSchema,
   );
 }

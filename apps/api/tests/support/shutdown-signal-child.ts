@@ -17,7 +17,7 @@ const emailSender: EmailSender = {
   send: async () => undefined,
 };
 const maintenance: CostControlMaintenance = {
-  runOnce: async () => ({ catalogRefresh: null, reconciliation: null }),
+  runOnce: async () => ({ catalogRefresh: null, namingReconciliation: null, reconciliation: null }),
   start: () => undefined,
   stop: async () => undefined,
 };

@@ -135,6 +135,41 @@ describe("bounded New Relic log mirror", () => {
     await mirror.shutdown();
   });
 
+  it("exports report endpoints only as bounded route templates", async () => {
+    const fetch = successfulFetch();
+    const mirror = createNewRelicLogMirror({
+      apiKey: "new-relic-license-key",
+      environment: "production",
+      fetch,
+      release,
+      stdout: { write: () => undefined },
+    });
+    const routes = [
+      "/api/admin/answer-reports",
+      "/api/admin/answer-reports/:reportId",
+      "/api/conversations/:conversationId/answer-report-states",
+      "/api/conversations/:conversationId/messages/:messageId/report",
+    ];
+    for (const route of routes) {
+      mirror.write(
+        logLine({
+          note: "PRIVATE_REPORT_NOTE_CANARY",
+          prompt: "PRIVATE_REPORT_PROMPT_CANARY",
+          response: "PRIVATE_REPORT_ANSWER_CANARY",
+          route,
+        }),
+      );
+    }
+    await mirror.forceFlush();
+
+    const payload = JSON.parse(String(fetch.mock.calls[0]?.[1]?.body)) as Array<
+      Record<string, unknown>
+    >;
+    expect(payload.map((record) => record["http.route"])).toEqual(routes);
+    expect(JSON.stringify(payload)).not.toMatch(/PRIVATE_REPORT_/gu);
+    await mirror.shutdown();
+  });
+
   it("keeps the log destination in the selected New Relic account region", async () => {
     const fetch = successfulFetch();
     const mirror = createNewRelicLogMirror({

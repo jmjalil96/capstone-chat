@@ -11,12 +11,19 @@ import {
   IdempotencyKeySchema,
   ResponseStateRequestSchema,
   ResponseStateResponseSchema,
+  ResponseUpdatesParamsSchema,
+  ResponseUpdatesRequestSchema,
+  ResponseUpdatesResponseSchema,
 } from "@capstone/protocol";
 import type { TypeBoxTypeProvider } from "@fastify/type-provider-typebox";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { ApplicationError } from "../errors.js";
 import type { ActiveStreamRegistry } from "../generations/active-streams.js";
 import type { ResponseStreamCoordinator } from "../generations/response-stream.js";
+import {
+  ResponseUpdatesRequestAborted,
+  type ResponseUpdatesService,
+} from "../generations/response-updates.js";
 import type { GenerationService } from "../generations/service.js";
 import { generationTuning } from "../generations/settings.js";
 import type { ActorResolver } from "../identity/authorization.js";
@@ -70,6 +77,7 @@ export function registerResponseRoutes(
     readonly registry: ActiveStreamRegistry;
     readonly resolveActor: ActorResolver;
     readonly streams: ResponseStreamCoordinator;
+    readonly updates: ResponseUpdatesService;
   },
 ): void {
   const server = fastify.withTypeProvider<TypeBoxTypeProvider>();
@@ -143,6 +151,59 @@ export function registerResponseRoutes(
         throw error;
       }
       return reply.code(204).send(null);
+    },
+  );
+
+  server.post(
+    "/api/conversations/:conversationId/responses/:generationId/updates",
+    {
+      bodyLimit: 4_096,
+      schema: {
+        body: ResponseUpdatesRequestSchema,
+        params: ResponseUpdatesParamsSchema,
+        response: { 200: ResponseUpdatesResponseSchema, ...ordinaryErrorResponses },
+      },
+    },
+    async (request, reply) => {
+      const closed = new AbortController();
+      const onRequestAborted = (): void => closed.abort();
+      const onResponseClose = (): void => {
+        if (!reply.raw.writableFinished) {
+          closed.abort();
+        }
+      };
+      request.raw.once("aborted", onRequestAborted);
+      reply.raw.once("close", onResponseClose);
+      try {
+        const actor = await resolveMember(request, reply, dependencies.resolveActor);
+        if (closed.signal.aborted) {
+          return reply;
+        }
+        try {
+          const updates = await dependencies.updates.readUpdates(
+            actor,
+            request.params.conversationId,
+            request.params.generationId,
+            request.body.cursor,
+            {
+              signal: closed.signal,
+              stillServing: () => dependencies.registry.isAccepting,
+            },
+          );
+          if (closed.signal.aborted || reply.raw.destroyed) {
+            return reply;
+          }
+          return reply.code(200).send(updates);
+        } catch (error) {
+          if (error instanceof ResponseUpdatesRequestAborted) {
+            return reply;
+          }
+          throw error;
+        }
+      } finally {
+        request.raw.removeListener("aborted", onRequestAborted);
+        reply.raw.removeListener("close", onResponseClose);
+      }
     },
   );
 

@@ -210,7 +210,9 @@ test("@critical-chat keeps the current conversation and compact composer coheren
     desktopSidebar.getByText(copy.conversations.navigation.current, { exact: true }),
   ).toBeVisible();
   await expectChildrenContained(desktopSidebar.locator(".sidebar-contents"));
-  await expect(page.locator(".action-dialog")).toHaveCount(2);
+  // One conversation-action controller owns exactly two dialogs; the Phase 10 report dialog is a
+  // separate, message-scoped surface.
+  await expect(page.locator(".action-dialog:not(.answer-report-dialog)")).toHaveCount(2);
   await expectViewportContained(page);
   expect(
     await page.locator("[id]").evaluateAll((elements) => {

@@ -53,7 +53,7 @@ function safeCount(value: string): number {
 function usageGroup(row: GroupRow): AdminUsageGroup {
   if (
     (row.tier !== "fast" && row.tier !== "balanced" && row.tier !== "pro") ||
-    (row.purpose !== "chat" && row.purpose !== "compaction")
+    (row.purpose !== "chat" && row.purpose !== "compaction" && row.purpose !== "title")
   ) {
     throw new Error("Stored usage grouping is invalid");
   }
@@ -210,13 +210,13 @@ export function createUsageService(
           AND g.budget_period_start = ${period.start}
           AND g.budget_period_end = ${period.end}
           AND g.accounting_status IN ('actual', 'estimated')
-          AND g.purpose IN ('chat', 'compaction')
+          AND g.purpose IN ('chat', 'compaction', 'title')
           AND g.requested_tier IN ('fast', 'balanced', 'pro')
         GROUP BY g.user_id, g.requested_tier, g.purpose
         ORDER BY
           g.user_id,
           CASE g.requested_tier WHEN 'fast' THEN 1 WHEN 'balanced' THEN 2 ELSE 3 END,
-          CASE g.purpose WHEN 'chat' THEN 1 ELSE 2 END
+          CASE g.purpose WHEN 'chat' THEN 1 WHEN 'compaction' THEN 2 ELSE 3 END
       `);
       for (const row of groupResult.rows) {
         const groups = groupsByUser.get(row.userId) ?? [];

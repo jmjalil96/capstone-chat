@@ -3,7 +3,11 @@ import { conversationCompactions } from "../database/compaction-schema.js";
 import { conversations } from "../database/conversation-schema.js";
 import { type AppDatabase, type AppTransaction, executePrepared } from "../database/database.js";
 import { generations } from "../database/generation-schema.js";
-import type { ApplicationTelemetry } from "../observability/telemetry-contract.js";
+import { isInitialTitleCandidate } from "../generations/title-candidate.js";
+import type {
+  ApplicationTelemetry,
+  TelemetryPurpose,
+} from "../observability/telemetry-contract.js";
 import type { WorkspaceBudgetPeriod } from "./budget-period.js";
 import {
   addUsd,
@@ -65,6 +69,11 @@ export interface GenerationReservationSnapshot {
   readonly reservedCostUsd: string;
 }
 
+export interface GenerationReservationOptions {
+  readonly enforceEmployeeLimit: boolean;
+  readonly purpose: TelemetryPurpose;
+}
+
 export interface AuthoritativeGenerationUsage {
   readonly cachedTokens?: bigint | number | string | null | undefined;
   readonly completionTokens: bigint | number | string;
@@ -116,7 +125,7 @@ export function budgetAdmissionStateQuery(
         FROM generations AS active_generation
         WHERE active_generation.workspace_id = ${workspaceId}::uuid
           AND active_generation.user_id = ${userId}
-          AND active_generation.status IN ('preparing', 'active')
+          AND active_generation.status IN ('preparing', 'active', 'finalizing')
           AND active_generation.conversation_id IS NOT NULL
           AND active_generation.assistant_message_id IS NOT NULL
           AND (active_generation.purpose IS NULL OR active_generation.purpose = 'chat')
@@ -265,8 +274,9 @@ export function createBudgetService(database: AppDatabase, options: BudgetServic
     policy: ResolvedTierPolicy,
     estimatedInputTokensValue: bigint,
     startedAt: Date,
-    enforceEmployeeLimit = true,
+    reservationOptions: GenerationReservationOptions,
   ): GenerationReservationSnapshot {
+    const { enforceEmployeeLimit, purpose } = reservationOptions;
     const estimatedInputTokens = canonicalTokenCount(
       estimatedInputTokensValue,
       "estimated input tokens",
@@ -278,7 +288,7 @@ export function createBudgetService(database: AppDatabase, options: BudgetServic
       enforceEmployeeLimit &&
       admission.activeGenerationCount >= policy.employeeActiveGenerationLimit
     ) {
-      observe(() => options.telemetry?.recordBudgetRejection(policy.tier, "chat"));
+      observe(() => options.telemetry?.recordBudgetRejection(policy.tier, purpose));
       throw new EmployeeGenerationLimitError();
     }
 
@@ -291,12 +301,7 @@ export function createBudgetService(database: AppDatabase, options: BudgetServic
     });
     const afterReservation = addUsd([admission.consumedUsd, reservedCostUsd]);
     if (compareDecimal(afterReservation, policy.monthlyBudgetUsd) > 0) {
-      observe(() =>
-        options.telemetry?.recordBudgetRejection(
-          policy.tier,
-          enforceEmployeeLimit ? "chat" : "compaction",
-        ),
-      );
+      observe(() => options.telemetry?.recordBudgetRejection(policy.tier, purpose));
       throw new WorkspaceBudgetExceededError();
     }
 
@@ -499,6 +504,11 @@ export function createBudgetService(database: AppDatabase, options: BudgetServic
             generation.updatedAt,
           );
           const isActive = generation.status === "active" || generation.status === "preparing";
+          const isActiveTitle = isActive && generation.purpose === "title";
+          const consumesAutomaticTitlePending =
+            isActive &&
+            (generation.purpose === null || generation.purpose === "chat") &&
+            (await isInitialTitleCandidate(transaction, generation.id));
           await transaction
             .update(generations)
             .set({
@@ -507,8 +517,12 @@ export function createBudgetService(database: AppDatabase, options: BudgetServic
               completedAt: isActive ? safeSettledAt : generation.completedAt,
               costBasis: "estimated",
               costUsd: generation.reservedCostUsd,
-              errorCode: isActive ? "STREAM_INTERRUPTED" : generation.errorCode,
-              status: isActive ? "incomplete" : generation.status,
+              errorCode: isActive
+                ? isActiveTitle
+                  ? "GENERATION_TIMEOUT"
+                  : "STREAM_INTERRUPTED"
+                : generation.errorCode,
+              status: isActive ? (isActiveTitle ? "failed" : "incomplete") : generation.status,
               terminalReason: isActive ? "error" : generation.terminalReason,
               updatedAt: safeSettledAt,
             })
@@ -530,10 +544,15 @@ export function createBudgetService(database: AppDatabase, options: BudgetServic
                   eq(conversationCompactions.status, "active"),
                 ),
               );
-          } else if (isActive && generation.conversationId !== null) {
+          } else if (
+            isActive &&
+            generation.purpose !== "title" &&
+            generation.conversationId !== null
+          ) {
             await transaction
               .update(conversations)
               .set({
+                ...(consumesAutomaticTitlePending ? { automaticTitlePending: false } : {}),
                 revision: sql`${conversations.revision} + 1`,
                 updatedAt: safeSettledAt,
               })

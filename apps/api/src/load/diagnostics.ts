@@ -5,6 +5,7 @@ import type { DatabasePool } from "../database/pool.js";
 import type { ActiveStreamRegistry } from "../generations/active-streams.js";
 
 const sampleIntervalMilliseconds = 50;
+const responseUpdatesRoute = "/api/conversations/:conversationId/responses/:generationId/updates";
 
 interface ObservedPool extends DatabasePool {
   readonly idleCount?: unknown;
@@ -97,6 +98,30 @@ export function registerLoadDiagnostics(
   let peakRssBytes = baseline.rssBytes;
   let peakPoolWaiting = poolCount(observedPool.waitingCount);
   let peakActiveStreams = streams.size;
+  let activeUpdateRequests = 0;
+  let peakActiveUpdateRequests = 0;
+
+  server.addHook("onRequest", (request, reply, done) => {
+    if (request.routeOptions.url !== responseUpdatesRoute) {
+      done();
+      return;
+    }
+    activeUpdateRequests += 1;
+    peakActiveUpdateRequests = Math.max(peakActiveUpdateRequests, activeUpdateRequests);
+    let settled = false;
+    const settle = (): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      reply.raw.removeListener("close", settle);
+      reply.raw.removeListener("finish", settle);
+      activeUpdateRequests -= 1;
+    };
+    reply.raw.once("close", settle);
+    reply.raw.once("finish", settle);
+    done();
+  });
 
   function sample(): ProcessSample {
     const current = processSample();
@@ -138,6 +163,10 @@ export function registerLoadDiagnostics(
         waiting: poolCount(observedPool.waitingCount),
       }),
       streams: Object.freeze({ active: streams.size, peakActive: peakActiveStreams }),
+      updates: Object.freeze({
+        active: activeUpdateRequests,
+        peakActive: peakActiveUpdateRequests,
+      }),
     });
   }
 
@@ -151,6 +180,7 @@ export function registerLoadDiagnostics(
     peakRssBytes = baseline.rssBytes;
     peakPoolWaiting = poolCount(observedPool.waitingCount);
     peakActiveStreams = streams.size;
+    peakActiveUpdateRequests = activeUpdateRequests;
     return snapshot();
   }
 

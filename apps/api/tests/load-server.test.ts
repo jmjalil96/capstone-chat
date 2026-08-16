@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { GatewayEvent, GenerationRequest } from "../src/generations/model-gateway.js";
 import { LoadModelGateway, loadRehearsalSteps } from "../src/load/load-gateway.js";
+import { initialTierModels } from "../src/model-policy/catalog.js";
 
-function request(message: string, purpose: "chat" | "compaction" = "chat"): GenerationRequest {
+function request(
+  message: string,
+  purpose: "chat" | "compaction" | "title" = "chat",
+): GenerationRequest {
   const base = {
     history: [],
     message: { role: "user" as const, text: message },
@@ -77,6 +81,11 @@ describe("load rehearsal gateway", () => {
     expect(loadRehearsalSteps(request("ignored", "compaction")).at(-1)?.event.type).toBe(
       "response.completed",
     );
+    expect(loadRehearsalSteps(request("ignored", "title"))).toMatchObject([
+      { event: { type: "generation.metadata" } },
+      { delayMilliseconds: 100, event: { type: "content.delta" } },
+      { delayMilliseconds: 200, event: { type: "response.completed" } },
+    ]);
   });
 
   it("fails closed for an ordinary message", () => {
@@ -115,6 +124,17 @@ describe("load rehearsal gateway", () => {
         new AbortController().signal,
       ),
     ).resolves.toEqual({ status: "unavailable" });
+    await expect(
+      gateway.lookupUsage("load-title-4", new AbortController().signal),
+    ).resolves.toMatchObject({
+      accounting: {
+        metadata: {
+          provider: "capstone-load-rehearsal",
+          resolvedModel: initialTierModels.fast,
+        },
+      },
+      status: "found",
+    });
     await expect(
       gateway.lookupUsage("untrusted-provider-generation", new AbortController().signal),
     ).resolves.toEqual({ status: "unavailable" });

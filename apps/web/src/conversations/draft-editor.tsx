@@ -16,7 +16,12 @@ import {
 
 import { copy } from "../copy";
 import { ConversationApiError, conversationQueryKeys, createConversation } from "./api";
-import { ChatRuntimeError, type ChatRuntimePhase, type RemoteGeneration } from "./chat-runtime";
+import {
+  ChatRuntimeError,
+  type ChatRuntimePhase,
+  isActiveRuntimePhase,
+  type RemoteGeneration,
+} from "./chat-runtime";
 import { useOptionalChatRuntime, useOptionalConversationRuntime } from "./chat-runtime-provider";
 import type { ContentValidationIssue } from "./content-validation";
 import { useDraftMemory, useServerDraft } from "./draft-memory";
@@ -61,9 +66,7 @@ interface DraftEditorProps {
 }
 
 function isActivePhase(phase: ChatRuntimePhase | undefined): boolean {
-  return (
-    phase === "starting" || phase === "generating" || phase === "compacting" || phase === "stopping"
-  );
+  return isActiveRuntimePhase(phase) || phase === "stopping";
 }
 
 export function generationErrorCodeCopy(code: string | undefined): string {
@@ -110,6 +113,10 @@ function runtimeStatus(phase: ChatRuntimePhase | undefined): string | undefined 
       return copy.conversations.generation.status.generating;
     case "compacting":
       return copy.conversations.generation.status.compacting;
+    case "reattaching":
+      return copy.conversations.generation.status.reattaching;
+    case "naming":
+      return copy.conversations.generation.status.naming;
     case "stopping":
       return copy.conversations.generation.status.stopping;
     case "completed":

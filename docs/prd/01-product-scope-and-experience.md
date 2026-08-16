@@ -65,7 +65,7 @@ The first release is an internal company tool. Its purpose is to deliver an exce
 - Search conversation titles and message text.
 - Open a search result on the exact preserved branch containing the match.
 - Rename, archive, and delete conversations.
-- Create the initial title deterministically from the first user message without a separate model call.
+- Create the initial title deterministically from the first user message, then (Phase 10 amendment) replace it once with a bounded Fast-generated title after the first completed root answer unless the employee renamed the conversation first.
 - Preserve drafts across refreshes or interrupted navigation.
 - Edit an earlier user message without destroying the existing continuation.
 - Try an answer again without losing the prior answer.
@@ -76,7 +76,7 @@ A new chat opens with a restrained Capstone symbol, the heading **¿En qué pued
 
 History loads incrementally. The sidebar begins with the most recently updated conversations and fetches more as the employee scrolls. Opening a conversation loads the recent portion of its selected branch; scrolling upward loads older messages without moving the current viewport. Full alternative branches load only when selected.
 
-Conversation titles use “New chat” until the first message is persisted. The first user message is whitespace-normalized and truncated to a reasonable display length for the initial title. Editing that message later does not silently rename the conversation, and a manually renamed title is never overwritten.
+Conversation titles use “New chat” until the first message is persisted. The first user message is whitespace-normalized and truncated to a reasonable display length for the initial title. Under the August 15, 2026 amendment that deterministic title is a provisional fallback: the first root answer consumes the one automatic-naming opportunity on every terminal outcome, but only a nonblank successful `stop` or `length` answer starts one hidden Fast title call inside an eight-second naming phase. A successful title replaces the fallback with at most 72 code points. Cancelled, incomplete, failed, empty, refused, or content-filtered first answers, edits, retries, continuations, later turns, and every failed or timed-out naming attempt permanently retain the fallback. While naming runs the composer shows **Nombrando conversación…** and generation actions stay fenced, but Stop remains available and stops only the naming. Editing the first message later does not silently rename the conversation, and a manually renamed title is never overwritten — a rename during naming wins permanently.
 
 Employees may edit their own messages but not assistant responses. Submitting an edit creates a preserved branch and immediately requests a new answer. Trying again preserves the prior assistant response and creates another alternative. The employee may choose a different tier before either action. Partial, cancelled, and incomplete responses remain selectable alternatives unless the complete conversation is deleted.
 
@@ -104,7 +104,7 @@ V1 user messages contain exactly one text block. Fastify validates Unicode, norm
 
 - Conversations are private to their owning employee.
 - There is no conversation sharing in v1.
-- Administrators can view usage and cost metadata, but the admin UI does not expose message content.
+- Administrators can view usage and cost metadata, but the admin UI does not expose message content, with one narrowly consented Phase 10 exception: an employee may explicitly report one terminal answer through **Reportar**, sharing that answer and its direct prompt together with a required reason and an optional note. The employee sees the exact disclosure before confirming with **Compartir y enviar**. Administrators see only that prompt/answer pair, the reporter's name and email, the reason, the note, and the time in a read-only **Reportes** inbox; they see no conversation, message, or generation identifiers, titles, surrounding messages, model metadata, or links.
 - Administrator status does not automatically grant access to another employee's conversations.
 
 ### Retention and deletion
@@ -113,7 +113,7 @@ V1 user messages contain exactly one text block. Fastify validates Unicode, norm
 - Archiving is reversible and removes a conversation from the normal history list.
 - Archived conversations remain searchable and are labeled **Archivada** in search results.
 - Opening an archived search result does not unarchive the conversation; the employee must explicitly choose **Desarchivar** to return it to the normal history list.
-- Deletion requires confirmation and immediately, irreversibly removes messages, compactions, titles, and other conversation content from the active application.
+- Deletion requires confirmation and immediately, irreversibly removes messages, compactions, titles, answer reports, and other conversation content from the active application. A report also disappears when its reported answer is removed.
 - There is no recycle bin or administrator restore in v1.
 - Deleting a conversation with an active generation cancels that generation first.
 - Non-content generation metadata remains available for workspace cost accounting after content deletion.
@@ -149,9 +149,14 @@ Continue creates an ordinary visible user message asking the model to continue f
 ### Connection loss
 
 - The UI shows a global offline indicator but does not provide a full offline mode.
-- V1 does not resume an interrupted byte stream.
-- After a stream error, the browser reloads canonical conversation state from Fastify.
-- Retained partial output is presented as **Interrupted** with an explicit **Try again** action.
+- V1 does not resume the interrupted byte stream itself. It reattaches to the same durable
+  generation through checkpoint replacements and bounded long-polled appends.
+- While the producing API process survives, browser or network loss does not cancel provider work;
+  the response continues checkpointing, accounting, and terminalizing.
+- If durable reattachment is unavailable, the browser reloads exact canonical conversation and
+  response state, then follows an active response through the existing bounded state poll.
+- A transport that cannot reattach retains its partial output as recoverably **Interrupted** with an
+  explicit **Try again** action.
 - Capstone does not automatically generate a replacement response.
 - When connectivity returns, the current in-memory draft is autosaved again.
 - An unsaved indicator remains visible while a draft cannot reach the backend.
@@ -226,6 +231,7 @@ The same React application contains a role-gated `/admin` area. It provides simp
 - Setting the monthly workspace budget
 - Viewing current monthly spend
 - Viewing usage by employee and tier
+- Reading employee answer reports (Phase 10): a newest-first read-only inbox with no status, filters, edits, deletion, exports, or notifications
 
 Fastify enforces administrator authorization for every administrative operation. Hiding administrative screens in the browser is not an authorization boundary.
 

@@ -161,7 +161,7 @@ describe("Phase 8 PostgreSQL operational state", () => {
           recovery_markers: "operational_recovery_markers",
         },
       ]);
-      expect(migrations.rows).toHaveLength(8);
+      expect(migrations.rows).toHaveLength(9);
     } finally {
       await verificationPool.end();
     }
@@ -289,7 +289,7 @@ describe("Phase 8 PostgreSQL operational state", () => {
       expect(index.rows).toHaveLength(1);
       expect(index.rows[0]?.definition).toContain("(conversation_id)");
       expect(index.rows[0]?.definition).toContain("conversation_id IS NOT NULL");
-      expect(migrations.rows).toHaveLength(8);
+      expect(migrations.rows).toHaveLength(9);
     } finally {
       await verificationPool.end();
     }

@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  boolean,
   check,
   foreignKey,
   index,
@@ -31,6 +32,12 @@ export const conversations = pgTable(
     title: text("title"),
     selectedLeafMessageId: uuid("selected_leaf_message_id"),
     preferredTier: text("preferred_tier").default("balanced").notNull(),
+    // Hidden monotonic coordination flag: true until the one automatic title attempt settles or a
+    // manual rename records intent. It never changes the conversation revision on its own.
+    automaticTitlePending: boolean("automatic_title_pending").default(true).notNull(),
+    // Internal proof that the named revision was produced by automatic-title settlement. Rename
+    // uses it to preserve manual intent when finalization wins the conversation lock first.
+    automaticTitleSettledRevision: integer("automatic_title_settled_revision"),
     revision: integer("revision").default(0).notNull(),
     archivedAt: timestamp("archived_at", { precision: 3, withTimezone: true }),
     createdAt: timestamp("created_at", { precision: 3, withTimezone: true }).defaultNow().notNull(),
@@ -38,6 +45,14 @@ export const conversations = pgTable(
   },
   (table) => [
     check("conversations_revision_nonnegative_check", sql`${table.revision} >= 0`),
+    check(
+      "conversations_automatic_title_settled_revision_check",
+      sql`${table.automaticTitleSettledRevision} IS NULL OR (
+        NOT ${table.automaticTitlePending}
+        AND ${table.automaticTitleSettledRevision} >= 0
+        AND ${table.automaticTitleSettledRevision} <= ${table.revision}
+      )`,
+    ),
     check(
       "conversations_preferred_tier_check",
       sql`${table.preferredTier} IN ('fast', 'balanced', 'pro')`,

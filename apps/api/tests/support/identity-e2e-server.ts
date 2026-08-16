@@ -398,10 +398,11 @@ async function main(): Promise<void> {
     throw new Error("The browser conversation employee is missing or ambiguous");
   }
   const browserSessionTimestamp = new Date();
+  const browserSessionId = randomUUID();
   await application.database.insert(authenticationSessions).values({
     createdAt: browserSessionTimestamp,
     expiresAt: new Date(browserSessionTimestamp.getTime() + 7 * 24 * 60 * 60 * 1_000),
-    id: randomUUID(),
+    id: browserSessionId,
     token: conversationBrowserAuthentication.sessionToken,
     updatedAt: browserSessionTimestamp,
     userId: employee.id,
@@ -413,7 +414,11 @@ async function main(): Promise<void> {
       name: employee.name,
     },
     role: "member",
-    session: { createdAt: new Date(), expiresAt: new Date(Date.now() + 60_000) },
+    session: {
+      createdAt: browserSessionTimestamp,
+      expiresAt: new Date(browserSessionTimestamp.getTime() + 7 * 24 * 60 * 60 * 1_000),
+      id: browserSessionId,
+    },
     workspace: {
       id: approval.workspaceId,
       identity: "capstone-ecuador",

@@ -128,6 +128,36 @@ async function installAdminFixture(page: Page): Promise<void> {
       });
       return;
     }
+    if (path === "/api/admin/answer-reports") {
+      await route.fulfill({
+        json: {
+          items: [
+            {
+              id: "30000000-0000-4000-8000-000000000003",
+              reporter: { name: "Luis Accesible", email: "luis.accessibility@example.test" },
+              reason: "outdated",
+              note: "La cifra citada cambió.",
+              createdAt: "2026-08-15T12:00:00.000Z",
+            },
+          ],
+          nextCursor: null,
+        },
+      });
+      return;
+    }
+    if (path === "/api/admin/answer-reports/30000000-0000-4000-8000-000000000003") {
+      await route.fulfill({
+        json: {
+          id: "30000000-0000-4000-8000-000000000003",
+          reporter: { name: "Luis Accesible", email: "luis.accessibility@example.test" },
+          reason: "outdated",
+          note: "La cifra citada cambió.",
+          createdAt: "2026-08-15T12:00:00.000Z",
+          exchange: { prompt: "¿Cuál es la prima?", answer: "La prima es 120 USD." },
+        },
+      });
+      return;
+    }
     if (path === "/api/client-errors") {
       await route.fulfill({ body: "", status: 204 });
       return;
@@ -226,7 +256,7 @@ test("reviews terminal and active response presentation at desktop and mobile si
   await expectReviewedWcagState(page, testInfo, "active-stream-mobile");
 });
 
-test("reviews all administration pages and their confirmation dialog at desktop and mobile sizes", async ({
+test("@critical-accessibility reviews all administration pages and their confirmation dialog at desktop and mobile sizes", async ({
   page,
 }, testInfo) => {
   await installAdminFixture(page);
@@ -263,6 +293,23 @@ test("reviews all administration pages and their confirmation dialog at desktop 
     ).toBeVisible();
     await expect(page.getByText(copy.administration.usage.empty, { exact: true })).toBeVisible();
     await expectReviewedWcagState(page, testInfo, `administration-usage-${viewport.name}`);
+
+    await page.goto("/admin/reports");
+    await expect(
+      page.getByRole("heading", { name: copy.administration.reports.title }),
+    ).toBeVisible();
+    await expect(page.getByText("La cifra citada cambió.")).toBeVisible();
+    await expectReviewedWcagState(page, testInfo, `administration-reports-${viewport.name}`);
+    const reportTrigger = page.getByRole("button", { name: /Ver mensajes del reporte 1:/u });
+    await reportTrigger.click();
+    const reportDialog = page.getByRole("dialog", {
+      name: copy.administration.reports.detailTitle,
+    });
+    await expect(reportDialog.getByText("La prima es 120 USD.", { exact: true })).toBeVisible();
+    await expectReviewedWcagState(page, testInfo, `administration-report-detail-${viewport.name}`);
+    await reportDialog.getByRole("button", { name: copy.administration.reports.close }).click();
+    await expect(reportDialog).toBeHidden();
+    await expect(reportTrigger).toBeFocused();
   }
 });
 

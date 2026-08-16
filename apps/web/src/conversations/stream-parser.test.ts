@@ -109,6 +109,57 @@ describe("response stream parser", () => {
     );
   });
 
+  it("validates and preserves the naming phase in stream order", async () => {
+    await expect(
+      collect([
+        lines(
+          started,
+          { type: "content.delta", text: "Respuesta" },
+          { type: "conversation.naming" },
+          { type: "stream.heartbeat" },
+          completed,
+        ),
+      ]),
+    ).resolves.toEqual([
+      started,
+      { type: "content.delta", text: "Respuesta" },
+      { type: "conversation.naming" },
+      { type: "stream.heartbeat" },
+      completed,
+    ]);
+    await expectCode(
+      [lines(started, { type: "conversation.naming", title: "filtración" }, completed)],
+      "STREAM_PROTOCOL_ERROR",
+    );
+    for (const payload of [
+      lines(started, { type: "conversation.naming" }, completed),
+      lines(
+        started,
+        { type: "content.delta", text: "Respuesta" },
+        { type: "conversation.naming" },
+        { type: "conversation.naming" },
+        completed,
+      ),
+      lines(
+        started,
+        { type: "content.delta", text: "Respuesta" },
+        { type: "conversation.naming" },
+        { type: "content.delta", text: "Tardío" },
+        completed,
+      ),
+      lines(started, { type: "context.compacting" }, { type: "conversation.naming" }, completed),
+      lines(
+        started,
+        { type: "content.delta", text: "Respuesta" },
+        { type: "conversation.naming" },
+        { type: "context.warning", code: "CONTEXT_COMPACTION_FALLBACK" },
+        completed,
+      ),
+    ]) {
+      await expectCode([payload], "STREAM_PROTOCOL_ERROR");
+    }
+  });
+
   it("enforces the compaction mini-state", async () => {
     await expect(
       collect([

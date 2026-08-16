@@ -285,6 +285,7 @@ export type AdminUpdateModelPolicyResponse = Type.Static<
 export const AdminUsagePurposeSchema = Type.Union([
   Type.Literal("chat"),
   Type.Literal("compaction"),
+  Type.Literal("title"),
 ]);
 export type AdminUsagePurpose = Type.Static<typeof AdminUsagePurposeSchema>;
 
@@ -327,7 +328,7 @@ export const AdminEmployeeUsageSchema = Type.Object(
   {
     employee: AdminUsageEmployeeSchema,
     softBudget: AdminEmployeeSoftBudgetUsageSchema,
-    groups: Type.Array(AdminUsageGroupSchema, { maxItems: 6 }),
+    groups: Type.Array(AdminUsageGroupSchema, { maxItems: 9 }),
   },
   { additionalProperties: false },
 );

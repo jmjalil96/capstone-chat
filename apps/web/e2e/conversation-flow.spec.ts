@@ -97,10 +97,42 @@ test("completes the real conversation and model-tier lifecycle through the brows
     true,
   );
   expect(requestedTiers).toEqual(["pro"]);
+  // Phase 10: the first completed answer hands off to a bounded Fast naming call whose
+  // deterministic local title replaces the first-message fallback everywhere.
+  const currentRegion = page.getByRole("region", { name: copy.conversations.navigation.current });
+  await expect(currentRegion.getByRole("link", { name: "Conversación simulada" })).toBeVisible({
+    timeout: 10_000,
+  });
+  await expect(
+    page.getByRole("heading", { level: 1, name: "Conversación simulada" }),
+  ).toBeVisible();
+
+  // Phase 10: an employee may report a terminal answer; the consented pair goes to administrators
+  // and the reported state survives reloads.
+  const reportTrigger = page.getByRole("button", { name: copy.conversations.messages.report });
+  await reportTrigger.click();
+  const reportDialog = page.getByRole("dialog", { name: copy.conversations.report.title });
+  await expect(reportDialog).toBeVisible();
+  await expect(reportDialog.getByText(copy.conversations.report.disclosure)).toBeVisible();
+  await reportDialog
+    .getByRole("radio", { name: copy.conversations.report.reasons.outdated })
+    .check();
+  await reportDialog.getByLabel(copy.conversations.report.noteLabel).fill("La cifra cambió.");
+  await reportDialog.getByRole("button", { name: copy.conversations.report.submit }).click();
+  await expect(reportDialog).toBeHidden();
+  const reportedTrigger = page.getByRole("button", {
+    name: copy.conversations.messages.reported,
+  });
+  await expect(reportedTrigger).toHaveAttribute("aria-disabled", "true");
+  await expect(reportedTrigger).toBeFocused();
+  await expect(page.getByText(copy.conversations.report.success)).toBeVisible();
 
   await page.reload();
   await expect(tier).toContainText(copy.conversations.modelTiers.tiers.fast.name);
   await expect(draft).toHaveValue("Segundo mensaje confirmado para detener.");
+  await expect(
+    page.getByRole("button", { name: copy.conversations.messages.reported }),
+  ).toBeVisible();
 
   await page.getByRole("button", { name: copy.conversations.generation.actions.send }).click();
   const stop = page.getByRole("button", { name: copy.conversations.generation.actions.stop });

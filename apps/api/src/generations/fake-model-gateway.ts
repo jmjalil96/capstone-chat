@@ -54,9 +54,24 @@ const localFakeCompactionSteps: readonly FakeGatewayStep[] = Object.freeze([
   }),
 ]);
 
+const localFakeTitleSteps: readonly FakeGatewayStep[] = Object.freeze([
+  Object.freeze({
+    delayMilliseconds: generationTuning.fakeChunkDelayMilliseconds,
+    event: Object.freeze({ text: "Conversación simulada", type: "content.delta" }),
+  }),
+  Object.freeze({
+    event: Object.freeze({
+      reason: "stop",
+      type: "response.completed",
+      usage: Object.freeze({ inputTokens: 10, outputTokens: 3 }),
+    }),
+  }),
+]);
+
 export interface FakeGatewayScripts {
   readonly chat?: readonly FakeGatewayStep[];
   readonly compaction?: readonly FakeGatewayStep[];
+  readonly title?: readonly FakeGatewayStep[];
   readonly resolve?:
     | ((request: GenerationRequest) => readonly FakeGatewayStep[] | undefined)
     | undefined;
@@ -103,13 +118,20 @@ export class FakeModelGateway implements ModelGateway {
   constructor(scripts: readonly FakeGatewayStep[] | FakeGatewayScripts = {}) {
     if (isStepArray(scripts)) {
       this.#resolve = undefined;
-      this.#steps = { chat: [...scripts], compaction: [...scripts] };
+      // Array scripts drive the visible chat and its compaction; hidden titles keep the local
+      // deterministic script so fixtures do not accidentally retitle with chat text.
+      this.#steps = {
+        chat: [...scripts],
+        compaction: [...scripts],
+        title: [...localFakeTitleSteps],
+      };
       return;
     }
     this.#resolve = scripts.resolve;
     this.#steps = {
       chat: [...(scripts.chat ?? localFakeSteps)],
       compaction: [...(scripts.compaction ?? localFakeCompactionSteps)],
+      title: [...(scripts.title ?? localFakeTitleSteps)],
     };
   }
 

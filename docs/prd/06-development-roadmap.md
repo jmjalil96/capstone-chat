@@ -64,6 +64,15 @@ Implement context compaction and fallback behavior, employee administration, mod
 
 Complete observability, cross-browser and accessibility verification, performance and load testing, deployment integration, production-secret wiring, operational runbooks, and the required disaster-recovery rehearsal.
 
+### Post-roadmap amendments
+
+Phase 9 (chat-shell simplification, accepted 2026-08-14) and Phase 10 (resilient responses and
+employee feedback, approved 2026-08-15) are post-roadmap amendments recorded in their own
+implementation plans. They do not reorder or reopen the eight milestones. Phase 10 ships as two
+releases: release A adds protocol and web acceptance of the `title` usage purpose and the additive
+`conversation.naming` event; release B adds migration `0008`, the `finalizing` lifecycle,
+automatic titles, durable reattachment, and answer reports.
+
 ## Production launch baseline
 
 **Locked for Milestone 8**

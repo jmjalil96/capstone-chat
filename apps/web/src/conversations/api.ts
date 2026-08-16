@@ -2,6 +2,9 @@ import {
   type AlternativeContextRequest,
   type AlternativeContextResponse,
   AlternativeContextResponseSchema,
+  type AnswerReportStateRequest,
+  type AnswerReportStateResponse,
+  AnswerReportStateResponseSchema,
   type ApiErrorCode,
   ApiErrorSchema,
   type ArchiveConversationRequest,
@@ -19,6 +22,9 @@ import {
   ConversationSelectionResponseSchema,
   type ConversationSummary,
   type ConversationView,
+  type CreateAnswerReportRequest,
+  type CreateAnswerReportResponse,
+  CreateAnswerReportResponseSchema,
   type CreateConversationRequest,
   CreateConversationResponseSchema,
   type CreateResponseRequest,
@@ -34,6 +40,9 @@ import {
   type ResponseStateRequest,
   type ResponseStateResponse,
   ResponseStateResponseSchema,
+  type ResponseUpdatesRequest,
+  type ResponseUpdatesResponse,
+  ResponseUpdatesResponseSchema,
   type SaveDraftRequest,
   type SelectConversationLeafRequest,
   type SessionResponse,
@@ -48,17 +57,25 @@ import {
 import type { TSchema } from "typebox";
 import Value from "typebox/value";
 
-import { reportAuthenticationRequired } from "../api/session-boundary";
+import { reportAuthenticationRequired, reportWorkspaceAccessDenied } from "../api/session-boundary";
 
-export class ConversationApiError extends Error {
-  readonly code: ApiErrorCode;
+export class ConversationHttpError extends Error {
   readonly status: number;
 
-  constructor(status: number, code: ApiErrorCode) {
+  constructor(status: number) {
     super("The conversation request was rejected.");
+    this.name = "ConversationHttpError";
+    this.status = status;
+  }
+}
+
+export class ConversationApiError extends ConversationHttpError {
+  readonly code: ApiErrorCode;
+
+  constructor(status: number, code: ApiErrorCode) {
+    super(status);
     this.name = "ConversationApiError";
     this.code = code;
-    this.status = status;
   }
 }
 
@@ -75,11 +92,23 @@ async function responsePayload(response: Response): Promise<unknown> {
   if (response.status === 401) {
     reportAuthenticationRequired();
   }
+  let payload: unknown;
   try {
-    return await response.json();
+    payload = await response.json();
   } catch {
+    if (!response.ok) {
+      throw new ConversationHttpError(response.status);
+    }
     throw new Error("The conversation response was not valid JSON.");
   }
+  if (
+    response.status === 403 &&
+    Value.Check(ApiErrorSchema, payload) &&
+    payload.code === "WORKSPACE_ACCESS_DENIED"
+  ) {
+    reportWorkspaceAccessDenied();
+  }
+  return payload;
 }
 
 async function validatedResponse<T>(response: Response, schema: TSchema): Promise<T> {
@@ -89,7 +118,7 @@ async function validatedResponse<T>(response: Response, schema: TSchema): Promis
     if (Value.Check(ApiErrorSchema, payload)) {
       throw new ConversationApiError(response.status, payload.code);
     }
-    throw new Error("The conversation error response did not match the protocol.");
+    throw new ConversationHttpError(response.status);
   }
 
   if (!Value.Check(schema, payload)) {
@@ -208,6 +237,19 @@ export const conversationQueryKeys = {
       ...conversationQueryKeys.alternativeContexts(queryScope),
       conversationId,
       revision,
+      [...messageIds].sort(),
+    ] as const,
+  answerReportStates: (queryScope: ConversationQueryScope) =>
+    [...conversationQueryKeys.all(queryScope), "answer-report-state"] as const,
+  answerReportStatesForConversation: (queryScope: ConversationQueryScope, conversationId: string) =>
+    [...conversationQueryKeys.answerReportStates(queryScope), conversationId] as const,
+  answerReportState: (
+    queryScope: ConversationQueryScope,
+    conversationId: string,
+    messageIds: readonly string[],
+  ) =>
+    [
+      ...conversationQueryKeys.answerReportStatesForConversation(queryScope, conversationId),
       [...messageIds].sort(),
     ] as const,
   modelTierPolicy: (queryScope: ConversationQueryScope) =>
@@ -541,6 +583,68 @@ export async function fetchResponseStates(
       throw new Error("The response state did not match the requested messages.");
     }
     receivedIds.add(responseState.messageId);
+  }
+  return state;
+}
+
+export async function fetchResponseUpdates(
+  conversationId: string,
+  generationId: string,
+  input: ResponseUpdatesRequest,
+  signal?: AbortSignal,
+): Promise<ResponseUpdatesResponse> {
+  const response = await fetch(
+    `/api/conversations/${encodeURIComponent(conversationId)}/responses/${encodeURIComponent(generationId)}/updates`,
+    jsonRequest("POST", input, signal),
+  );
+  const updates = await validatedResponse<ResponseUpdatesResponse>(
+    response,
+    ResponseUpdatesResponseSchema,
+  );
+  assertConversationId(conversationId, updates.conversationId);
+  if (updates.response.generationId !== generationId) {
+    throw new Error("The response updates did not match the requested generation.");
+  }
+  return updates;
+}
+
+export async function createAnswerReport(
+  conversationId: string,
+  messageId: string,
+  input: CreateAnswerReportRequest,
+  signal?: AbortSignal,
+): Promise<CreateAnswerReportResponse> {
+  const response = await fetch(
+    `/api/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/report`,
+    jsonRequest("POST", input, signal),
+  );
+  const created = await validatedResponse<CreateAnswerReportResponse>(
+    response,
+    CreateAnswerReportResponseSchema,
+  );
+  if (created.messageId !== messageId) {
+    throw new Error("The report response did not match the requested message.");
+  }
+  return created;
+}
+
+export async function fetchAnswerReportStates(
+  conversationId: string,
+  input: AnswerReportStateRequest,
+  signal?: AbortSignal,
+): Promise<AnswerReportStateResponse> {
+  const response = await fetch(
+    `/api/conversations/${encodeURIComponent(conversationId)}/answer-report-states`,
+    jsonRequest("POST", input, signal),
+  );
+  const state = await validatedResponse<AnswerReportStateResponse>(
+    response,
+    AnswerReportStateResponseSchema,
+  );
+  assertConversationId(conversationId, state.conversationId);
+  const requested = new Set(input.messageIds);
+  if (state.reportedMessageIds.some((messageId) => !requested.has(messageId))) {
+    throw new Error("The report state did not match the requested messages.");
   }
   return state;
 }

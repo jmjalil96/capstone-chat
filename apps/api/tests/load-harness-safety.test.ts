@@ -3,6 +3,7 @@ import {
   BoundedNdjsonDecoder,
   diagnosticsAuthorization,
   hasMonotonicMemoryGrowth,
+  maximumDurableUpdatePolls,
   parseLoadOptions,
   StreamLifecycleGuard,
 } from "../src/load/harness-safety.js";
@@ -188,6 +189,34 @@ describe("load harness safety", () => {
     expect(() => contentDuringCompaction.accept("content.delta")).toThrow(
       "before compaction settled",
     );
+
+    const namingWithoutContent = new StreamLifecycleGuard();
+    namingWithoutContent.accept("response.started");
+    expect(() => namingWithoutContent.accept("conversation.naming")).toThrow(
+      "invalid naming lifecycle",
+    );
+
+    const namingDuringCompaction = new StreamLifecycleGuard();
+    namingDuringCompaction.accept("response.started");
+    namingDuringCompaction.accept("context.compacting");
+    expect(() => namingDuringCompaction.accept("conversation.naming")).toThrow(
+      "invalid naming lifecycle",
+    );
+
+    const contentAfterNaming = new StreamLifecycleGuard();
+    contentAfterNaming.accept("response.started");
+    contentAfterNaming.accept("content.delta");
+    contentAfterNaming.accept("conversation.naming");
+    expect(() => contentAfterNaming.accept("content.delta")).toThrow("after naming began");
+    expect(() => contentAfterNaming.accept("context.warning")).toThrow(
+      "invalid compaction lifecycle",
+    );
+
+    const duplicateNaming = new StreamLifecycleGuard();
+    duplicateNaming.accept("response.started");
+    duplicateNaming.accept("content.delta");
+    duplicateNaming.accept("conversation.naming");
+    expect(() => duplicateNaming.accept("conversation.naming")).toThrow("invalid naming lifecycle");
   });
 
   it("detects a repeated post-idle heap or RSS increase", () => {
@@ -206,5 +235,13 @@ describe("load harness safety", () => {
       ]),
     ).toBe(false);
     expect(hasMonotonicMemoryGrowth([{ heapUsedBytes: 100, rssBytes: 200 }])).toBe(false);
+  });
+
+  it("bounds durable update requests by elapsed time at the configured cadence", () => {
+    expect(maximumDurableUpdatePolls(0, 500)).toBe(2);
+    expect(maximumDurableUpdatePolls(500, 500)).toBe(3);
+    expect(maximumDurableUpdatePolls(501, 500)).toBe(4);
+    expect(() => maximumDurableUpdatePolls(-1, 500)).toThrow("nonnegative");
+    expect(() => maximumDurableUpdatePolls(1_000, 0)).toThrow("positive");
   });
 });

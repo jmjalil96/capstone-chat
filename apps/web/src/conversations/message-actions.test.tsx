@@ -238,3 +238,26 @@ describe("message actions", () => {
     expect(onUndo).toHaveBeenCalledWith(expect.any(HTMLButtonElement));
   });
 });
+
+describe("answer reporting", () => {
+  it("offers Reportar only for eligible assistant answers and shows the reported state", async () => {
+    const user = userEvent.setup();
+    const onReport = vi.fn();
+    const { rerender, props } = actions(assistantMessage, { canReport: true, onReport });
+    const report = screen.getByRole("button", { name: copy.conversations.messages.report });
+    await user.click(report);
+    expect(onReport).toHaveBeenCalledWith(report);
+
+    rerender(<MessageActions {...props} canReport={false} reported />);
+    const reported = screen.getByRole("button", { name: copy.conversations.messages.reported });
+    expect(reported).toHaveAttribute("aria-disabled", "true");
+    await user.click(reported);
+    expect(onReport).toHaveBeenCalledOnce();
+
+    cleanup();
+    actions(userMessage, { canReport: true, onReport });
+    expect(
+      screen.queryByRole("button", { name: copy.conversations.messages.report }),
+    ).not.toBeInTheDocument();
+  });
+});

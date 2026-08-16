@@ -1,3 +1,4 @@
+import { isTerminalGenerationStatus } from "../database/generation-schema.js";
 import type { DurableGenerationState } from "./service.js";
 
 interface DurableGenerationAuthorityOptions {
@@ -7,7 +8,7 @@ interface DurableGenerationAuthorityOptions {
 }
 
 function isTerminal(state: DurableGenerationState | null): boolean {
-  return state === null || (state.status !== "active" && state.status !== "preparing");
+  return state === null || isTerminalGenerationStatus(state.status);
 }
 
 function waitForNextRead(signal: AbortSignal, milliseconds: number): Promise<void> {

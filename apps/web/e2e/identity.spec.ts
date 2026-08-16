@@ -495,7 +495,10 @@ test("resets selected-branch scrolling when the conversation route parameter cha
   await expect(page.getByText("2222 mensaje 30")).toBeVisible();
   await expect(page.getByRole("heading", { level: 1, name: "Conversación dos" })).toBeVisible();
   await expect(page).toHaveTitle(/Conversación dos/u);
-  await expect(page.getByRole("alert")).toContainText(copy.conversations.common.genericError);
+  const conversationError = page
+    .getByRole("alert")
+    .filter({ hasText: copy.conversations.common.genericError });
+  await expect(conversationError).toBeVisible();
   await olderButton.evaluate((element) => {
     const container = element.closest<HTMLElement>(".message-scroll");
     if (!container) {
@@ -506,9 +509,11 @@ test("resets selected-branch scrolling when the conversation route parameter cha
   });
   await expect.poll(() => scroll.evaluate((element) => element.scrollTop)).toBe(0);
   await expect.poll(() => secondInitialRequests).toBeGreaterThanOrEqual(2);
-  await expect(page.getByRole("alert")).toContainText(copy.conversations.common.genericError);
-  await page.getByRole("button", { name: copy.conversations.common.retry }).click();
-  await expect(page.getByRole("alert")).toContainText(copy.conversations.common.changed);
+  await expect(conversationError).toBeVisible();
+  await conversationError.getByRole("button", { name: copy.conversations.common.retry }).click();
+  await expect(
+    page.getByRole("alert").filter({ hasText: copy.conversations.common.changed }),
+  ).toBeVisible();
   await expect.poll(() => secondInitialRequests).toBeGreaterThanOrEqual(3);
   await expect.poll(() => scroll.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
 

@@ -764,17 +764,21 @@ describe("conversation page", () => {
     );
     streamController.close();
 
-    expect(
-      (await screen.findByText(copy.conversations.generation.errors.committed)).closest(
-        '[role="alert"]',
-      ),
-    ).toBeVisible();
+    const committedAlert = (
+      await screen.findByText(copy.conversations.generation.errors.committed)
+    ).closest<HTMLElement>('[role="alert"]');
+    expect(committedAlert).toBeVisible();
     expect(
       screen.queryByText(copy.conversations.generation.errors.generic),
     ).not.toBeInTheDocument();
 
     recoveryAvailable = true;
-    await user.click(screen.getByRole("button", { name: copy.conversations.common.retry }));
+    if (committedAlert === null) {
+      throw new Error("Expected the committed-response alert");
+    }
+    await user.click(
+      within(committedAlert).getByRole("button", { name: copy.conversations.common.retry }),
+    );
     await waitFor(() =>
       expect(
         screen.queryByText(copy.conversations.generation.errors.committed),
@@ -1777,7 +1781,7 @@ describe("conversation page", () => {
     });
     previous.focus();
     await user.keyboard("{Enter}");
-    expect(await screen.findByRole("alert")).toHaveTextContent(copy.conversations.common.changed);
+    expect(await screen.findByText(copy.conversations.common.changed)).toBeVisible();
     await waitFor(() =>
       expect(
         screen.getByRole("button", {

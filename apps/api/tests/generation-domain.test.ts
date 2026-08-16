@@ -10,6 +10,7 @@ import { continueMessage, systemPrompt } from "../src/generations/prompt.js";
 import {
   CheckpointScheduler,
   NdjsonWriter,
+  StreamHeartbeat,
   splitContentDelta,
 } from "../src/generations/response-stream.js";
 import type { GenerationService } from "../src/generations/service.js";
@@ -105,15 +106,18 @@ describe("NDJSON delta framing", () => {
 class BackpressuredResponse extends EventEmitter {
   destroyed = false;
   writableEnded = false;
+  readonly destroy = vi.fn(() => {
+    this.destroyed = true;
+  });
   readonly write = vi.fn(() => false);
 }
 
-function backpressuredWriter(raw: BackpressuredResponse): NdjsonWriter {
-  return new NdjsonWriter(
-    { raw } as unknown as FastifyReply,
-    new AbortController().signal,
-    new AbortController().signal,
-  );
+function backpressuredWriter(
+  raw: BackpressuredResponse,
+  interruptSignal = new AbortController().signal,
+  onDetach: () => void = () => undefined,
+): NdjsonWriter {
+  return new NdjsonWriter({ raw } as unknown as FastifyReply, interruptSignal, onDetach);
 }
 
 describe("NDJSON backpressure", () => {
@@ -130,16 +134,86 @@ describe("NDJSON backpressure", () => {
     expect(raw.write).toHaveBeenCalledOnce();
   });
 
-  it("fails a stalled downstream write at the locked timeout", async () => {
+  it("detaches and destroys a stalled downstream socket at the locked timeout", async () => {
     vi.useFakeTimers();
     const raw = new BackpressuredResponse();
-    const writing = backpressuredWriter(raw).write({ text: "stalled", type: "content.delta" });
-    const rejection = expect(writing).rejects.toThrow("backpressure timed out");
+    const onDetach = vi.fn();
+    const writer = backpressuredWriter(raw, undefined, onDetach);
+    const writing = writer.write({ text: "stalled", type: "content.delta" });
     await vi.advanceTimersByTimeAsync(4_999);
     expect(raw.listenerCount("drain")).toBe(1);
+    expect(writer.detached).toBe(false);
     await vi.advanceTimersByTimeAsync(1);
-    await rejection;
+    await expect(writing).resolves.toBeUndefined();
     expect(raw.listenerCount("drain")).toBe(0);
+    expect(raw.listenerCount("close")).toBe(0);
+    expect(writer.detached).toBe(true);
+    expect(onDetach).toHaveBeenCalledOnce();
+    expect(raw.destroy).toHaveBeenCalledOnce();
+    // Later writes are silent no-ops instead of transport failures.
+    await expect(
+      writer.write({ text: "after detach", type: "content.delta" }),
+    ).resolves.toBeUndefined();
+    expect(raw.write).toHaveBeenCalledOnce();
+  });
+
+  it("detaches on socket close and only rejects for the workflow interrupt", async () => {
+    const closed = new BackpressuredResponse();
+    const closedWriter = backpressuredWriter(closed);
+    const closing = closedWriter.write({ text: "closing", type: "content.delta" });
+    await Promise.resolve();
+    closed.emit("close");
+    await expect(closing).resolves.toBeUndefined();
+    expect(closedWriter.detached).toBe(true);
+    expect(closed.destroy).not.toHaveBeenCalled();
+
+    const interrupt = new AbortController();
+    const interrupted = new BackpressuredResponse();
+    const interruptedWriter = backpressuredWriter(interrupted, interrupt.signal);
+    const pending = interruptedWriter.write({ text: "stop", type: "content.delta" });
+    await Promise.resolve();
+    interrupt.abort();
+    await expect(pending).rejects.toThrow("aborted");
+    expect(interruptedWriter.detached).toBe(false);
+  });
+});
+
+describe("stream heartbeat", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("does not restart after the downstream writer detached during the initial event", async () => {
+    vi.useFakeTimers();
+    const write = vi.fn(async () => undefined);
+    const heartbeat = new StreamHeartbeat({ detached: true, write } as unknown as NdjsonWriter, 10);
+
+    heartbeat.start();
+    await vi.advanceTimersByTimeAsync(20);
+
+    expect(write).not.toHaveBeenCalled();
+    await heartbeat.stop();
+  });
+
+  it("stops scheduling when a workflow interrupt rejects an in-flight heartbeat", async () => {
+    vi.useFakeTimers();
+    const interrupt = new AbortController();
+    const write = vi.fn(async () => {
+      interrupt.abort("cancelled");
+      throw new Error("Synthetic interrupted heartbeat");
+    });
+    const heartbeat = new StreamHeartbeat(
+      { detached: false, write } as unknown as NdjsonWriter,
+      10,
+    );
+
+    heartbeat.start();
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(write).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(20);
+    expect(write).toHaveBeenCalledOnce();
+    await heartbeat.stop();
   });
 });
 
@@ -425,5 +499,20 @@ describe("ActiveStreamRegistry", () => {
     expect(lease.signal.aborted).toBe(true);
     expect(lease.signal.reason).toBe("shutdown");
     lease.release();
+  });
+
+  it("retains shutdown ownership until deferred stream work settles", async () => {
+    const registry = new ActiveStreamRegistry();
+    const deferred = Promise.withResolvers<void>();
+    const lease = registry.register("generation-3");
+    lease.defer(deferred.promise);
+
+    lease.release();
+    expect(registry.size).toBe(1);
+    await expect(registry.waitForIdle(1)).resolves.toBe(false);
+
+    deferred.resolve();
+    await expect(registry.waitForIdle(100)).resolves.toBe(true);
+    expect(registry.size).toBe(0);
   });
 });
