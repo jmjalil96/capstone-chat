@@ -273,7 +273,9 @@ test("@critical-accessibility reviews all administration pages and their confirm
       page.getByRole("rowheader", { name: "luis.accessibility@example.test" }),
     ).toBeVisible();
     await expectReviewedWcagState(page, testInfo, `administration-employees-${viewport.name}`);
-    await page.getByRole("button", { name: copy.administration.employees.deactivate }).click();
+    await page
+      .getByRole("button", { name: copy.administration.employees.deactivate })
+      .press("Enter");
     await expect(
       page.getByRole("dialog", { name: copy.administration.employees.deactivateTitle }),
     ).toBeVisible();
