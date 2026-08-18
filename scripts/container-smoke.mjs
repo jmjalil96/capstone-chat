@@ -4,6 +4,42 @@ const [image, revision] = process.argv.slice(2).filter((argument) => argument !=
 const databaseUrl = process.env.DATABASE_URL;
 const portValue = process.env.CAPSTONE_CONTAINER_SMOKE_PORT ?? "3099";
 const port = Number(portValue);
+const initializationDocument = JSON.stringify({
+  administrator: { email: "administrator@rehearsal.test" },
+  assistantRules: { preset: "capstone-ecuador-v1" },
+  modelPolicy: {
+    employeeActiveGenerationLimit: 2,
+    maximumOutputTokens: { balanced: 8192, fast: 4096, pro: 16384 },
+    monthlyBudgetUsd: "100",
+    reservationMarginBasisPoints: 2000,
+    tierBehavior: {
+      balanced: {
+        reasoningBudgetTokens: 0,
+        reasoningEffort: "off",
+        temperaturePreset: "balanced",
+      },
+      fast: {
+        reasoningBudgetTokens: 0,
+        reasoningEffort: "off",
+        temperaturePreset: "precise",
+      },
+      pro: {
+        reasoningBudgetTokens: 8192,
+        reasoningEffort: "high",
+        temperaturePreset: "balanced",
+      },
+    },
+  },
+  privacyAttestation: {
+    attestationVersion: "openrouter-privacy-v1",
+    broadcastEnabled: false,
+    dataDiscountLoggingEnabled: false,
+    inputOutputLoggingEnabled: false,
+    verifiedAt: "2026-08-17T00:00:00.000Z",
+  },
+  schemaVersion: 2,
+  workspace: { displayName: "Capstone", identity: "capstone" },
+});
 
 function assert(condition, message) {
   if (!condition) {
@@ -70,7 +106,24 @@ function docker(arguments_, options = {}) {
   return result.stdout.trim();
 }
 
-function runTestOperator(arguments_, environment = []) {
+function runUnifiedTestInitialization(expectedOutcome) {
+  const initialize = `
+    import { parseManagedRehearsalInitializationDocument } from "./apps/api/dist/load/managed-rehearsal.js";
+    import { initializeManagedRehearsal } from "./apps/api/dist/operator/production-initialization.js";
+    const databaseUrl = process.env.DATABASE_URL;
+    const contents = process.env.CAPSTONE_INITIALIZATION_DOCUMENT;
+    if (databaseUrl === undefined || contents === undefined) process.exit(1);
+    const document = parseManagedRehearsalInitializationDocument(contents);
+    const result = await initializeManagedRehearsal({
+      applicationDatabaseUrl: databaseUrl,
+      document,
+      migrationDatabaseUrl: databaseUrl,
+    });
+    if (
+      result.outcome !== ${JSON.stringify(expectedOutcome)} ||
+      result.phase !== "complete"
+    ) process.exit(1);
+  `;
   docker([
     "run",
     "--rm",
@@ -79,13 +132,15 @@ function runTestOperator(arguments_, environment = []) {
     "--env",
     `DATABASE_URL=${containerDatabaseUrl}`,
     "--env",
+    `CAPSTONE_INITIALIZATION_DOCUMENT=${initializationDocument}`,
+    "--env",
     "NODE_ENV=test",
-    ...environment.flatMap((value) => ["--env", value]),
     "--entrypoint",
     "node",
     image,
-    "apps/api/dist/entrypoint.js",
-    ...arguments_,
+    "--input-type=module",
+    "--eval",
+    initialize,
   ]);
 }
 
@@ -252,56 +307,8 @@ try {
     `const response = await fetch("http://127.0.0.1:3000/api/session"); if (response.status !== 404) process.exit(1);`,
   ]);
   docker(["rm", "--force", entrypointContainerName]);
-  docker([
-    "run",
-    "--rm",
-    "--add-host",
-    "host.docker.internal:host-gateway",
-    "--env",
-    `DATABASE_URL=${containerDatabaseUrl}`,
-    "--env",
-    "NODE_ENV=test",
-    "--entrypoint",
-    "node",
-    image,
-    "apps/api/dist/entrypoint.js",
-    "migrate",
-  ]);
-  runTestOperator(
-    [
-      "identity",
-      "bootstrap",
-      "--workspace",
-      "container-smoke",
-      "--name",
-      "Capstone container smoke",
-      "--email",
-      "administrator@container-smoke.test",
-      "--invitation-delivery",
-      "disabled",
-    ],
-    ["EMAIL_DELIVERY=disabled"],
-  );
-  runTestOperator([
-    "model",
-    "bootstrap",
-    "--mode",
-    "simulated",
-    "--workspace",
-    "container-smoke",
-    "--monthly-budget-usd",
-    "100",
-    "--fast-max-output",
-    "4096",
-    "--balanced-max-output",
-    "8192",
-    "--pro-max-output",
-    "16384",
-    "--employee-generation-limit",
-    "2",
-    "--reservation-margin-bps",
-    "2000",
-  ]);
+  runUnifiedTestInitialization("completed");
+  runUnifiedTestInitialization("already-complete");
 
   docker([
     "run",
@@ -326,15 +333,17 @@ try {
     "--env",
     "EMAIL_DELIVERY=fake",
     "--env",
-    "MODEL_GATEWAY=fake",
+    "MODEL_GATEWAY=openrouter",
+    "--env",
+    "OPENROUTER_API_KEY=container-smoke-placeholder",
     "--env",
     "LOG_LEVEL=silent",
     "--env",
     `DEPLOYMENT_REVISION=${revision}`,
     image,
   ]);
-  // Migration plus exact identity/policy bootstrap completed above, so the image's unmodified
-  // default command must now pass the same application-authority readiness gate as deployment.
+  // Unified schema-2 initialization completed above, so the image's unmodified default command
+  // must now pass the same application-authority readiness gate as deployment.
   await waitForInternalHealth("/api/health/ready", "ready");
   docker(["rm", "--force", entrypointContainerName]);
 
@@ -364,7 +373,9 @@ try {
       "--env",
       "BETTER_AUTH_SECRET=capstone-chat-container-smoke-auth-secret",
       "--env",
-      "MODEL_GATEWAY=fake",
+      "MODEL_GATEWAY=openrouter",
+      "--env",
+      "OPENROUTER_API_KEY=container-smoke-placeholder",
       "--env",
       "EMAIL_DELIVERY=fake",
       "--env",

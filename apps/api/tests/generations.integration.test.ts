@@ -21,6 +21,7 @@ import {
   modelCatalog,
   workspaceCatalogApprovals,
   workspaceModelPolicies,
+  workspaceModelPolicyRevisionTiers,
 } from "../src/database/model-policy-schema.js";
 import { ApplicationError } from "../src/errors.js";
 import { createGenerationAdministrationService } from "../src/generations/administration.js";
@@ -41,7 +42,9 @@ import {
   verifyPrivacyAttestation,
 } from "../src/model-policy/catalog.js";
 import { createModelPolicyService } from "../src/model-policy/service.js";
+import { testCatalogCapability } from "./support/generation.js";
 import { bootstrapSimulatedModelPolicy } from "./support/model-policy.js";
+import { bootstrapTestAssistantRules } from "./support/workspace-behavior.js";
 
 function createActor(userId: string, workspaceId: string): RequestActor {
   const now = Date.now();
@@ -79,11 +82,12 @@ function openRouterCatalog(
         Object.freeze({
           available: true,
           canonicalSlug: initialTierModels[tier],
+          capability: testCatalogCapability,
           completionPricePerToken,
           contextLength: 1_000_000,
           displayName: `Synthetic ${tier}`,
           inputModalities: Object.freeze(["text"]),
-          maximumOutputTokens: 1,
+          maximumOutputTokens: tier === "pro" ? 16_384 : 1,
           metadataSource: "openrouter",
           modelId: initialTierModels[tier],
           outputModalities: Object.freeze(["text"]),
@@ -173,6 +177,7 @@ describe.sequential("generation lifecycle integration", () => {
       userId,
       workspaceId,
     });
+    await bootstrapTestAssistantRules(database, workspaceId);
     await bootstrapSimulatedModelPolicy(createModelPolicyService(database), workspaceIdentity);
     actor = createActor(userId, workspaceId);
     conversationsService = createConversationService(
@@ -373,12 +378,14 @@ describe.sequential("generation lifecycle integration", () => {
         effectiveParameters: { context: { mode: "full" } },
         id: generationId,
         idempotencyKey: randomUUID(),
+        modelPolicyRevision: 1,
         purpose: "chat",
         requestedTier: "balanced",
         status: "active" as const,
-        systemPromptVersion: "capstone-chat-v1",
+        systemPromptVersion: "capstone-chat-base-v2",
         userId: actor.employee.id,
         workspaceId: actor.workspace.id,
+        workspacePromptRevision: 1,
       })),
     );
 
@@ -451,14 +458,14 @@ describe.sequential("generation lifecycle integration", () => {
 
   async function useOpenRouterPolicy(): Promise<void> {
     await pool.query(
-      'TRUNCATE TABLE "workspace_cost_policies", "model_catalog" RESTART IDENTITY CASCADE',
+      'TRUNCATE TABLE "workspace_model_policy_revisions", "model_catalog" RESTART IDENTITY CASCADE',
     );
     const policy = createModelPolicyService(database);
     const verifiedAt = new Date(Date.now() - 1_000);
     await policy.bootstrap({
       catalog: openRouterCatalog("1", verifiedAt),
       employeeActiveGenerationLimit: 1,
-      maximumOutputTokens: { balanced: 1, fast: 1, pro: 1 },
+      maximumOutputTokens: { balanced: 1, fast: 1, pro: 16_384 },
       mode: "openrouter",
       monthlyBudgetUsd: "100",
       privacyAttestation: verifyPrivacyAttestation({
@@ -908,6 +915,16 @@ describe.sequential("generation lifecycle integration", () => {
           eq(workspaceModelPolicies.tier, "fast"),
         ),
       );
+    await database
+      .update(workspaceModelPolicyRevisionTiers)
+      .set({ enabled: false })
+      .where(
+        and(
+          eq(workspaceModelPolicyRevisionTiers.workspaceId, actor.workspace.id),
+          eq(workspaceModelPolicyRevisionTiers.revision, 1),
+          eq(workspaceModelPolicyRevisionTiers.tier, "fast"),
+        ),
+      );
     const { conversation, draft, parentMessageId } = await longConversationDraft();
 
     const started = await generationService.startResponse(actor, conversation.id, randomUUID(), {
@@ -933,7 +950,7 @@ describe.sequential("generation lifecycle integration", () => {
         .from(generations)
         .where(eq(generations.id, started.generationId)),
     ).resolves.toMatchObject([
-      { effectiveParameters: { context: { mode: "pending" } }, status: "preparing" },
+      { effectiveParameters: { purpose: "chat", tier: "balanced" }, status: "preparing" },
     ]);
   });
 
@@ -1010,7 +1027,7 @@ describe.sequential("generation lifecycle integration", () => {
         .where(eq(generations.id, started.generationId)),
     ).resolves.toMatchObject([
       {
-        effectiveParameters: { context: { mode: "fallback", reason: "fast-unavailable" } },
+        effectiveParameters: { purpose: "chat", tier: "balanced" },
         status: "active",
       },
     ]);
@@ -1033,14 +1050,14 @@ describe.sequential("generation lifecycle integration", () => {
     "atomically admits one of two concurrent conversations at the $scenario boundary",
     async ({ employeeActiveGenerationLimit, expectedCode, monthlyBudgetUsd }) => {
       await pool.query(
-        'TRUNCATE TABLE "workspace_cost_policies", "model_catalog" RESTART IDENTITY CASCADE',
+        'TRUNCATE TABLE "workspace_model_policy_revisions", "model_catalog" RESTART IDENTITY CASCADE',
       );
       const policy = createModelPolicyService(database);
       const verifiedAt = new Date(Date.now() - 1_000);
       await policy.bootstrap({
         catalog: openRouterCatalog("1", verifiedAt),
         employeeActiveGenerationLimit,
-        maximumOutputTokens: { balanced: 1, fast: 1, pro: 1 },
+        maximumOutputTokens: { balanced: 1, fast: 1, pro: 16_384 },
         mode: "openrouter",
         monthlyBudgetUsd,
         privacyAttestation: verifyPrivacyAttestation({
@@ -1117,13 +1134,11 @@ describe.sequential("generation lifecycle integration", () => {
       expect(stored[0]).toMatchObject({
         accountingStatus: "reserved",
         effectiveParameters: {
-          maximumOutputTokens: 1,
-          priceCeiling: {
-            completionUsdPerMillion: "1000000",
-            promptUsdPerMillion: "0",
-            requestUsd: "0",
-          },
+          purpose: "chat",
+          tier: "balanced",
+          traceExcluded: true,
         },
+        maximumOutputTokens: 1,
         requestedModel: initialTierModels.balanced,
         requestedTier: "balanced",
         reservedCostUsd: "1.000000000000000000",
@@ -1264,12 +1279,13 @@ describe.sequential("generation lifecycle integration", () => {
     });
 
     expect(started).toMatchObject({ conversationId: conversation.id, revision: 1 });
-    expect(started.request).toEqual({
+    expect(started.request).toMatchObject({
+      effectiveParameters: { purpose: "chat", tier: "balanced" },
       history: [],
       message: { role: "user", text: "Primera pregunta" },
       modelTier: "balanced",
       purpose: "chat",
-      systemPrompt,
+      systemPrompt: { version: "capstone-chat-base-v2" },
     });
     expect(
       await conversationsService.getDraft(actor, {
@@ -1283,7 +1299,8 @@ describe.sequential("generation lifecycle integration", () => {
       effectiveParameters: {},
       requestedTier: "balanced",
       status: "active",
-      systemPromptVersion: "capstone-chat-v1",
+      systemPromptVersion: "capstone-chat-base-v2",
+      workspacePromptRevision: 1,
     });
 
     const firstTokenAt = new Date(Date.now() + 10);

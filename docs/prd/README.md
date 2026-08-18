@@ -63,6 +63,27 @@ Fourth, reports disappear with their source content. The exact contracts, guardr
 rollout boundary, pre-launch no-user exception, and verification plan are recorded in
 [the Phase 10 resilient responses and feedback plan](../implementation/10-resilient-responses-and-feedback-plan.md).
 
+The August 17, 2026 workspace-behavior-controls decision (Phase 11) amends the locked prompt,
+model-policy, administration, persistence, generation-snapshot, and one-time deployment contracts.
+A mandatory code-owned base prompt remains locked while one normalized, immutable-revisioned
+workspace layer supplies administrator-owned company context and rules. Administrators also gain
+bounded per-tier temperature, reasoning-effort, and reasoning-budget settings, with complete
+actor-attributed policy history and append-only revert. Active members may read the current
+workspace and locked rules but cannot edit them. The total output allowance continues to include
+visible output and hidden reasoning; the reasoning budget is a non-additive sub-cap. Provider
+capability resolution is conservative, every reasoning request excludes traces, and raw reasoning
+content remains outside persistence, logs, telemetry, reports, and the browser.
+
+The owner reconfirmed on August 17 that Capstone Chat has no users, user data, active browser
+clients, or production history that must survive this amendment. Phase 11 therefore uses one
+clean-slate schema and protocol with one synchronized API/web release. Migration `0009` accepts
+only an application-empty database and contains schema only; reviewed initialization creates the
+first truthful prompt and policy revisions. A one-time source-controlled health-only writer fence
+permits the synchronized contract cutover, after which ordinary immediately-prior browser
+compatibility and expand/contract deployment rules resume. The exact product decisions, limits,
+initial values, release choreography, and verification gates are recorded in
+[the Phase 11 workspace behavior controls plan](../implementation/11-workspace-behavior-controls-plan.md).
+
 The production-hosting decisions approved on 2026-08-11 replace the active raw-Droplet path with
 one DigitalOcean App Platform dynamic service in managed region `ric`, Dedicated Egress, and the
 already selected PlanetScale Postgres PS-5 Single Node cluster in AWS `us-east-1`. They amend the

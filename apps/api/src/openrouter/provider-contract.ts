@@ -152,6 +152,19 @@ const OpenRouterArchitectureSchema = Type.Object(
   { additionalProperties: true },
 );
 
+const OpenRouterModelReasoningSchema = Type.Object(
+  {
+    supported_efforts: Type.Optional(
+      Type.Union([Type.Array(Type.String({ maxLength: 80 }), { maxItems: 32 }), Type.Null()]),
+    ),
+    default_effort: Type.Optional(Type.String({ maxLength: 80 })),
+    default_enabled: Type.Optional(Type.Boolean()),
+    supports_max_tokens: Type.Optional(Type.Boolean()),
+    mandatory: Type.Optional(Type.Boolean()),
+  },
+  { additionalProperties: true },
+);
+
 const OpenRouterModelSchema = Type.Object(
   {
     architecture: OpenRouterArchitectureSchema,
@@ -159,6 +172,7 @@ const OpenRouterModelSchema = Type.Object(
     context_length: Type.Integer({ maximum: maximumSafeInteger, minimum: 1 }),
     id: Type.String({ maxLength: 256, minLength: 1 }),
     name: Type.String({ maxLength: 256, minLength: 1 }),
+    reasoning: Type.Optional(OpenRouterModelReasoningSchema),
     supported_parameters: Type.Array(Type.String({ maxLength: 80 }), { maxItems: 256 }),
     top_provider: Type.Optional(
       Type.Object(

@@ -99,7 +99,7 @@ export interface ManagedRehearsalInitializationConfig {
   readonly deploymentRevision: string;
   readonly deploymentTarget: DeploymentTarget;
   readonly initializationDocument: string;
-  readonly initializationSchemaVersion: 1;
+  readonly initializationSchemaVersion: 2;
   readonly migrationDatabaseUrl: string;
   readonly nodeEnv: "test";
   readonly secretSource: SecretSource;
@@ -110,7 +110,7 @@ export interface InitializationOperatorConfig {
   readonly deploymentRevision: string;
   readonly deploymentTarget: DeploymentTarget;
   readonly initializationDocument: string;
-  readonly initializationSchemaVersion: 1;
+  readonly initializationSchemaVersion: 2;
   readonly migrationDatabaseUrl: string;
   readonly modelGateway: "openrouter";
   readonly nodeEnv: "production";
@@ -950,10 +950,10 @@ export function loadInitializationOperatorConfig(
   );
 
   const schemaVersion = source.CAPSTONE_INITIALIZATION_SCHEMA_VERSION?.trim();
-  if (schemaVersion !== "1") {
+  if (schemaVersion !== "2") {
     throw new ConfigurationError(
       "CAPSTONE_INITIALIZATION_SCHEMA_VERSION",
-      "CAPSTONE_INITIALIZATION_SCHEMA_VERSION must be 1",
+      "CAPSTONE_INITIALIZATION_SCHEMA_VERSION must be 2",
     );
   }
   const initializationDocument = source.CAPSTONE_INITIALIZATION_DOCUMENT;
@@ -1001,7 +1001,7 @@ export function loadInitializationOperatorConfig(
     deploymentRevision: readDeploymentRevision(source, nodeEnv),
     deploymentTarget: platform.deploymentTarget,
     initializationDocument,
-    initializationSchemaVersion: 1,
+    initializationSchemaVersion: 2,
     migrationDatabaseUrl,
     modelGateway,
     nodeEnv,
@@ -1044,10 +1044,10 @@ export function loadManagedRehearsalInitializationConfig(
   );
 
   const schemaVersion = source.CAPSTONE_INITIALIZATION_SCHEMA_VERSION?.trim();
-  if (schemaVersion !== "1") {
+  if (schemaVersion !== "2") {
     throw new ConfigurationError(
       "CAPSTONE_INITIALIZATION_SCHEMA_VERSION",
-      "CAPSTONE_INITIALIZATION_SCHEMA_VERSION must be 1",
+      "CAPSTONE_INITIALIZATION_SCHEMA_VERSION must be 2",
     );
   }
   const initializationDocument = source.CAPSTONE_INITIALIZATION_DOCUMENT;
@@ -1086,7 +1086,7 @@ export function loadManagedRehearsalInitializationConfig(
     deploymentRevision: readManagedRehearsalRevision(source),
     deploymentTarget: platform.deploymentTarget,
     initializationDocument,
-    initializationSchemaVersion: 1,
+    initializationSchemaVersion: 2,
     migrationDatabaseUrl,
     nodeEnv,
     secretSource: platform.secretSource,

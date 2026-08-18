@@ -45,10 +45,10 @@ four-hour RTO.
 Earlier Render, raw-Droplet, RIC1/NYC3 host, Caddy, systemd, UFW, Volume, and Fluent Bit records are
 historical evidence only. They are not alternate production instructions.
 
-Development and automated tests still default to the deterministic zero-cost `FakeModelGateway`.
-Real inference is an explicit `MODEL_GATEWAY=openrouter` opt-in and requires a dedicated key, a live
-validated catalog, and a fresh privacy attestation. No DigitalOcean, PlanetScale, GitHub Package,
-Resend, New Relic, DNS, paid OpenRouter, or recovery resource is created by repository setup.
+Automated tests use the deterministic zero-cost `FakeModelGateway`. Ordinary `pnpm dev` is the
+explicit live OpenRouter path: it requires a dedicated key, a live validated catalog, and a fresh
+local privacy attestation. No DigitalOcean, PlanetScale, GitHub Package, Resend, New Relic, DNS, or
+recovery resource is created by repository setup.
 Production acceptance remains a separate operator exercise with evidence from the committed
 runbooks; the direct-production decision authorizes the staged production target, not a bypass of
 its security-sensitive provisioning order.
@@ -70,115 +70,52 @@ cp .env.example .env
 The committed example contains synthetic local-only values. Never reuse its Better Auth secret in
 production.
 
-## Local identity setup
+## Live local development
 
-Start PostgreSQL and wait for its health check:
+Set only the dedicated development key in `.env`:
 
-```sh
-docker compose up -d --wait postgres
+```dotenv
+OPENROUTER_API_KEY=replace-with-the-dedicated-development-key
 ```
 
-Compose publishes PostgreSQL on loopback only. If port 5432 is occupied, set
-`CAPSTONE_POSTGRES_PORT` and use the same port in `DATABASE_URL`.
-
-Apply the complete committed migration history explicitly:
-
-```sh
-pnpm db:migrate
-```
-
-Bootstrap the one workspace and its pending administrator approval. This command creates no
-password or default credential:
-
-```sh
-pnpm identity:bootstrap --workspace capstone --name "Capstone" --email admin@example.test
-```
-
-An exact retry is safe and reports `"repeated": true`. A different workspace or conflicting
-bootstrap fails explicitly. Migrations and bootstrap are operator actions; API replicas never run
-either one during startup.
-
-Bootstrap the local zero-cost model policy with explicit development limits:
-
-```sh
-pnpm model-policy:bootstrap \
-  --mode simulated \
-  --workspace capstone \
-  --monthly-budget-usd 100 \
-  --fast-max-output 4096 \
-  --balanced-max-output 8192 \
-  --pro-max-output 16384 \
-  --employee-generation-limit 2 \
-  --reservation-margin-bps 2000
-```
-
-The simulated policy makes all three employee-facing tiers available but records them as untracked,
-zero-cost local generations. An exact retry is idempotent. Changing bootstrap inputs is rejected;
-after the administrator account is active, use the web administration area for revision-checked
-policy and budget changes. Runtime mode remains an operator choice, so changing an existing
-workspace between simulated and OpenRouter mode still requires a separately bootstrapped workspace.
-
-Start Fastify and Vite together:
+Then start the complete development stack:
 
 ```sh
 pnpm dev
 ```
 
+The command builds the shared protocol, starts the loopback PostgreSQL Compose service, applies the
+complete migration history, performs the unified schema-2 initialization exactly once, and then
+starts Fastify and Vite. Initialization creates workspace `capstone`, pending administrator
+`admin@example.test`, assistant-rule revision 1, the live validated OpenRouter catalog, and
+model-policy revision 1. Later starts validate the existing authority without refetching the
+catalog.
+
+The first start in a new checkout asks for one explicit confirmation that Data Discount logging,
+Input & Output Logging, and Broadcast are disabled in the dedicated OpenRouter workspace. The
+content-free attestation is written to the ignored local file
+`.env.openrouter-privacy.json`; the API key is never copied or printed. Compose publishes PostgreSQL
+on loopback only. If port 5432 is occupied, set `CAPSTONE_POSTGRES_PORT` and use the same port in
+`DATABASE_URL`.
+
 Open [http://localhost:5173](http://localhost:5173). Vite proxies `/api` to Fastify at
 `http://127.0.0.1:3000`.
 
-After signing in, choose Fast, Balanced, or Pro, enter a draft, and choose **Enviar** (or press Enter
-on desktop). The local fake preserves the selected preference and streams this clearly simulated
-answer in three deterministic chunks about 400 ms apart:
-
-> Esta es una respuesta simulada de Capstone Chat para desarrollo local.
-
-No OpenRouter key is needed in simulated mode. Send, Continue, Edit, and Try again use the selected
-tier; changing the picker while a response is active applies only to the next response.
-
-## Real OpenRouter setup
-
-Real mode maps Fast, Balanced, and Pro to the three approved exact model IDs in backend policy; raw
-provider and model names never enter employee responses. Before real bootstrap, verify in the
-dedicated OpenRouter workspace that data-discount logging, observability input/output logging, and
-observability broadcast are all disabled. Record that operator verification in a local JSON file:
-
-```json
-{
-  "attestationVersion": "openrouter-privacy-v1",
-  "broadcastEnabled": false,
-  "dataDiscountLoggingEnabled": false,
-  "inputOutputLoggingEnabled": false,
-  "verifiedAt": "2026-08-08T16:00:00.000Z"
-}
-```
-
-Use the actual current canonical UTC timestamp. Keep the attestation file and key outside Git, set
-`MODEL_GATEWAY=openrouter` and `OPENROUTER_API_KEY` in the local environment, then run:
-
-```sh
-pnpm model-policy:bootstrap \
-  --mode openrouter \
-  --workspace capstone \
-  --monthly-budget-usd 100 \
-  --fast-max-output 4096 \
-  --balanced-max-output 8192 \
-  --pro-max-output 16384 \
-  --employee-generation-limit 2 \
-  --reservation-margin-bps 2000 \
-  --privacy-attestation - \
-  < /absolute/path/to/openrouter-privacy.json
-```
+Register `admin@example.test`, read the verification delivery from the local mailbox described
+below, and sign in. Fast, Balanced, and Pro map to the three approved exact model IDs in backend
+policy; raw provider and model names never enter employee responses. Send, Continue, Edit, and Try
+again use the selected tier, and changing the picker while a response is active applies only to the
+next response.
 
 An attestation is valid for 30 days. Before it expires, verify the same three dedicated-workspace
-settings again, update only `verifiedAt` in the local document, and renew it without changing model
-or cost policy:
+settings again, update only `verifiedAt` in `.env.openrouter-privacy.json`, and renew it without
+changing model or cost policy:
 
 ```sh
 pnpm model-policy:attest \
   --workspace capstone \
   --privacy-attestation - \
-  < /absolute/path/to/openrouter-privacy.json
+  < .env.openrouter-privacy.json
 ```
 
 An identical retry is idempotent. Privacy documents are accepted only through bounded standard
@@ -187,8 +124,8 @@ existing real OpenRouter policy; it rejects older timestamps, simulated policy, 
 workspaces. Expiry makes every real tier unavailable and blocks inference until renewal succeeds.
 The command reads no model metadata and makes no network request.
 
-Bootstrap and `pnpm model-catalog:refresh` read only the approved OpenRouter metadata and do not
-request a model generation. API replicas refresh due approved rows with a short PostgreSQL lease;
+Initialization and `pnpm model-catalog:refresh` read only the approved OpenRouter metadata and do
+not request a model generation. API replicas refresh due approved rows with a short PostgreSQL lease;
 network failure preserves the last valid catalog, while a successful response confirming no safe
 route makes that tier unavailable. Merely configuring a key incurs no inference spend. Spend begins
 only when an employee sends a response while the application is running in OpenRouter mode.
@@ -200,9 +137,11 @@ ambiguous interrupted requests remain fully reserved until a narrow reconciler s
 conservative estimate after expiry. Conversation deletion removes content but retains generation
 accounting required for later workspace reporting.
 
-The development fake sender is process-local. The bootstrap and approval commands therefore report
-the safe `signUpPath` in their JSON result; open [http://localhost:5173/sign-up](http://localhost:5173/sign-up)
-to continue locally. Invitation URLs contain no email, approval identifier, or credential.
+The development fake sender is process-local. Unified initialization creates the pending
+`admin@example.test` approval; open
+[http://localhost:5173/sign-up](http://localhost:5173/sign-up) to continue locally. Later approval
+commands report the same safe `signUpPath` in their JSON result. Invitation URLs contain no email,
+approval identifier, or credential.
 
 After registration, read the verification delivery from
 [http://localhost:5173/api/dev/mailbox](http://localhost:5173/api/dev/mailbox), open its URL, and
@@ -426,7 +365,7 @@ report that the service is unavailable. Restart it with `docker compose start po
 
 | Command | Purpose |
 | --- | --- |
-| `pnpm dev` | Build the shared protocol, then run the API and web development servers |
+| `pnpm dev` | Start PostgreSQL, migrate and initialize live OpenRouter development, then run API and web servers |
 | `pnpm check` | Run Biome formatting, linting, and import checks |
 | `pnpm typecheck` | Run strict TypeScript checks in each executable TypeScript workspace |
 | `pnpm test` | Run protocol, API unit/PostgreSQL integration, and deterministic web tests |
@@ -440,11 +379,9 @@ report that the service is unavailable. Restart it with `docker compose start po
 | `pnpm smoke:container -- <image> <full-revision>` | Start and probe a built image against a migrated loopback test database |
 | `pnpm run ci` | Run repository checks, operations validation, types, tests, builds, and the bundle report |
 | `pnpm db:migrate` | Apply every committed Drizzle migration to `DATABASE_URL` |
-| `pnpm identity:bootstrap …` | Create the initial workspace and pending administrator approval |
 | `pnpm identity:approve …` | Create an idempotent pending employee approval |
 | `pnpm identity:deactivate …` | Block an employee and revoke their sessions |
 | `pnpm identity:invite-initial` | Send the existing initial administrator approval only after every pre-invitation production gate passes; reads bounded input from standard input |
-| `pnpm model-policy:bootstrap …` | Create the explicit simulated or real workspace model/cost policy |
 | `pnpm model-policy:attest …` | Renew the content-free OpenRouter privacy attestation for an existing real policy |
 | `pnpm model-catalog:refresh` | Revalidate approved real OpenRouter models and print a metadata-only summary |
 | `pnpm production:initialize` | Run the latched empty-database initialization contract; reserved for the temporary authorized App Platform job |
@@ -555,7 +492,7 @@ object through the process.
 | `RESEND_API_KEY` | unset | Backend-only Resend key required with `EMAIL_DELIVERY=resend` |
 | `EMAIL_FROM` | unset | Approved sender; production requires `Capstone Chat <no-reply@mail.capstone.com.ec>` |
 | `LOG_LEVEL` | `info` | Pino log level |
-| `MODEL_GATEWAY` | `fake` | `fake` or `openrouter`; production requires `openrouter` |
+| `MODEL_GATEWAY` | `fake` | `fake` or `openrouter`; root `pnpm dev` and production require `openrouter` |
 | `OPENROUTER_API_KEY` | unset | Backend-only key required when `MODEL_GATEWAY=openrouter` |
 | `WEB_ASSETS` | unset | Exact `production-build` mode for the deployed production image or managed test rehearsal; ordinary development/test leaves assets to Vite |
 | `DEPLOYMENT_REVISION` | `development` | Safe local label; production requires the full 40-character deployed Git revision |

@@ -6,6 +6,7 @@ import type { DatabasePool } from "../src/database/pool.js";
 import { LoadModelGateway } from "../src/load/load-gateway.js";
 import type { ModelPolicyService } from "../src/model-policy/service.js";
 import type { ApplicationTelemetry } from "../src/observability/telemetry-contract.js";
+import { testEffectiveParameters } from "./support/generation.js";
 
 function createDatabase(): AppDatabase {
   const transaction = {
@@ -114,6 +115,7 @@ describe("application observability composition", () => {
     const gatewayEvents = [];
     for await (const event of gateway.stream(
       {
+        effectiveParameters: testEffectiveParameters(),
         history: [],
         message: { role: "user", text: "not-a-load-canary" },
         modelTier: "balanced",

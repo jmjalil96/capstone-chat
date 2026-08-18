@@ -127,6 +127,19 @@ export async function followConversationSidebarLink(
   }
 }
 
+export async function followConversationAccountLink(
+  page: Page,
+  name: string,
+  isMobile: boolean,
+): Promise<void> {
+  const sidebar = await openConversationSidebar(page, isMobile);
+  await sidebar.getByLabel(copy.conversations.navigation.account).click();
+  await sidebar.getByRole("link", { name }).click();
+  if (isMobile) {
+    await expect(sidebar).not.toBeVisible();
+  }
+}
+
 export async function openConversation(
   page: Page,
   title: string,

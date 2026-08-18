@@ -51,7 +51,7 @@ describe("Phase 8 PostgreSQL operational state", () => {
     await pool.query("TRUNCATE client_error_rate_limit_windows, operational_recovery_markers");
   });
 
-  it("upgrades the exact accepted Phase 7 schema without changing its data", async () => {
+  it("rejects a nonempty Phase 7 database without changing its data", async () => {
     const databaseName = "capstone_exact_phase_seven";
     const upgradeUrl = databaseUrlFor(container?.getConnectionUri() ?? "", databaseName);
     const administrativePool = new Pool({ connectionString: container?.getConnectionUri() });
@@ -130,8 +130,12 @@ describe("Phase 8 PostgreSQL operational state", () => {
       await phaseSevenPool.end();
     }
 
-    await migrateDatabase(upgradeUrl);
-    await migrateDatabase(upgradeUrl);
+    await expect(migrateDatabase(upgradeUrl)).rejects.toThrow(
+      "0009_workspace_behavior_controls requires an application-empty database",
+    );
+    await expect(migrateDatabase(upgradeUrl)).rejects.toThrow(
+      "0009_workspace_behavior_controls requires an application-empty database",
+    );
 
     const verificationPool = new Pool({ connectionString: upgradeUrl });
     try {
@@ -157,17 +161,17 @@ describe("Phase 8 PostgreSQL operational state", () => {
       expect(preserved).toEqual(acceptedData);
       expect(installed.rows).toEqual([
         {
-          rate_limits: "client_error_rate_limit_windows",
-          recovery_markers: "operational_recovery_markers",
+          rate_limits: null,
+          recovery_markers: null,
         },
       ]);
-      expect(migrations.rows).toHaveLength(9);
+      expect(migrations.rows).toHaveLength(5);
     } finally {
       await verificationPool.end();
     }
   });
 
-  it("upgrades the exact accepted Phase 8 schema with the bounded conversation lookup index", async () => {
+  it("rejects a nonempty Phase 8 database while retaining its bounded lookup index", async () => {
     const databaseName = "capstone_exact_phase_eight";
     const upgradeUrl = databaseUrlFor(container?.getConnectionUri() ?? "", databaseName);
     const administrativePool = new Pool({ connectionString: container?.getConnectionUri() });
@@ -265,8 +269,12 @@ describe("Phase 8 PostgreSQL operational state", () => {
       await phaseEightPool.end();
     }
 
-    await migrateDatabase(upgradeUrl);
-    await migrateDatabase(upgradeUrl);
+    await expect(migrateDatabase(upgradeUrl)).rejects.toThrow(
+      "0009_workspace_behavior_controls requires an application-empty database",
+    );
+    await expect(migrateDatabase(upgradeUrl)).rejects.toThrow(
+      "0009_workspace_behavior_controls requires an application-empty database",
+    );
 
     const verificationPool = new Pool({ connectionString: upgradeUrl });
     try {
@@ -286,10 +294,8 @@ describe("Phase 8 PostgreSQL operational state", () => {
       );
 
       expect(preserved.rows).toEqual([{ status: "active", title: "Historia preservada" }]);
-      expect(index.rows).toHaveLength(1);
-      expect(index.rows[0]?.definition).toContain("(conversation_id)");
-      expect(index.rows[0]?.definition).toContain("conversation_id IS NOT NULL");
-      expect(migrations.rows).toHaveLength(9);
+      expect(index.rows).toEqual([]);
+      expect(migrations.rows).toHaveLength(6);
     } finally {
       await verificationPool.end();
     }

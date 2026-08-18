@@ -1,17 +1,26 @@
 import { Readable } from "node:stream";
 import { describe, expect, it } from "vitest";
+import { WORKSPACE_ASSISTANT_RULES_PRESET } from "../src/assistant-rules/defaults.js";
 import { parseManagedRehearsalInitializationDocument } from "../src/load/managed-rehearsal.js";
+import { INITIAL_TIER_BEHAVIOR_DEFAULTS } from "../src/model-policy/defaults.js";
+import {
+  assertLocalDevelopmentDatabaseUrl,
+  createDevelopmentInitializationDocument,
+  developmentAdministratorEmail,
+} from "../src/operator/development-initialization.js";
 import { parseProductionInitializationDocument } from "../src/operator/initialization-document.js";
 import { readBoundedStdinDocument } from "../src/operator/stdin-document.js";
 
 function document(overrides: Readonly<Record<string, unknown>> = {}): string {
   return JSON.stringify({
     administrator: { email: "administrator@capstone.com.ec" },
+    assistantRules: { preset: WORKSPACE_ASSISTANT_RULES_PRESET },
     modelPolicy: {
       employeeActiveGenerationLimit: 2,
       maximumOutputTokens: { balanced: 8_192, fast: 4_096, pro: 16_384 },
       monthlyBudgetUsd: "100",
       reservationMarginBasisPoints: 2_000,
+      tierBehavior: INITIAL_TIER_BEHAVIOR_DEFAULTS,
     },
     privacyAttestation: {
       attestationVersion: "openrouter-privacy-v1",
@@ -20,13 +29,38 @@ function document(overrides: Readonly<Record<string, unknown>> = {}): string {
       inputOutputLoggingEnabled: false,
       verifiedAt: "2026-08-11T12:00:00.000Z",
     },
-    schemaVersion: 1,
+    schemaVersion: 2,
     workspace: { displayName: "Capstone", identity: "capstone" },
     ...overrides,
   });
 }
 
 describe("production initialization document", () => {
+  it("creates the fixed local OpenRouter initialization contract from a privacy attestation", () => {
+    const source = JSON.parse(document()) as {
+      readonly privacyAttestation: Readonly<Record<string, unknown>>;
+    };
+    const development = createDevelopmentInitializationDocument(
+      JSON.stringify(source.privacyAttestation),
+    );
+
+    expect(development).toMatchObject({
+      administratorEmail: developmentAdministratorEmail,
+      schemaVersion: 2,
+      workspaceIdentity: "capstone",
+    });
+    expect(() =>
+      assertLocalDevelopmentDatabaseUrl(
+        "postgresql://capstone:capstone@127.0.0.1:5432/capstone_chat",
+      ),
+    ).not.toThrow();
+    expect(() =>
+      assertLocalDevelopmentDatabaseUrl(
+        "postgresql://capstone:capstone@database.example/capstone_chat",
+      ),
+    ).toThrow("loopback");
+  });
+
   it("normalizes one exact production contract into a stable content-free hash", () => {
     const compact = parseProductionInitializationDocument(document());
     const formatted = parseProductionInitializationDocument(
@@ -39,7 +73,9 @@ describe("production initialization document", () => {
       maximumOutputTokens: { balanced: 8_192, fast: 4_096, pro: 16_384 },
       monthlyBudgetUsd: "100",
       reservationMarginBasisPoints: 2_000,
-      schemaVersion: 1,
+      schemaVersion: 2,
+      tierBehavior: INITIAL_TIER_BEHAVIOR_DEFAULTS,
+      workspaceAssistantRulesPreset: WORKSPACE_ASSISTANT_RULES_PRESET,
       workspaceDisplayName: "Capstone",
       workspaceIdentity: "capstone",
     });
@@ -61,7 +97,7 @@ describe("production initialization document", () => {
 
   it.each([
     ["unknown root field", { unexpected: true }],
-    ["wrong schema", { schemaVersion: 2 }],
+    ["wrong schema", { schemaVersion: 1 }],
     ["wrong workspace", { workspace: { displayName: "Capstone", identity: "other" } }],
     ["unnormalized email", { administrator: { email: "ADMIN@capstone.com.ec" } }],
     [
@@ -72,6 +108,7 @@ describe("production initialization document", () => {
           maximumOutputTokens: { balanced: 8_192, fast: 4_096, pro: 16_384 },
           monthlyBudgetUsd: "101",
           reservationMarginBasisPoints: 2_000,
+          tierBehavior: INITIAL_TIER_BEHAVIOR_DEFAULTS,
         },
       },
     ],

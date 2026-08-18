@@ -3,9 +3,13 @@ import {
   AdminAddModelCatalogResponseSchema,
   AdminModelCatalogListQuerySchema,
   AdminModelCatalogListResponseSchema,
+  AdminModelPolicyHistoryQuerySchema,
+  AdminModelPolicyHistoryResponseSchema,
   AdminModelPolicyResponseSchema,
+  AdminModelPolicyRevisionParamsSchema,
   AdminRefreshModelCatalogRequestSchema,
   AdminRefreshModelCatalogResponseSchema,
+  AdminRevertModelPolicyRequestSchema,
   AdminUpdateModelPolicyRequestSchema,
   AdminUpdateModelPolicyResponseSchema,
   ApiErrorSchema,
@@ -26,6 +30,7 @@ import {
   CatalogRefreshActiveError,
   ModelPolicyChangedError,
   ModelPolicyConflictError,
+  ModelPolicyRevisionNotFoundError,
   type ModelPolicyService,
   ModelPolicyUnavailableError,
 } from "../model-policy/service.js";
@@ -35,6 +40,7 @@ const errorResponses = {
   400: ApiErrorSchema,
   401: ApiErrorSchema,
   403: ApiErrorSchema,
+  404: ApiErrorSchema,
   409: ApiErrorSchema,
   422: ApiErrorSchema,
   500: ApiErrorSchema,
@@ -54,9 +60,11 @@ type AdminModelPolicyStore = Pick<
   | "claimAdminCatalogRefresh"
   | "completeCatalogRefresh"
   | "listAdminCatalog"
+  | "listAdminPolicyHistory"
   | "readAdminPolicy"
   | "releaseCatalogRefresh"
   | "replaceAdminPolicy"
+  | "revertAdminPolicy"
 >;
 type AdminCatalogRefreshClaim = Awaited<
   ReturnType<AdminModelPolicyStore["claimAdminCatalogRefresh"]>
@@ -101,6 +109,9 @@ function translateModelPolicyError(error: unknown): never {
       "MODEL_POLICY_CHANGED",
       modelAdministrationCopy.modelPolicyChanged,
     );
+  }
+  if (error instanceof ModelPolicyRevisionNotFoundError) {
+    throw new ApplicationError(404, "NOT_FOUND", "No se encontró la revisión solicitada.");
   }
   if (error instanceof ModelPolicyConflictError || error instanceof ModelPolicyUnavailableError) {
     throw new ApplicationError(
@@ -337,7 +348,64 @@ export function registerAdminModelRoutes(
             await dependencies.modelPolicy.replaceAdminPolicy(
               actor.workspace.id,
               mode(dependencies),
+              actor,
               request.body,
+            ),
+          );
+      } catch (error: unknown) {
+        translateModelPolicyError(error);
+      }
+    },
+  );
+
+  server.get(
+    "/api/admin/model-policy/revisions",
+    {
+      schema: {
+        querystring: AdminModelPolicyHistoryQuerySchema,
+        response: { 200: AdminModelPolicyHistoryResponseSchema, ...errorResponses },
+      },
+    },
+    async (request, reply) => {
+      const actor = await resolveAdministrator(request, reply, dependencies.resolveActor, false);
+      try {
+        return reply
+          .code(200)
+          .send(
+            await dependencies.modelPolicy.listAdminPolicyHistory(
+              actor.workspace.id,
+              mode(dependencies),
+              request.query.cursor,
+            ),
+          );
+      } catch (error: unknown) {
+        translateModelPolicyError(error);
+      }
+    },
+  );
+
+  server.post(
+    "/api/admin/model-policy/revisions/:revision/revert",
+    {
+      bodyLimit: 2_048,
+      schema: {
+        body: AdminRevertModelPolicyRequestSchema,
+        params: AdminModelPolicyRevisionParamsSchema,
+        response: { 200: AdminModelPolicyResponseSchema, ...errorResponses },
+      },
+    },
+    async (request, reply) => {
+      const actor = await resolveAdministrator(request, reply, dependencies.resolveActor, true);
+      try {
+        return reply
+          .code(200)
+          .send(
+            await dependencies.modelPolicy.revertAdminPolicy(
+              actor.workspace.id,
+              mode(dependencies),
+              actor,
+              request.params.revision,
+              request.body.observedRevision,
             ),
           );
       } catch (error: unknown) {
