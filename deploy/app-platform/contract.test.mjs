@@ -458,4 +458,41 @@ for (const [name, mode] of [
   rmSync(temporary, { force: true, recursive: true });
 }
 
+{
+  const temporary = mkdtempSync(path.join(os.tmpdir(), "capstone-app-contract-"));
+  const protectedPath = path.join(temporary, "cutover-quiesced.json");
+  const contract = readContract(
+    path.join(directory, "cutover-quiesced.contract.yaml"),
+    "cutover-quiesced",
+  );
+  writeFileSync(protectedPath, `${JSON.stringify(appFixture(contract))}\n`, { mode: 0o600 });
+  const command = spawnSync(
+    process.execPath,
+    [
+      path.join(directory, "live-contract.mjs"),
+      "validate",
+      "--mode",
+      "cutover-quiesced",
+      "--live-file",
+      protectedPath,
+      "--app-id",
+      "app-fixture-final",
+      "--revision",
+      revision,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(command.status, 0, command.stderr);
+  assert.deepEqual(JSON.parse(command.stdout), {
+    appId: "app-fixture-final",
+    dedicatedIps: ["192.0.2.10", "192.0.2.11"],
+    deploymentId: "deployment-fixture-active",
+    mode: "cutover-quiesced",
+    operation: "validate",
+    revision,
+    schema: 1,
+  });
+  rmSync(temporary, { force: true, recursive: true });
+}
+
 process.stdout.write("App Platform native-source contract tests passed.\n");
