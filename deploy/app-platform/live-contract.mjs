@@ -6,6 +6,8 @@ import { REVISION_PATTERN, readContract, readProtectedJson, validateApp } from "
 const directory = path.dirname(fileURLToPath(import.meta.url));
 const CONTRACTS = {
   bootstrap: "bootstrap.contract.yaml",
+  "cutover-initialize": "cutover-initialize.contract.yaml",
+  "cutover-quiesced": "cutover-quiesced.contract.yaml",
   live: "app.contract.yaml",
   rehearsal: "rehearsal.contract.yaml",
   "rehearsal-bootstrap": "rehearsal-bootstrap.contract.yaml",
@@ -51,7 +53,11 @@ function required(options, name, pattern) {
 
 try {
   const options = parseArguments(process.argv.slice(2));
-  const mode = required(options, "mode", /^(?:bootstrap|live|rehearsal|rehearsal-bootstrap)$/u);
+  const mode = required(
+    options,
+    "mode",
+    /^(?:bootstrap|cutover-initialize|cutover-quiesced|live|rehearsal|rehearsal-bootstrap)$/u,
+  );
   const contractName = CONTRACTS[mode];
   const contract = readContract(options.contract ?? path.join(directory, contractName), mode);
   const result = validateApp({
