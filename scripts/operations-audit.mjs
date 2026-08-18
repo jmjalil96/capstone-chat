@@ -24,6 +24,8 @@ const requiredDeploymentFiles = [
   "bootstrap.contract.yaml",
   "contract.mjs",
   "contract.test.mjs",
+  "cutover-initialize.contract.yaml",
+  "cutover-quiesced.contract.yaml",
   "live-contract.mjs",
   "rehearsal-bootstrap.contract.yaml",
   "rehearsal.contract.yaml",
@@ -164,6 +166,14 @@ function inspectOperationsContract() {
     "bootstrap",
   );
   const live = readContract(path.join(deploymentDirectory, "app.contract.yaml"), "live");
+  const cutoverInitialize = readContract(
+    path.join(deploymentDirectory, "cutover-initialize.contract.yaml"),
+    "cutover-initialize",
+  );
+  const cutoverQuiesced = readContract(
+    path.join(deploymentDirectory, "cutover-quiesced.contract.yaml"),
+    "cutover-quiesced",
+  );
   const rehearsalBootstrap = readContract(
     path.join(deploymentDirectory, "rehearsal-bootstrap.contract.yaml"),
     "rehearsal-bootstrap",
@@ -246,12 +256,23 @@ function inspectOperationsContract() {
       bootstrap.edge === undefined &&
       rehearsalBootstrap.edge === undefined &&
       bootstrap.service.run_command.endsWith("egress-bootstrap"),
+    cutoverBoundary:
+      cutoverQuiesced.service.run_command.endsWith("egress-bootstrap") &&
+      cutoverQuiesced.service.environment.secret_keys.length === 0 &&
+      cutoverQuiesced.job === undefined &&
+      cutoverInitialize.service.run_command.endsWith("egress-bootstrap") &&
+      cutoverInitialize.service.environment.secret_keys.length === 0 &&
+      cutoverInitialize.job.run_command.endsWith("initialize") &&
+      cutoverInitialize.job.environment.general.CAPSTONE_INITIALIZATION_SCHEMA_VERSION === "2" &&
+      cutoverInitialize.job.environment.secret_keys.length === 4,
     sourceContracts:
       expectedSource(bootstrap, "app-platform-production") &&
       expectedSource(live, "app-platform-production") &&
+      expectedSource(cutoverInitialize, "app-platform-production") &&
+      expectedSource(cutoverQuiesced, "app-platform-production") &&
       expectedSource(rehearsalBootstrap, "app-platform-rehearsal") &&
       expectedSource(rehearsal, "app-platform-rehearsal") &&
-      [bootstrap, live, rehearsalBootstrap, rehearsal].every(
+      [bootstrap, cutoverInitialize, cutoverQuiesced, live, rehearsalBootstrap, rehearsal].every(
         (contract) =>
           Array.isArray(contract.features) &&
           contract.features.length === 1 &&
@@ -306,10 +327,12 @@ function inspectOperationsContract() {
       releaseStep("Install doctl")?.with?.no_auth === true &&
       releaseStep("Install doctl")?.with?.version === "1.166.0" &&
       releaseStep("Install doctl")?.with?.token === undefined &&
-      releaseStep("Install locked validator dependency")?.if?.includes("operation == 'deploy'") &&
+      releaseStep("Install locked validator dependency")?.if?.includes(
+        "operation != 'prepare-source'",
+      ) &&
       releaseStep("Install locked validator dependency")?.run ===
         "pnpm install --frozen-lockfile --ignore-scripts --filter capstone-chat" &&
-      releaseStep("Verify exact doctl version")?.if?.includes("operation == 'deploy'") &&
+      releaseStep("Verify exact doctl version")?.if?.includes("operation != 'prepare-source'") &&
       releaseStep("Verify exact doctl version")?.run === exactDoctlVersionCheck &&
       [
         "Validate App Platform source authority",
@@ -329,13 +352,16 @@ function inspectOperationsContract() {
       releaseCommands.includes("git push origin") &&
       !/git push[^\n]*(?:--force|-f\b)/u.test(releaseCommands) &&
       releaseStep("Record prepared source pointer")?.if?.includes("prepare-source") &&
+      deployment.on.workflow_dispatch.inputs.operation.options.includes("cutover-stage") &&
       [
         "Install doctl",
         "Validate App Platform source authority",
         "Build and deploy the source pointer",
         "Verify deployed component revisions",
-        "Verify public readiness revision",
-      ].every((name) => releaseStep(name)?.if?.includes("operation == 'deploy'")) &&
+      ].every((name) => releaseStep(name)?.if?.includes("operation != 'prepare-source'")) &&
+      releaseStep("Verify public readiness revision")?.if?.includes("operation == 'deploy'") &&
+      releaseCommands.includes('test "$CAPSTONE_RELEASE_OPERATION" = "cutover-stage"') &&
+      releaseCommands.includes("cutover-quiesced") &&
       releaseSteps.findIndex((step) => step?.name === "Validate App Platform source authority") <
         releaseSteps.findIndex(
           (step) => step?.name === "Fast-forward the protected App Platform source pointer",

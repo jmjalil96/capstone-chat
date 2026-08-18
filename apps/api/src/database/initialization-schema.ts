@@ -14,12 +14,9 @@ export const productionInitialization = pgTable(
   },
   (table) => [
     check("production_initialization_singleton_check", sql`${table.singletonId} = 1`),
-    check("production_initialization_schema_check", sql`${table.schemaVersion} = 1`),
+    check("production_initialization_schema_check", sql`${table.schemaVersion} = 2`),
     check("production_initialization_hash_check", sql`${table.documentSha256} ~ '^[a-f0-9]{64}$'`),
-    check(
-      "production_initialization_phase_check",
-      sql`${table.phase} IN ('claimed', 'identity-complete', 'complete')`,
-    ),
+    check("production_initialization_phase_check", sql`${table.phase} IN ('claimed', 'complete')`),
     check(
       "production_initialization_lifecycle_check",
       sql`(${table.phase} = 'complete' AND ${table.completedAt} IS NOT NULL)

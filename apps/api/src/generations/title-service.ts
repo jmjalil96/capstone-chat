@@ -11,7 +11,7 @@ import {
   ContextBudgetExceededError,
   WorkspaceBudgetExceededError,
 } from "../model-policy/budget-service.js";
-import { unitPricePerMillion } from "../model-policy/money.js";
+import { resolveEffectiveModelParameters } from "../model-policy/effective-parameters.js";
 import type { ModelPolicyMode, ModelPolicyService } from "../model-policy/service.js";
 import { conservativeTokenEstimate } from "../model-policy/settings.js";
 import type {
@@ -165,7 +165,7 @@ export function normalizeGeneratedTitle(value: string): string | null {
 export function buildTitleRequest(
   prompt: string,
   answer: string,
-): Omit<TitleGenerationRequest, "route"> {
+): Omit<TitleGenerationRequest, "effectiveParameters" | "route"> {
   return Object.freeze({
     history: Object.freeze([
       Object.freeze({
@@ -511,11 +511,23 @@ export function createTitleService(options: TitleServiceOptions) {
       startedAt,
       mode,
     );
-    if (fast === null) {
+    if (fast === null || fast.capability.reasoning.kind === "mandatory") {
       return null;
     }
-    const baseRequest = buildTitleRequest(input.prompt, input.answer);
     const titlePolicy = { ...fast, maximumOutputTokens: titleTuning.maximumOutputTokens };
+    const effectiveParameters = resolveEffectiveModelParameters({
+      capability: fast.capability,
+      maximumOutputTokens: titleTuning.maximumOutputTokens,
+      purpose: "title",
+      reasoningBudgetTokens: fast.reasoningBudgetTokens,
+      reasoningEffort: fast.reasoningEffort,
+      temperaturePreset: fast.temperaturePreset,
+      tier: fast.tier,
+    });
+    const baseRequest = {
+      ...buildTitleRequest(input.prompt, input.answer),
+      effectiveParameters,
+    };
     const estimatedInputTokens = conservativeTokenEstimate(
       generationRequestEstimatorInputs({ ...baseRequest }),
     );
@@ -550,28 +562,11 @@ export function createTitleService(options: TitleServiceOptions) {
         assistantMessageId: null,
         conversationId: input.conversationId,
         createdAt: startedAt,
-        effectiveParameters: {
-          naming: { promptVersion: titlePrompt.version },
-          ...(mode === "openrouter"
-            ? {
-                maximumOutputTokens: titleTuning.maximumOutputTokens,
-                priceCeiling: {
-                  completionUsdPerMillion: unitPricePerMillion(fast.completionPriceCeilingPerToken),
-                  promptUsdPerMillion: unitPricePerMillion(fast.promptPriceCeilingPerToken),
-                  requestUsd: fast.requestPriceCeilingUsd,
-                },
-                provider: {
-                  dataCollection: "deny",
-                  requireParameters: true,
-                  zeroDataRetention: true,
-                },
-                reasoning: { enabled: false, exclude: true },
-              }
-            : {}),
-        },
+        effectiveParameters: { ...effectiveParameters },
         idempotencyKey: randomUUID(),
         purpose: "title",
         requestedTier: "fast",
+        modelPolicyRevision: fast.policyRevision,
         ...(reservation === null
           ? {}
           : {

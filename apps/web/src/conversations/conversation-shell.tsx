@@ -172,6 +172,10 @@ function SidebarContents({
                 {copy.administration.navigation.label}
               </Link>
             ) : null}
+            <Link to="/account/assistant-rules" onClick={onNavigate}>
+              <Icon name="settings" />
+              {copy.conversations.navigation.assistantRules}
+            </Link>
             <Link to="/account/security" onClick={onNavigate}>
               <Icon name="settings" />
               {copy.conversations.navigation.security}

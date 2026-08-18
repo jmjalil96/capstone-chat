@@ -91,7 +91,7 @@ function serviceAlerts(contract) {
 }
 
 function appFixture(contract) {
-  const final = contract.mode === "live" || contract.mode === "rehearsal";
+  const final = !contract.mode.endsWith("bootstrap");
   const defaultDomain = `${contract.name}-fixture.ondigitalocean.app`;
   const service = {
     envs: environment(contract.service.environment, contract.service.name),
@@ -153,18 +153,22 @@ function appFixture(contract) {
     Object.assign(spec, contract.edge, {
       domains: [{ domain: defaultDomain, type: "DEFAULT" }, { ...contract.domain }],
       egress: { ...contract.egress },
-      jobs: [
-        {
-          envs: environment(contract.job.environment, contract.job.name),
-          instance_count: contract.job.instance_count,
-          instance_size_slug: contract.job.instance_size_slug,
-          kind: contract.job.kind,
-          name: contract.job.name,
-          run_command: contract.job.run_command,
-          ...source(contract),
-          termination: { grace_period_seconds: contract.job.grace_period_seconds },
-        },
-      ],
+      ...(contract.job === undefined
+        ? {}
+        : {
+            jobs: [
+              {
+                envs: environment(contract.job.environment, contract.job.name),
+                instance_count: contract.job.instance_count,
+                instance_size_slug: contract.job.instance_size_slug,
+                kind: contract.job.kind,
+                name: contract.job.name,
+                run_command: contract.job.run_command,
+                ...source(contract),
+                termination: { grace_period_seconds: contract.job.grace_period_seconds },
+              },
+            ],
+          }),
     });
   } else {
     spec.domains = [{ domain: defaultDomain, type: "DEFAULT" }];
@@ -172,7 +176,10 @@ function appFixture(contract) {
   return {
     active_deployment: {
       id: "deployment-fixture-active",
-      jobs: final ? [{ name: contract.job.name, source_commit_hash: revision }] : [],
+      jobs:
+        final && contract.job !== undefined
+          ? [{ name: contract.job.name, source_commit_hash: revision }]
+          : [],
       services: [{ name: contract.service.name, source_commit_hash: revision }],
       spec: structuredClone(spec),
     },
@@ -191,7 +198,7 @@ function appFixture(contract) {
 
 function providerShapedFixture(contract) {
   const fixture = appFixture(contract);
-  const final = contract.mode === "live" || contract.mode === "rehearsal";
+  const final = !contract.mode.endsWith("bootstrap");
   fixture.spec.maintenance = {};
   delete fixture.spec.services[0].github.deploy_on_push;
   delete fixture.spec.services[0].protocol;
@@ -225,6 +232,8 @@ function providerShapedFixture(contract) {
 for (const [name, mode] of [
   ["app.contract.yaml", "live"],
   ["bootstrap.contract.yaml", "bootstrap"],
+  ["cutover-initialize.contract.yaml", "cutover-initialize"],
+  ["cutover-quiesced.contract.yaml", "cutover-quiesced"],
   ["rehearsal.contract.yaml", "rehearsal"],
   ["rehearsal-bootstrap.contract.yaml", "rehearsal-bootstrap"],
 ]) {

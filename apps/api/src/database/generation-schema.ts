@@ -14,9 +14,11 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
+import { workspaceAssistantPromptRevisions } from "./assistant-rules-schema.js";
 import { user } from "./auth-schema.generated.js";
 import { conversations, messages } from "./conversation-schema.js";
 import { workspaces } from "./identity-schema.js";
+import { workspaceModelPolicyRevisions } from "./model-policy-schema.js";
 
 export const generationStatus = pgEnum("generation_status", [
   "preparing",
@@ -88,6 +90,8 @@ export const generations = pgTable(
     provider: text("provider"),
     openRouterGenerationId: text("openrouter_generation_id"),
     systemPromptVersion: text("system_prompt_version").notNull(),
+    modelPolicyRevision: integer("model_policy_revision").notNull(),
+    workspacePromptRevision: integer("workspace_prompt_revision"),
     effectiveParameters: jsonb("effective_parameters").$type<Record<string, unknown>>().notNull(),
     status: generationStatus("status").notNull(),
     terminalReason: generationTerminalReason("terminal_reason"),
@@ -142,6 +146,22 @@ export const generations = pgTable(
       foreignColumns: [messages.conversationId, messages.id],
       name: "generations_assistant_message_fk",
     }).onDelete("set null"),
+    foreignKey({
+      columns: [table.workspaceId, table.modelPolicyRevision],
+      foreignColumns: [
+        workspaceModelPolicyRevisions.workspaceId,
+        workspaceModelPolicyRevisions.revision,
+      ],
+      name: "generations_model_policy_revision_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.workspaceId, table.workspacePromptRevision],
+      foreignColumns: [
+        workspaceAssistantPromptRevisions.workspaceId,
+        workspaceAssistantPromptRevisions.revision,
+      ],
+      name: "generations_workspace_prompt_revision_fk",
+    }).onDelete("restrict"),
     uniqueIndex("generations_scoped_idempotency_unique").on(
       table.workspaceId,
       table.userId,
@@ -205,13 +225,16 @@ export const generations = pgTable(
           ${table.purpose} IS NOT NULL
           AND ${table.purpose} = 'compaction'
           AND ${table.systemPromptVersion} = 'capstone-compaction-v1'
+          AND ${table.workspacePromptRevision} IS NULL
         ) OR (
           ${table.purpose} IS NOT NULL
           AND ${table.purpose} = 'title'
           AND ${table.systemPromptVersion} = 'capstone-title-v1'
+          AND ${table.workspacePromptRevision} IS NULL
         ) OR (
           (${table.purpose} IS NULL OR ${table.purpose} = 'chat')
-          AND ${table.systemPromptVersion} = 'capstone-chat-v1'
+          AND ${table.systemPromptVersion} = 'capstone-chat-base-v2'
+          AND ${table.workspacePromptRevision} IS NOT NULL
         )`,
     ),
     check(

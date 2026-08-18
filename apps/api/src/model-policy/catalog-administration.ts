@@ -1,4 +1,9 @@
-import type { AdminModelCatalogItem, AdminModelCatalogListResponse } from "@capstone/protocol";
+import type {
+  AdminGatewayEffort,
+  AdminModelCapability,
+  AdminModelCatalogItem,
+  AdminModelCatalogListResponse,
+} from "@capstone/protocol";
 import { and, asc, eq, gt, inArray, or } from "drizzle-orm";
 import type { CursorCodec } from "../conversations/cursor.js";
 import { cursorString } from "../conversations/cursor.js";
@@ -33,6 +38,14 @@ interface CatalogItemRow {
   readonly displayName: string;
   readonly maximumOutputTokens: number;
   readonly modelId: string;
+  readonly reasoningDefaultEffort: string | null;
+  readonly reasoningDefaultEnabled: boolean | null;
+  readonly reasoningEffortSupportKind: string;
+  readonly reasoningEfforts: readonly string[];
+  readonly reasoningMaxTokensAccepted: boolean;
+  readonly reasoningMode: string;
+  readonly reasoningTraceSafety: string;
+  readonly temperatureSupported: boolean;
   readonly validatedAt: Date;
 }
 
@@ -59,7 +72,32 @@ function toCatalogItem(row: CatalogItemRow): AdminModelCatalogItem {
     displayName: row.displayName,
     maximumOutputTokens: row.maximumOutputTokens,
     modelId: row.modelId,
+    capability: catalogCapability(row),
     validatedAt: row.validatedAt.toISOString(),
+  });
+}
+
+function catalogCapability(row: CatalogItemRow): AdminModelCapability {
+  const effortSupport =
+    row.reasoningEffortSupportKind === "all"
+      ? ({ kind: "all" } as const)
+      : row.reasoningEffortSupportKind === "listed"
+        ? ({
+            kind: "listed",
+            values: row.reasoningEfforts as AdminGatewayEffort[],
+          } as const)
+        : ({ kind: "none" } as const);
+  return Object.freeze({
+    reasoning: Object.freeze({
+      defaultEffort:
+        row.reasoningDefaultEffort as AdminModelCapability["reasoning"]["defaultEffort"],
+      defaultEnabled: row.reasoningDefaultEnabled,
+      effortSupport: Object.freeze(effortSupport),
+      kind: row.reasoningMode as AdminModelCapability["reasoning"]["kind"],
+      maxTokensAccepted: row.reasoningMaxTokensAccepted,
+      traceSafety: row.reasoningTraceSafety as AdminModelCapability["reasoning"]["traceSafety"],
+    }),
+    temperatureSupported: row.temperatureSupported,
   });
 }
 
@@ -71,6 +109,14 @@ function catalogSelection() {
     displayName: modelCatalog.displayName,
     maximumOutputTokens: modelCatalog.maximumOutputTokens,
     modelId: modelCatalog.openRouterModelId,
+    reasoningDefaultEffort: modelCatalog.reasoningDefaultEffort,
+    reasoningDefaultEnabled: modelCatalog.reasoningDefaultEnabled,
+    reasoningEffortSupportKind: modelCatalog.reasoningEffortSupportKind,
+    reasoningEfforts: modelCatalog.reasoningEfforts,
+    reasoningMaxTokensAccepted: modelCatalog.reasoningMaxTokensAccepted,
+    reasoningMode: modelCatalog.reasoningMode,
+    reasoningTraceSafety: modelCatalog.reasoningTraceSafety,
+    temperatureSupported: modelCatalog.temperatureSupported,
     validatedAt: modelCatalog.validatedAt,
   } as const;
 }
@@ -121,7 +167,6 @@ function assertValidatedSnapshot(
     !snapshot.inputModalities.includes("text") ||
     !snapshot.outputModalities.includes("text") ||
     !snapshot.supportedParameters.includes("max_tokens") ||
-    !snapshot.supportedParameters.includes("reasoning") ||
     !Number.isFinite(snapshot.validatedAt.getTime()) ||
     snapshot.validatedAt.getTime() > checkedAt.getTime()
   ) {
@@ -134,6 +179,26 @@ function assertValidatedSnapshot(
   } catch {
     throw new ModelPolicyConflictError("Catalog snapshot pricing is invalid");
   }
+}
+
+function capabilityColumns(snapshot: CatalogModelSnapshot) {
+  const { reasoning } = snapshot.capability;
+  return {
+    reasoningContractSource: reasoning.contractSource,
+    reasoningDefaultEffort: reasoning.defaultEffort,
+    reasoningDefaultEnabled: reasoning.defaultEnabled,
+    reasoningEffortSupportKind: reasoning.effortSupport.kind,
+    reasoningEfforts:
+      reasoning.effortSupport.kind === "listed"
+        ? reasoning.effortSupport.values
+        : Object.freeze([]),
+    reasoningExclusionVerifiedAt: reasoning.exclusionVerifiedAt,
+    reasoningMandatory: reasoning.kind === "mandatory",
+    reasoningMaxTokensAccepted: reasoning.maxTokensAccepted,
+    reasoningMode: reasoning.kind,
+    reasoningTraceSafety: reasoning.traceSafety,
+    temperatureSupported: snapshot.capability.temperatureSupported,
+  } as const;
 }
 
 export function createCatalogAdministration(
@@ -221,6 +286,7 @@ export function createCatalogAdministration(
         .insert(modelCatalog)
         .values({
           available: snapshot.available,
+          ...capabilityColumns(snapshot),
           canonicalSlug: snapshot.canonicalSlug,
           completionPricePerToken: snapshot.completionPricePerToken,
           contextLength: snapshot.contextLength,
@@ -271,6 +337,7 @@ export function createCatalogAdministration(
       .update(modelCatalog)
       .set({
         available: snapshot.available,
+        ...capabilityColumns(snapshot),
         canonicalSlug: snapshot.canonicalSlug,
         completionPricePerToken: snapshot.completionPricePerToken,
         contextLength: snapshot.contextLength,

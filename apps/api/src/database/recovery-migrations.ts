@@ -63,6 +63,22 @@ function extractNames(source: string, pattern: RegExp): readonly string[] {
   );
 }
 
+function finalConstraintNames(source: string): readonly string[] {
+  const names = new Set<string>();
+  for (const match of source.matchAll(
+    /DROP\s+CONSTRAINT\s+"([^"]+)"|(?:ADD\s+)?CONSTRAINT\s+"([^"]+)"/giu,
+  )) {
+    const dropped = match[1];
+    const added = match[2];
+    if (dropped !== undefined) {
+      names.delete(dropped.slice(0, 63));
+    } else if (added !== undefined) {
+      names.add(added.slice(0, 63));
+    }
+  }
+  return [...names].sort();
+}
+
 async function loadMigrationManifest(): Promise<MigrationManifest> {
   const fileNames = (await readdir(migrationsFolder))
     .filter((fileName) => migrationFilePattern.test(fileName))
@@ -77,7 +93,7 @@ async function loadMigrationManifest(): Promise<MigrationManifest> {
   // PostgreSQL stores identifiers in NAMEDATALEN-1 bytes even when migration SQL quotes them.
   const uniqueSorted = (values: readonly string[]): readonly string[] =>
     [...new Set(values.map((value) => value.slice(0, 63)))].sort();
-  const constraintNames = uniqueSorted(extractNames(combined, /CONSTRAINT\s+"([^"]+)"/gu));
+  const constraintNames = finalConstraintNames(combined);
   const functionNames = uniqueSorted(
     extractNames(combined, /CREATE\s+FUNCTION\s+(?:"?public"?\.)?"?([a-z0-9_]+)"?/giu),
   );
@@ -105,8 +121,11 @@ function assertObjectNames(
   label: string,
 ): void {
   const actualNames = new Set(actualRows.map((row) => row.name));
-  if (expectedNames.some((name) => !actualNames.has(name))) {
-    recoveryPreparationFailed(`Migration-owned ${label} are incomplete`);
+  const missingNames = expectedNames.filter((name) => !actualNames.has(name));
+  if (missingNames.length > 0) {
+    recoveryPreparationFailed(
+      `Migration-owned ${label} are incomplete: ${missingNames.join(", ")}`,
+    );
   }
 }
 
@@ -233,6 +252,70 @@ async function verifyMigrationObjects(
     selectedLeafConstraint.rows[0]?.deferred !== true
   ) {
     recoveryPreparationFailed("Deferred conversation leaf constraint is invalid");
+  }
+  const behaviorIntegrity = await migrationPool.query<{
+    generationReferencesValid: boolean;
+    policyHeadsValid: boolean;
+    policyTiersComplete: boolean;
+    promptHeadsValid: boolean;
+  }>(`
+    SELECT
+      NOT EXISTS (
+        SELECT 1
+        FROM public.workspace_assistant_prompts AS head
+        LEFT JOIN public.workspace_assistant_prompt_revisions AS revision
+          ON revision.workspace_id = head.workspace_id
+          AND revision.revision = head.revision
+        WHERE revision.workspace_id IS NULL
+      ) AS "promptHeadsValid",
+      NOT EXISTS (
+        SELECT 1
+        FROM public.workspace_cost_policies AS head
+        LEFT JOIN public.workspace_model_policy_revisions AS revision
+          ON revision.workspace_id = head.workspace_id
+          AND revision.revision = head.revision
+        WHERE revision.workspace_id IS NULL
+      ) AS "policyHeadsValid",
+      NOT EXISTS (
+        SELECT 1
+        FROM public.workspace_model_policy_revisions AS revision
+        LEFT JOIN public.workspace_model_policy_revision_tiers AS tier
+          ON tier.workspace_id = revision.workspace_id
+          AND tier.revision = revision.revision
+        GROUP BY revision.workspace_id, revision.revision
+        HAVING count(*) <> 3
+          OR count(DISTINCT tier.tier) <> 3
+          OR count(*) FILTER (WHERE tier.tier IN ('fast', 'balanced', 'pro')) <> 3
+      ) AS "policyTiersComplete",
+      NOT EXISTS (
+        SELECT 1
+        FROM public.generations AS generation
+        LEFT JOIN public.workspace_model_policy_revisions AS policy
+          ON policy.workspace_id = generation.workspace_id
+          AND policy.revision = generation.model_policy_revision
+        LEFT JOIN public.workspace_assistant_prompt_revisions AS prompt
+          ON prompt.workspace_id = generation.workspace_id
+          AND prompt.revision = generation.workspace_prompt_revision
+        WHERE policy.workspace_id IS NULL
+          OR (
+            (generation.purpose IS NULL OR generation.purpose = 'chat')
+            AND prompt.workspace_id IS NULL
+          )
+          OR (
+            generation.purpose IN ('compaction', 'title')
+            AND generation.workspace_prompt_revision IS NOT NULL
+          )
+      ) AS "generationReferencesValid"
+  `);
+  const integrity = behaviorIntegrity.rows[0];
+  if (
+    integrity === undefined ||
+    !integrity.promptHeadsValid ||
+    !integrity.policyHeadsValid ||
+    !integrity.policyTiersComplete ||
+    !integrity.generationReferencesValid
+  ) {
+    recoveryPreparationFailed("Workspace behavior ledger integrity is invalid");
   }
   const searchProbe = await migrationPool.query<{ normalized: string }>(
     "SELECT public.capstone_search_normalize('ÁRBOL') AS normalized",

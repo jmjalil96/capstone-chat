@@ -47,6 +47,12 @@ The initial system does not introduce microservices, Redis, or a separate queue.
 - The OCI artifact, application contracts, and PostgreSQL boundary remain portable. The production
   ingress, secret, deployment, and operations adapter is intentionally specific to DigitalOcean
   App Platform under the approved Phase 8 amendment.
+- Phase 11 has one prelaunch exception to the ordinary rolling-release shape. Because the owner
+  confirmed there are no users, application data, active browser clients, or production history to
+  preserve, one source-controlled health-only writer fence may quiesce the accepted release, stage
+  schema-aware source, initialize empty schema `0009`, remove temporary initialization authority,
+  and then activate matching API/web artifacts. No health-only stage serves a partial product.
+  Ordinary deployment compatibility and expand/contract rules resume immediately afterward.
 
 The approved production launch candidate is one DigitalOcean App Platform
 `apps-s-1vcpu-1gb-fixed` dynamic service with one instance in the managed `ric` region, one 512 MiB
@@ -174,7 +180,12 @@ Shared executable TypeScript is limited to transport contracts. The brand packag
 - Application code receives a frozen typed configuration object and does not read `process.env` directly.
 - Missing or invalid production configuration prevents the API from becoming ready.
 - Environment variables hold infrastructure configuration: database connection, public origin, Better Auth secrets, OpenRouter key, email credentials, OTLP destination, ports, and deployment metadata.
-- Workspace behavior such as budgets, enabled tiers, output limits, model mappings, and defaults lives in PostgreSQL.
+- Workspace behavior such as the normalized editable assistant-rules layer, budgets, enabled tiers,
+  output limits, bounded reasoning/temperature intent, model mappings, and defaults lives in
+  PostgreSQL.
+- The mandatory assistant base, composition delimiters and precedence, temperature values,
+  reasoning ratios, and allowed presets remain in version-controlled backend code. Prompt text from
+  PostgreSQL is limited to the normalized workspace layer and is read and composed only by Fastify.
 - Secrets are not returned through APIs or written to logs.
 - Startup may log a redacted summary of non-secret configuration.
 - Fake providers are prohibited in production mode.
@@ -208,6 +219,11 @@ Shared executable TypeScript is limited to transport contracts. The brand packag
 - An API deployment remains compatible with the immediately preceding web build.
 - Database changes follow an expand/contract sequence: add compatible schema, deploy compatible code, and remove obsolete schema only in a later deployment.
 - A destructive migration is not combined with the application release that stops using the old schema.
+
+Phase 11 is the sole approved clean-slate exception to the immediately-preceding-browser and
+expand/contract rules. It ships one required closed protocol and schema behind the health-only
+writer fence described above. It does not support an old browser or reconstruct historical data.
+The ordinary rules in this section apply again to every subsequent release.
 
 ## Browser responsibilities
 
@@ -331,6 +347,29 @@ route -> service -> explicit queries
 Queries stay near their feature. The codebase does not introduce generic base repositories.
 
 Long-lived streams never hold a PostgreSQL transaction or pooled connection open. Turn creation uses one short transaction to verify branch state, enforce generation concurrency, create the user message and assistant placeholder, create the generation, reserve budget, and consume the saved draft. It commits before contacting OpenRouter. Checkpoints use short independent updates, and completion uses one short transaction for final content, lifecycle state, usage, cost, and reservation settlement. Provider and browser network waits never occur inside a database transaction.
+
+Phase 11 adds immutable, workspace-scoped prompt and model-policy revision ledgers. Every successful
+save, reset, update, or revert appends a complete snapshot with a point-in-time actor and timestamp
+and advances the corresponding live head in the same short transaction. Revert creates a newly
+validated head; it never moves a pointer backward or deletes history. Prompt and policy revisions
+are retained indefinitely while the workspace exists. There is no per-revision deletion operation
+or workspace-deletion API in Phase 11.
+
+Generation admission captures immutable prompt and effective-model-parameter snapshots under the
+existing workspace-first lock order. Every generation records a non-null model-policy revision.
+Visible chat also records its workspace-prompt revision; title and compaction record their own
+internal prompt versions and no workspace-prompt revision. Prompt text is not copied into
+generation rows or effective-parameter diagnostics. Context planning receives the captured prompt
+before persistence and reservation, and no database connection remains held during compaction or
+provider work.
+
+Migration `0009` is a clean-slate schema migration. Its first transactional guard rejects any row
+in the reviewed application-table manifest before DDL; it performs no data reconstruction or
+synthetic initialization. After all migrations, one idempotent initialization transaction consumes
+already validated content-free inputs and creates the workspace, initial administrator
+configuration, approved catalog rows, prompt revision 1, and complete policy revision 1 together.
+If any application rows exist, operators must use a separately authorized empty replacement
+database rather than truncate or copy data.
 
 ## Workspace boundary
 

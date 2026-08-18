@@ -23,9 +23,8 @@ import {
 } from "./arguments.js";
 import { invitationDeliveryFailureMetadata, sendInvitationEmail } from "./invitation.js";
 
-type Command = "approve" | "bootstrap" | "deactivate";
+type Command = "approve" | "deactivate";
 
-const bootstrapArguments = new Set(["--email", "--invitation-delivery", "--name", "--workspace"]);
 const approvalArguments = new Set(["--email", "--role", "--workspace"]);
 const deactivationArguments = new Set(["--email", "--workspace"]);
 
@@ -47,44 +46,18 @@ function role(argumentsMap: ReadonlyMap<string, string>): WorkspaceRole {
   return value;
 }
 
-function syntheticRehearsalEmail(value: string): string {
-  const separator = value.lastIndexOf("@");
-  const domain = value
-    .slice(separator + 1)
-    .trim()
-    .toLowerCase();
-  if (separator <= 0 || domain.length <= ".test".length || !domain.endsWith(".test")) {
-    throw new Error("The managed rehearsal administrator email must use the reserved .test TLD");
-  }
-  return value;
-}
-
 async function run(): Promise<void> {
   const command = process.argv[2] as Command | undefined;
-  if (command !== "approve" && command !== "bootstrap" && command !== "deactivate") {
-    throw new Error("Command must be bootstrap, approve, or deactivate");
+  if (command !== "approve" && command !== "deactivate") {
+    throw new Error("Command must be approve or deactivate");
   }
 
   const argumentsMap = parseOperatorArguments(process.argv.slice(3));
   rejectUnknownOperatorArguments(
     argumentsMap,
-    command === "bootstrap"
-      ? bootstrapArguments
-      : command === "approve"
-        ? approvalArguments
-        : deactivationArguments,
+    command === "approve" ? approvalArguments : deactivationArguments,
   );
   const config = loadIdentityOperatorConfig();
-  const invitationDelivery = argumentsMap.get("--invitation-delivery");
-  const invitationDisabled = invitationDelivery === "disabled";
-  if (
-    invitationDelivery !== undefined &&
-    (!invitationDisabled || config.nodeEnv !== "test" || config.emailDelivery !== "disabled")
-  ) {
-    throw new Error(
-      "--invitation-delivery disabled is permitted only for the managed test rehearsal",
-    );
-  }
   const pool = createDatabasePool(config.databaseUrl);
   const database = createDatabase(pool);
   const identity = createIdentityService(database);
@@ -94,30 +67,6 @@ async function run(): Promise<void> {
   });
 
   try {
-    if (command === "bootstrap") {
-      const adminEmail = requiredOperatorArgument(argumentsMap, "--email");
-      const result = await identity.bootstrap({
-        adminEmail: invitationDisabled ? syntheticRehearsalEmail(adminEmail) : adminEmail,
-        displayName: requiredOperatorArgument(argumentsMap, "--name"),
-        workspaceIdentity: workspaceIdentity(argumentsMap),
-      });
-
-      if (!invitationDisabled) {
-        try {
-          await sendInvitationEmail(emailSender, config.publicOrigin, result.normalizedEmail);
-        } catch (error: unknown) {
-          process.stderr.write(`${JSON.stringify(invitationDeliveryFailureMetadata(error))}\n`);
-          process.exitCode = 1;
-          return;
-        }
-      }
-
-      process.stdout.write(
-        `${JSON.stringify({ command, ...(invitationDisabled ? { invitationDelivery: "disabled" } : {}), repeated: result.repeated, role: result.role, signUpPath: "/sign-up", workspace: result.workspaceIdentity })}\n`,
-      );
-      return;
-    }
-
     if (command === "approve") {
       const result = await identity.approve({
         email: requiredOperatorArgument(argumentsMap, "--email"),

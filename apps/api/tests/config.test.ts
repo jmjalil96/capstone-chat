@@ -334,8 +334,8 @@ describe("loadConfig", () => {
         "postgresql://initializer:app@database.internal:5432/capstone?sslmode=verify-full",
       CAPSTONE_BOOTSTRAP_MIGRATION_DATABASE_URL:
         "postgresql://initializer_migrate:migrate@database.internal:5432/capstone?sslmode=verify-full",
-      CAPSTONE_INITIALIZATION_DOCUMENT: '{"schemaVersion":1}',
-      CAPSTONE_INITIALIZATION_SCHEMA_VERSION: "1",
+      CAPSTONE_INITIALIZATION_DOCUMENT: '{"schemaVersion":2}',
+      CAPSTONE_INITIALIZATION_SCHEMA_VERSION: "2",
       CAPSTONE_SECRET_SOURCE: "platform-environment",
       DEPLOYMENT_REVISION: productionEnvironment.DEPLOYMENT_REVISION,
       DEPLOYMENT_TARGET: "digitalocean-app-platform",
@@ -349,7 +349,7 @@ describe("loadConfig", () => {
     expect(config).toMatchObject({
       applicationDatabaseUrl: environment.CAPSTONE_BOOTSTRAP_DATABASE_URL,
       initializationDocument: environment.CAPSTONE_INITIALIZATION_DOCUMENT,
-      initializationSchemaVersion: 1,
+      initializationSchemaVersion: 2,
       migrationDatabaseUrl: environment.CAPSTONE_BOOTSTRAP_MIGRATION_DATABASE_URL,
       modelGateway: "openrouter",
       openRouterApiKey: "temporary-catalog-key",
@@ -459,8 +459,8 @@ describe("loadConfig", () => {
         "postgresql://initializer:app@database.internal:5432/capstone?sslmode=verify-full",
       CAPSTONE_BOOTSTRAP_MIGRATION_DATABASE_URL:
         "postgresql://initializer_migrate:migrate@database.internal:5432/capstone?sslmode=verify-full",
-      CAPSTONE_INITIALIZATION_DOCUMENT: '{"schemaVersion":1}',
-      CAPSTONE_INITIALIZATION_SCHEMA_VERSION: "1",
+      CAPSTONE_INITIALIZATION_DOCUMENT: '{"schemaVersion":2}',
+      CAPSTONE_INITIALIZATION_SCHEMA_VERSION: "2",
     } satisfies NodeJS.ProcessEnv;
     expect(loadManagedRehearsalInitializationConfig(initialization)).toMatchObject({
       deploymentProfile: "managed-rehearsal",

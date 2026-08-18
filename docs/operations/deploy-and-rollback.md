@@ -77,6 +77,34 @@ token. It cannot create or delete an App or open a console. A repository source 
 byte-identical rebuild guarantee; accepted release evidence is the source commit, CI build/smoke,
 provider source hashes, and runtime readiness revision.
 
+## Phase 11 clean-slate cutover
+
+Phase 11 is the one approved synchronized exception to the normal expand/contract release path. It
+is valid only while the recorded no-users, no-application-data, and no-active-client premise
+remains true.
+
+1. Freeze source and App configuration. Capture and validate the active predecessor, then apply
+   `cutover-quiesced.contract.yaml` through the separately authorized dashboard change. The
+   production domain continues serving the health-only entrypoint with no database, auth, email,
+   model, or telemetry secret and no job.
+2. From green protected `main`, dispatch `operation=cutover-stage`. The workflow accepts only an
+   active quiesced predecessor, non-force fast-forwards `app-platform-production`, requests one
+   deployment, and proves the candidate SHA is still running the quiesced topology.
+3. Apply `cutover-initialize.contract.yaml`. Its temporary `PRE_DEPLOY` job receives exactly the
+   two bootstrap database URLs, initialization document, and short-lived OpenRouter key, declares
+   initialization schema `2`, runs migration `0009` and the unified initializer, and leaves the
+   public service health-only. Do not reset or clean a non-empty database to satisfy `0009`.
+4. Require one complete document-hash latch plus matching prompt and model-policy revision-1
+   ledgers and heads. Revoke the initialization roles/key and remove the temporary job and
+   variables.
+5. Apply and validate `app.contract.yaml`, then run the normal protected `deploy` operation for the
+   same candidate. Accept only exact service/job source hashes, migration completion, readiness,
+   ledger integrity, and the authorized runtime revision.
+
+Before step 3 commits, restore the quiesced predecessor contract. After `0009` or initialization
+commits, rollback is forward-only: keep the App quiesced and prepare a compatible descendant
+release; never move Git backward or reverse the database migration.
+
 ## Configuration changes
 
 App Platform configuration changes can rebuild the source. Freeze deployments, confirm

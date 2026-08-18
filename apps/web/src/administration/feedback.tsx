@@ -14,6 +14,15 @@ export function administrationErrorMessage(error: unknown): string {
     if (error.code === "MODEL_POLICY_CHANGED") {
       return copy.administration.models.stale;
     }
+    if (error.code === "MODEL_POLICY_CONFLICT") {
+      return copy.administration.models.conflict;
+    }
+    if (error.code === "ASSISTANT_RULES_CHANGED") {
+      return copy.administration.assistant.stale;
+    }
+    if (error.code === "ASSISTANT_RULES_CONFLICT") {
+      return copy.administration.assistant.conflict;
+    }
     if (error.code === "INVITATION_DELIVERY_FAILED") {
       return copy.administration.employees.invitationDeliveryFailed;
     }

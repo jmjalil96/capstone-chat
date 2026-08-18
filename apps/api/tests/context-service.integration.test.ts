@@ -12,6 +12,7 @@ import { migrateDatabase } from "../src/database/migrate.js";
 import { compactionPrompt } from "../src/generations/compaction-prompt.js";
 import type { ContextTurn } from "../src/generations/context-planner.js";
 import { loadContextWindow } from "../src/generations/context-service.js";
+import { seedTestPolicyRevision } from "./support/workspace-behavior.js";
 
 const workspaceId = "10000000-0000-4000-8000-000000000071";
 const userId = "phase-seven-context-user";
@@ -87,6 +88,7 @@ async function insertCompletedCompaction(
     effectiveParameters: {},
     id: generationId,
     idempotencyKey: randomUUID(),
+    modelPolicyRevision: 1,
     purpose: "compaction",
     requestedTier: "fast",
     startedAt: now,
@@ -159,6 +161,7 @@ describe.sequential("bounded selected-branch context query", () => {
       id: userId,
       name: "Context Employee",
     });
+    await seedTestPolicyRevision(database, workspaceId, new Date());
   });
 
   afterAll(async () => {

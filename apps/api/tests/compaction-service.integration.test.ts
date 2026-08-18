@@ -31,6 +31,12 @@ import type {
 import { systemPrompt } from "../src/generations/prompt.js";
 import { createBudgetService } from "../src/model-policy/budget-service.js";
 import type { ModelPolicyMode, ResolvedTierPolicy } from "../src/model-policy/service.js";
+import {
+  testCatalogCapability,
+  testEffectiveParameters,
+  testPromptSnapshot,
+} from "./support/generation.js";
+import { seedTestBehaviorRevisions } from "./support/workspace-behavior.js";
 
 const baselineRevision = 7;
 const summary = "Resumen durable de las decisiones anteriores.";
@@ -49,15 +55,20 @@ type CompactionTelemetry = NonNullable<Parameters<typeof createCompactionService
 
 function policy(monthlyBudgetUsd = "100"): ResolvedTierPolicy {
   return Object.freeze({
+    capability: testCatalogCapability,
     completionPriceCeilingPerToken: "0.000002",
     contextLength: 200_000,
     employeeActiveGenerationLimit: 4,
     maximumOutputTokens: 512,
     monthlyBudgetUsd,
+    policyRevision: 1,
     promptPriceCeilingPerToken: "0.000001",
     requestPriceCeilingUsd: "0",
     reservationMarginBasisPoints: 0,
+    reasoningBudgetTokens: 1_024,
+    reasoningEffort: "high",
     resolvedModel: "synthetic/fast",
+    temperaturePreset: "balanced",
     tier: "fast",
   });
 }
@@ -73,6 +84,7 @@ function plan(
       maximumOutputTokens: 128,
       previousCompactionId: null,
       request: Object.freeze({
+        effectiveParameters: testEffectiveParameters("compaction", "fast"),
         history: Object.freeze([]),
         message: Object.freeze({
           role: "user" as const,
@@ -94,6 +106,7 @@ function plan(
     fallback: Object.freeze({
       estimatedInputTokens: 30n,
       request: Object.freeze({
+        effectiveParameters: testEffectiveParameters(),
         history: Object.freeze([]),
         message: Object.freeze({ role: "user" as const, text: latestMessage }),
         modelTier: "balanced" as const,
@@ -104,6 +117,7 @@ function plan(
     }),
     maximumChatInputTokens: 100_000n,
     mode: "pending" as const,
+    promptSnapshot: testPromptSnapshot,
     recentHistory: Object.freeze([]),
     strategy,
   });
@@ -177,6 +191,7 @@ describe.sequential("compaction lifecycle", () => {
       userId,
       workspaceId,
     });
+    await seedTestBehaviorRevisions(database, workspaceId, now);
     await database.insert(workspaceCostPolicies).values({
       createdAt: now,
       defaultTier: "balanced",
@@ -245,6 +260,7 @@ describe.sequential("compaction lifecycle", () => {
         createdAt: now,
         effectiveParameters: { context: { mode: "pending" } },
         idempotencyKey: randomUUID(),
+        modelPolicyRevision: 1,
         purpose: "chat",
         requestedTier: "balanced",
         startedAt: now,
@@ -253,6 +269,7 @@ describe.sequential("compaction lifecycle", () => {
         updatedAt: now,
         userId,
         workspaceId,
+        workspacePromptRevision: 1,
       })
       .returning({ id: generations.id });
     const chatGenerationId = generationRows[0]?.id;

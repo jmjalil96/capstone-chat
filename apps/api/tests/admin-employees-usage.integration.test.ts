@@ -30,6 +30,7 @@ import { createBudgetService } from "../src/model-policy/budget-service.js";
 import { createModelPolicyService } from "../src/model-policy/service.js";
 import { createUsageService } from "../src/model-policy/usage-service.js";
 import { bootstrapSimulatedModelPolicy } from "./support/model-policy.js";
+import { seedTestBehaviorRevisions, seedTestPromptRevision } from "./support/workspace-behavior.js";
 
 const cursorSecret = "phase-seven-administration-integration-secret";
 
@@ -455,6 +456,7 @@ describe.sequential("employee and usage administration integration", () => {
     await bootstrapSimulatedModelPolicy(createModelPolicyService(database), workspaceIdentity, {
       monthlyBudgetUsd: "100",
     });
+    await seedTestPromptRevision(database, workspaceId, new Date());
     const conversation = await seedConversation({
       revision: 1,
       title: "Preparing cancellation fixture",
@@ -475,16 +477,18 @@ describe.sequential("employee and usage administration integration", () => {
       createdAt: startedAt,
       effectiveParameters: { context: { mode: "pending" } },
       idempotencyKey: randomUUID(),
+      modelPolicyRevision: 1,
       purpose: "chat",
       requestedModel: "fixture/chat-model",
       requestedTier: "balanced",
       resolvedModel: "fixture/chat-model",
       startedAt,
       status: "preparing",
-      systemPromptVersion: "capstone-chat-v1",
+      systemPromptVersion: "capstone-chat-base-v2",
       updatedAt: startedAt,
       userId: target.userId,
       workspaceId,
+      workspacePromptRevision: 1,
     });
     const employees = createEmployeeAdministrationService(
       database,
@@ -550,6 +554,7 @@ describe.sequential("employee and usage administration integration", () => {
     await bootstrapSimulatedModelPolicy(createModelPolicyService(database), workspaceIdentity, {
       monthlyBudgetUsd: "100",
     });
+    await seedTestPromptRevision(database, workspaceId, at);
     const period = await workspaceBudgetPeriod(database, workspaceId, at);
     if (period === null) {
       throw new Error("Current usage period fixture was not created");
@@ -583,6 +588,7 @@ describe.sequential("employee and usage administration integration", () => {
       createdAt: at,
       effectiveParameters: {},
       idempotencyKey: randomUUID(),
+      modelPolicyRevision: 1,
       promptTokens: 11n,
       provider: "fixture-provider",
       purpose: "chat",
@@ -592,11 +598,12 @@ describe.sequential("employee and usage administration integration", () => {
       resolvedModel: "fixture/chat-model",
       startedAt: at,
       status: "completed",
-      systemPromptVersion: "capstone-chat-v1",
+      systemPromptVersion: "capstone-chat-base-v2",
       terminalReason: "stop",
       updatedAt: settledAt,
       userId: employee.userId,
       workspaceId,
+      workspacePromptRevision: 1,
     });
     const compactionGenerationId = await seedGeneration({
       ...accountingSnapshot(period, at, "2"),
@@ -612,6 +619,7 @@ describe.sequential("employee and usage administration integration", () => {
       effectiveParameters: {},
       errorCode: "STREAM_INTERRUPTED",
       idempotencyKey: randomUUID(),
+      modelPolicyRevision: 1,
       promptTokens: 5n,
       purpose: "compaction",
       reasoningTokens: 0n,
@@ -655,6 +663,7 @@ describe.sequential("employee and usage administration integration", () => {
       createdAt: at,
       effectiveParameters: {},
       idempotencyKey: randomUUID(),
+      modelPolicyRevision: 1,
       promptTokens: 4n,
       provider: "fixture-provider",
       purpose: "title",
@@ -678,16 +687,18 @@ describe.sequential("employee and usage administration integration", () => {
       createdAt: at,
       effectiveParameters: {},
       idempotencyKey: randomUUID(),
+      modelPolicyRevision: 1,
       purpose: "chat",
       requestedModel: "fixture/reserved-model",
       requestedTier: "balanced",
       resolvedModel: "fixture/reserved-model",
       startedAt: at,
       status: "active",
-      systemPromptVersion: "capstone-chat-v1",
+      systemPromptVersion: "capstone-chat-base-v2",
       updatedAt: at,
       userId: employee.userId,
       workspaceId,
+      workspacePromptRevision: 1,
     });
     const previousPeriod = {
       end: period.start,
@@ -705,6 +716,7 @@ describe.sequential("employee and usage administration integration", () => {
       createdAt: at,
       effectiveParameters: {},
       idempotencyKey: randomUUID(),
+      modelPolicyRevision: 1,
       promptTokens: 1n,
       provider: "fixture-provider",
       purpose: "chat",
@@ -714,11 +726,12 @@ describe.sequential("employee and usage administration integration", () => {
       resolvedModel: "fixture/old-model",
       startedAt: at,
       status: "completed",
-      systemPromptVersion: "capstone-chat-v1",
+      systemPromptVersion: "capstone-chat-base-v2",
       terminalReason: "stop",
       updatedAt: settledAt,
       userId: employee.userId,
       workspaceId,
+      workspacePromptRevision: 1,
     });
     const foreignWorkspaceId = await seedWorkspace("usage-foreign");
     const foreignEmployee = await seedActivatedEmployee({
@@ -727,6 +740,7 @@ describe.sequential("employee and usage administration integration", () => {
       role: "member",
       workspaceId: foreignWorkspaceId,
     });
+    await seedTestBehaviorRevisions(database, foreignWorkspaceId, at);
     await seedGeneration({
       ...accountingSnapshot(period, at, "90"),
       accountingSettledAt: settledAt,
@@ -739,6 +753,7 @@ describe.sequential("employee and usage administration integration", () => {
       createdAt: at,
       effectiveParameters: {},
       idempotencyKey: randomUUID(),
+      modelPolicyRevision: 1,
       promptTokens: 1n,
       provider: "fixture-provider",
       purpose: "chat",
@@ -748,11 +763,12 @@ describe.sequential("employee and usage administration integration", () => {
       resolvedModel: "fixture/foreign-model",
       startedAt: at,
       status: "completed",
-      systemPromptVersion: "capstone-chat-v1",
+      systemPromptVersion: "capstone-chat-base-v2",
       terminalReason: "stop",
       updatedAt: settledAt,
       userId: foreignEmployee.userId,
       workspaceId: foreignWorkspaceId,
+      workspacePromptRevision: 1,
     });
 
     const usage = await createUsageService(database, createCursorCodec(cursorSecret), {

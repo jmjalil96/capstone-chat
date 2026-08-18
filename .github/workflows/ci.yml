@@ -97,7 +97,7 @@ jobs:
             test -f /app/apps/api/dist/entrypoint.js
             test -f /app/apps/api/dist/server.js
             test -d /app/apps/api/migrations
-            test -f /app/apps/api/migrations/0008_resilient_responses_feedback.sql
+            test -f /app/apps/api/migrations/0009_workspace_behavior_controls.sql
             test -f /app/apps/web/dist/index.html
             test -n "$(find /app/apps/web/dist/assets -maxdepth 1 -type f -print -quit)"
             test -z "$(find /app/apps/api/dist /app/apps/web/dist /app/packages/protocol/dist -type f -name \*.map -print -quit)"

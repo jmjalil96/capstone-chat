@@ -35,6 +35,19 @@ export function createLoadRehearsalCatalog(
         Object.freeze({
           available: true,
           canonicalSlug: initialTierModels[tier],
+          capability: Object.freeze({
+            reasoning: Object.freeze({
+              contractSource: "managed-rehearsal",
+              defaultEffort: null,
+              defaultEnabled: null,
+              effortSupport: Object.freeze({ kind: "all" as const }),
+              exclusionVerifiedAt: validatedAt,
+              kind: "optional" as const,
+              maxTokensAccepted: true,
+              traceSafety: "provider_excluded" as const,
+            }),
+            temperatureSupported: true,
+          }),
           completionPricePerToken: "0.000002",
           contextLength: 1_000_000,
           displayName: `Managed rehearsal ${tier}`,

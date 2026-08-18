@@ -20,6 +20,7 @@ import {
 } from "../src/generations/model-gateway.js";
 import { systemPrompt } from "../src/generations/prompt.js";
 import { conservativeTokenEstimate } from "../src/model-policy/settings.js";
+import { testEffectiveParameters, testPromptSnapshot } from "./support/generation.js";
 
 const ampleRoute: ContextRouteCapacity = {
   contextLength: 1_000_000,
@@ -45,11 +46,14 @@ function turns(prefix: string, count: number, textBytes = 8): readonly ContextTu
 
 function plannerInput(overrides: Partial<ContextPlannerInput> = {}): ContextPlannerInput {
   return {
+    chatParameters: testEffectiveParameters(),
     chatRoute: ampleRoute,
+    fastCompactionParameters: testEffectiveParameters("compaction", "fast"),
     fastRoute: ampleRoute,
     latestMessage: "latest employee message",
     modelTier: "balanced",
     previousCompaction: null,
+    promptSnapshot: testPromptSnapshot,
     recentTurns: turns("recent", 8),
     sourceOverflow: false,
     sourceTurns: turns("source", 2),
@@ -59,6 +63,7 @@ function plannerInput(overrides: Partial<ContextPlannerInput> = {}): ContextPlan
 
 function chatEstimate(selectedTurns: readonly ContextTurn[], latestMessage: string): bigint {
   const request: ChatGenerationRequest = {
+    effectiveParameters: testEffectiveParameters(),
     history: selectedTurns.flatMap((selected) => [
       { role: "user" as const, text: selected.user.text },
       { role: "assistant" as const, text: selected.assistant.text },
@@ -66,7 +71,10 @@ function chatEstimate(selectedTurns: readonly ContextTurn[], latestMessage: stri
     message: { role: "user", text: latestMessage },
     modelTier: "balanced",
     purpose: "chat",
-    systemPrompt,
+    systemPrompt: {
+      text: testPromptSnapshot.text,
+      version: testPromptSnapshot.baseVersion,
+    },
   };
   return conservativeTokenEstimate(generationRequestEstimatorInputs(request));
 }
@@ -135,6 +143,7 @@ describe("versioned compaction prompt and framing", () => {
   it("places one typed summary frame after system and keeps the employee message last", () => {
     const request: ChatGenerationRequest = {
       derivedContext: { kind: "compaction-summary", summary: "Prior summary" },
+      effectiveParameters: testEffectiveParameters("chat", "pro"),
       history: [
         { role: "user", text: "Recent question" },
         { role: "assistant", text: "Recent answer" },

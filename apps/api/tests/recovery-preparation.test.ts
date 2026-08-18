@@ -45,7 +45,7 @@ describe("restored database production boundary", () => {
         dataReadWriteVerified: true,
         ddlDenied: true,
       },
-      migrationCount: 9,
+      migrationCount: 10,
       migrationRole: {
         clusterAdministrationDenied: true,
         schemaWorkVerified: true,
@@ -69,7 +69,7 @@ describe("restored database production boundary", () => {
         "source-ip-denial-and-established-session-termination",
         "tls-hostname-ca-and-credential-denial",
       ],
-      migrationCount: 9,
+      migrationCount: 10,
       migrationRole: {
         clusterAdministrationDenied: true,
         schemaWorkVerified: true,

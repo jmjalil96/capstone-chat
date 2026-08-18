@@ -111,7 +111,7 @@ describe("catalog charge validation", () => {
     }
   });
 
-  it("joins exact ZDR endpoints to model metadata and requires reasoning support", () => {
+  it("joins exact ZDR endpoints and normalizes reasoning capability", () => {
     const model = {
       canonicalSlug: "approved/model",
       contextLength: 128_000,
@@ -120,6 +120,10 @@ describe("catalog charge validation", () => {
       maximumOutputTokens: 8_192,
       modelId: "approved/model",
       outputModalities: ["text"],
+      reasoning: {
+        supportedEfforts: ["low", "medium", "high"],
+        supportsMaxTokens: true,
+      },
       supportedParameters: ["max_tokens", "reasoning"],
     } as const;
     const snapshot = buildOpenRouterCatalogSnapshot(
@@ -151,17 +155,49 @@ describe("catalog charge validation", () => {
       new Date("2026-08-08T12:00:00.000Z"),
     );
     expect(snapshot).toMatchObject({
+      capability: {
+        reasoning: {
+          effortSupport: { kind: "none" },
+          kind: "optional",
+          maxTokensAccepted: true,
+          traceSafety: "provider_excluded",
+        },
+        temperatureSupported: false,
+      },
       contextLength: 100_000,
       maximumOutputTokens: 4_096,
       modelId: "approved/model",
     });
-    expect(() =>
+    const { reasoning: _reasoning, ...nonReasoningModel } = model;
+    expect(
       buildOpenRouterCatalogSnapshot(
-        { ...model, supportedParameters: ["max_tokens"] },
-        [],
-        new Date(),
+        { ...nonReasoningModel, supportedParameters: ["max_tokens"] },
+        [
+          {
+            contextLength: 100_000,
+            healthy: true,
+            inputModalities: ["text"],
+            maximumOutputTokens: 4_096,
+            modelId: "approved/model",
+            outputModalities: ["text"],
+            pricing: {
+              base: { completion: "0.000002", prompt: "0.000001", request: "0" },
+            },
+            supportedParameters: ["max_tokens"],
+            zdr: true,
+          },
+        ],
+        new Date("2026-08-08T12:00:00.000Z"),
       ),
-    ).toThrow(/reasoning/u);
+    ).toMatchObject({
+      available: true,
+      capability: {
+        reasoning: {
+          kind: "none",
+          traceSafety: "non_reasoning",
+        },
+      },
+    });
   });
 
   it("ignores a malformed eligible endpoint when another endpoint is fully bounded", () => {
