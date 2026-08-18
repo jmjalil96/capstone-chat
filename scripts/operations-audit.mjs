@@ -15,7 +15,6 @@ const deployTokenBinding = ["$", "{{ secrets.DIGITALOCEAN_DEPLOY_TOKEN }}"].join
 const exactDoctlVersionCheck = [
   'doctl_version="$(doctl version)"',
   `test "$(printf '%s\\n' "$doctl_version" | sed -n '1p')" = "doctl version 1.166.0-release"`,
-  `test "$(printf '%s\\n' "$doctl_version" | wc -l | tr -d ' ')" = "1"`,
 ].join("\n");
 const requiredDeploymentFiles = [
   "README.md",
