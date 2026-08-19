@@ -17,6 +17,16 @@ export function administrationErrorMessage(error: unknown): string {
     if (error.code === "MODEL_POLICY_CONFLICT") {
       return copy.administration.models.conflict;
     }
+    if (error.code === "MODEL_VALIDATION_FAILED") {
+      // 503 means the catalog could not be reached and retrying may work; 422 means
+      // OpenRouter rejected the model itself, so retrying the same id never will.
+      return error.status === 503
+        ? copy.administration.models.validationUnavailable
+        : copy.administration.models.validationRejected;
+    }
+    if (error.code === "CATALOG_REFRESH_ACTIVE") {
+      return copy.administration.models.refreshActive;
+    }
     if (error.code === "ASSISTANT_RULES_CHANGED") {
       return copy.administration.assistant.stale;
     }

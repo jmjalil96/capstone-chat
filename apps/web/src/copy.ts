@@ -249,6 +249,12 @@ export const copy = {
       adding: "Validando…",
       invalidModelId: "Escribe el ID exacto con el formato proveedor/modelo.",
       added: "El modelo quedó validado y agregado al catálogo aprobado.",
+      validationRejected:
+        "No pudimos validar ese modelo en OpenRouter. Revisa que el ID sea exacto, con el formato proveedor/modelo, antes de volver a intentarlo.",
+      validationUnavailable:
+        "No pudimos consultar el catálogo de OpenRouter en este momento. El catálogo aprobado no cambió. Vuelve a intentarlo en unos minutos.",
+      refreshActive:
+        "Ya hay una actualización de catálogo en curso. Espera a que termine antes de iniciar otra.",
       refresh: "Actualizar metadatos",
       refreshing: "Actualizando…",
       refreshed: (count: number) =>
