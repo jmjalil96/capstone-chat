@@ -169,7 +169,10 @@ async function installAdminFixture(page: Page): Promise<void> {
   });
 }
 
-async function installMobileChatFixture(page: Page): Promise<void> {
+async function installMobileChatFixture(
+  page: Page,
+  role: "admin" | "member" = "member",
+): Promise<void> {
   await page.route(/^http:\/\/127\.0\.0\.1:4173\/api\//u, async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -181,8 +184,8 @@ async function installMobileChatFixture(page: Page): Promise<void> {
       await route.fulfill({
         json: {
           ...adminSession,
-          employee: { ...adminSession.employee, id: "member-accessibility" },
-          workspace: { ...adminSession.workspace, role: "member" },
+          employee: { ...adminSession.employee, id: `${role}-accessibility` },
+          workspace: { ...adminSession.workspace, role },
         },
       });
       return;
@@ -346,7 +349,10 @@ test("@critical-accessibility scans the responsive authenticated shell", async (
 // to scroll them back. `expectViewportContained` in chat-shell.spec.ts only measures the
 // horizontal axis, so no existing test could observe this.
 test("@critical-accessibility keeps the account menu inside a short viewport", async ({ page }) => {
-  await installMobileChatFixture(page);
+  // An administrator's panel carries the extra administration row, so it is the case
+  // that overflows; a member's shorter panel clears the top edge unaided and would
+  // pass against an unbounded ceiling.
+  await installMobileChatFixture(page, "admin");
   // 300px is below the height at which the unbounded panel first clears the top edge on
   // its own, so this height fails without the ceiling and passes with it. A taller
   // viewport would pass either way and prove nothing.
@@ -354,28 +360,19 @@ test("@critical-accessibility keeps the account menu inside a short viewport", a
   await page.goto("/");
   await expect(page.getByRole("heading", { name: copy.conversations.newChat.title })).toBeVisible();
 
-  const opener = page.getByRole("button", { name: copy.conversations.navigation.open });
-  await opener.click();
-  const drawer = page.getByRole("dialog", { name: copy.conversations.navigation.label });
-  await expect(drawer).toBeVisible();
-
-  await drawer.getByLabel(copy.conversations.navigation.account).click();
+  // 844px wide is above the 48rem mobile-shell breakpoint, so the sidebar is the
+  // persistent desktop column and the account trigger sits directly in it.
+  const trigger = page.getByLabel(copy.conversations.navigation.account);
+  await trigger.click();
   const panel = page.locator(".account-menu-panel");
   await expect(panel).toBeVisible();
 
-  const geometry = await panel.evaluate((element) => {
-    const box = element.getBoundingClientRect();
-    return {
-      scrollable: element.scrollHeight > element.clientHeight + 1,
-      top: box.top,
-      viewportHeight: document.documentElement.clientHeight,
-    };
-  });
+  const panelTop = await panel.evaluate((element) => element.getBoundingClientRect().top);
 
   // A negative top is unreachable content: the rows above the edge cannot be scrolled
   // back into view because the panel itself is what overflows.
   expect(
-    geometry.top,
+    panelTop,
     "the account panel must not be clipped above the viewport",
   ).toBeGreaterThanOrEqual(0);
   // The sign-out control is the last row, so it proves the whole panel stayed reachable.
