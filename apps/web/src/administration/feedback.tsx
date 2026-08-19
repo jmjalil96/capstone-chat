@@ -14,6 +14,21 @@ export function administrationErrorMessage(error: unknown): string {
     if (error.code === "MODEL_POLICY_CHANGED") {
       return copy.administration.models.stale;
     }
+    if (error.code === "MODEL_POLICY_CONFLICT") {
+      return copy.administration.models.conflict;
+    }
+    if (error.code === "CATALOG_REFRESH_ACTIVE") {
+      return copy.administration.models.refreshActive;
+    }
+    if (error.code === "MODEL_VALIDATION_FAILED") {
+      // 422 means the approval itself was rejected and retrying the same id will not
+      // help; 503 covers every path where validation could not be completed at all --
+      // an absent loader, an unreachable catalog, or a failed refresh write -- so the
+      // copy stays about the validation attempt rather than naming one cause.
+      return error.status === 422
+        ? copy.administration.models.validationRejected
+        : copy.administration.models.validationUnavailable;
+    }
     if (error.code === "INVITATION_DELIVERY_FAILED") {
       return copy.administration.employees.invitationDeliveryFailed;
     }

@@ -228,6 +228,14 @@ export const copy = {
       adding: "Validando…",
       invalidModelId: "Escribe el ID exacto con el formato proveedor/modelo.",
       added: "El modelo quedó validado y agregado al catálogo aprobado.",
+      validationRejected:
+        "No pudimos aprobar ese modelo. Revisa que el ID sea exacto, con el formato proveedor/modelo, y que el modelo siga disponible para este espacio de trabajo.",
+      validationUnavailable:
+        "No pudimos completar la validación en este momento. El catálogo aprobado no cambió. Vuelve a intentarlo en unos minutos.",
+      refreshActive:
+        "Ya hay una actualización de catálogo en curso. Espera a que termine antes de iniciar otra.",
+      conflict:
+        "La política no es válida con el catálogo, el presupuesto o la configuración actuales. Revisa los valores antes de volver a guardar.",
       refresh: "Actualizar metadatos",
       refreshing: "Actualizando…",
       refreshed: (count: number) =>
