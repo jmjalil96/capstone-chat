@@ -434,7 +434,7 @@ select:focus-visible,
 }
 
 .compact-button {
-  min-height: 2.5rem;
+  min-height: 2.75rem;
   padding: var(--capstone-space-2) var(--capstone-space-4);
   font-size: var(--capstone-type-small);
 }
@@ -856,7 +856,7 @@ select:focus-visible,
 
 .account-menu-panel a,
 .account-menu-panel button {
-  min-height: 2.5rem;
+  min-height: 2.75rem;
   display: flex;
   align-items: center;
   gap: var(--capstone-space-2);
@@ -1565,6 +1565,12 @@ select:focus-visible,
   border: 0;
 }
 
+.message-action {
+  min-height: 2.75rem;
+  display: inline-flex;
+  align-items: center;
+}
+
 .message-action:disabled {
   cursor: not-allowed;
   opacity: 0.58;
@@ -1626,14 +1632,19 @@ select:focus-visible,
 .search-match {
   outline: 2px solid var(--app-accent);
   outline-offset: var(--capstone-space-2);
+  /* Gold alone is 2.08:1 on white. The teal-ink leading accent carries the
+     accessible signal; the gold wash stays as the decorative reinforcement. */
+  box-shadow: inset 3px 0 0 var(--app-action);
   background: rgb(226 171 51 / 18%);
   transition:
     background-color 520ms var(--capstone-ease-standard),
+    box-shadow 520ms var(--capstone-ease-standard),
     outline-color 520ms var(--capstone-ease-standard);
 }
 
 .search-match-fade {
   outline-color: transparent;
+  box-shadow: inset 3px 0 0 transparent;
   background: transparent;
 }
 
@@ -1754,10 +1765,6 @@ select:focus-visible,
 
 .action-dialog p {
   line-height: 1.55;
-}
-
-.action-dialog .compact-button {
-  min-height: 2.75rem;
 }
 
 .dialog-actions {
@@ -2687,7 +2694,7 @@ select:focus-visible,
 
 .message-action[data-report-state="reported"] {
   cursor: default;
-  opacity: 0.72;
+  color: var(--app-text-muted);
 }
 
 /* Phase 10 — administrator report inbox */

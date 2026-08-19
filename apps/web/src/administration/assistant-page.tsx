@@ -10,7 +10,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useOutletContext } from "react-router";
 import { copy } from "../copy";
 import { assistantRulesQueryKeys } from "../identity/assistant-rules-api";
-import { FormMessage } from "../identity/form-feedback";
+import { FieldError, FormMessage } from "../identity/form-feedback";
 import {
   AdministrationApiError,
   administrationQueryKeys,
@@ -292,6 +292,14 @@ export function AssistantPage() {
       ? preview.normalizedWorkspaceText === current.data.workspaceText
       : false;
   const saveDisabled = mutating || localInvalid || !previewCurrent || unchanged;
+  // Mirrors the previous inline branches exactly: the field is invalid only when
+  // localInvalid or the preview says so, and the unicode message wins when both apply.
+  const ruleError =
+    !localInvalid && previewStatus !== "invalid"
+      ? undefined
+      : draft !== undefined && invalidUnicodeOrControls(draft)
+        ? copy.administration.assistant.invalidText
+        : copy.administration.assistant.limitExceeded;
   const mutationError = save.error ?? reset.error ?? revert.error;
   const confirmed = previewCurrent ? preview.estimate : undefined;
   const historyItems = history.data?.pages.flatMap((page) => page.items) ?? [];
@@ -349,8 +357,12 @@ export function AssistantPage() {
               <textarea
                 id="assistant-workspace-text"
                 value={draft}
-                aria-invalid={localInvalid || previewStatus === "invalid"}
-                aria-describedby="assistant-rules-help assistant-rules-preview-status"
+                aria-invalid={ruleError !== undefined}
+                aria-describedby={
+                  ruleError === undefined
+                    ? "assistant-rules-help assistant-rules-preview-status"
+                    : "assistant-rules-help assistant-rules-preview-status assistant-rules-error"
+                }
                 onChange={(event) => {
                   setDraft(event.target.value);
                   setSuccess(undefined);
@@ -360,11 +372,7 @@ export function AssistantPage() {
               <p className="field-help" id="assistant-rules-help">
                 {copy.administration.assistant.help}
               </p>
-              {invalidUnicodeOrControls(draft) ? (
-                <p className="field-error">{copy.administration.assistant.invalidText}</p>
-              ) : localInvalid || previewStatus === "invalid" ? (
-                <p className="field-error">{copy.administration.assistant.limitExceeded}</p>
-              ) : null}
+              <FieldError id="assistant-rules-error" message={ruleError} />
             </div>
 
             <div className="assistant-count-grid">
