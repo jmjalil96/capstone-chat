@@ -361,10 +361,12 @@ test("@critical-accessibility keeps the account menu inside a short viewport", a
   await expect(page.getByRole("heading", { name: copy.conversations.newChat.title })).toBeVisible();
 
   // 844px wide is above the 48rem mobile-shell breakpoint, so the sidebar is the
-  // persistent desktop column and the account trigger sits directly in it.
-  const trigger = page.getByLabel(copy.conversations.navigation.account);
-  await trigger.click();
-  const panel = page.locator(".account-menu-panel");
+  // persistent desktop column and the account trigger sits directly in it. The shell
+  // also renders a hidden mobile drawer carrying its own copy of the trigger, so both
+  // the trigger and the panel are scoped to the desktop sidebar.
+  const sidebar = page.locator(".desktop-sidebar");
+  await sidebar.getByLabel(copy.conversations.navigation.account).click();
+  const panel = sidebar.locator(".account-menu-panel");
   await expect(panel).toBeVisible();
 
   const panelTop = await panel.evaluate((element) => element.getBoundingClientRect().top);
