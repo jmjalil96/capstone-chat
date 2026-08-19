@@ -60,14 +60,12 @@ async function insertUntrackedGeneration(
     `
       INSERT INTO generations (
         id, workspace_id, user_id, conversation_id, assistant_message_id, idempotency_key,
-        requested_tier, purpose, system_prompt_version, model_policy_revision,
-        workspace_prompt_revision, effective_parameters, status,
+        requested_tier, purpose, system_prompt_version, effective_parameters, status,
         terminal_reason, error_code, completed_at,
         started_at, created_at, updated_at
       ) VALUES (
         $1, $2, $3, $4, $5, $6,
-        'balanced', $7, $8, 1, CASE WHEN $7 = 'compaction' THEN NULL ELSE 1 END,
-        '{}'::jsonb, $9,
+        'balanced', $7, $8, '{}'::jsonb, $9,
         $10, $11, $12,
         '2026-08-08T12:00:01.000Z'::timestamptz,
         '2026-08-08T12:00:00.000Z'::timestamptz,
@@ -118,18 +116,6 @@ describe("Phase 7 PostgreSQL storage", () => {
     await pool.query(`
       INSERT INTO "user" (id, name, email, email_verified)
       VALUES ('${userId}', 'Phase Seven', 'phase-seven@example.test', true)
-    `);
-    await pool.query(`
-      INSERT INTO workspace_model_policy_revisions (
-        workspace_id, revision, default_tier, monthly_budget_usd, actor_kind, change_kind
-      ) VALUES
-        ('${workspaceOneId}', 1, 'balanced', 100, 'system', 'bootstrap'),
-        ('${workspaceTwoId}', 1, 'balanced', 100, 'system', 'bootstrap');
-      INSERT INTO workspace_assistant_prompt_revisions (
-        workspace_id, revision, workspace_text, actor_kind, change_kind
-      ) VALUES
-        ('${workspaceOneId}', 1, '', 'system', 'bootstrap'),
-        ('${workspaceTwoId}', 1, '', 'system', 'bootstrap')
     `);
     await pool.query(`
       INSERT INTO conversations (id, workspace_id, user_id)
@@ -198,7 +184,7 @@ describe("Phase 7 PostgreSQL storage", () => {
     await container?.stop();
   });
 
-  it("rejects a nonempty Phase 6 database before the clean-slate cutover", async () => {
+  it("upgrades the exact Phase 6 shape without changing accepted data and backfills approvals", async () => {
     const databaseName = "capstone_exact_phase_six";
     const upgradeUrl = databaseUrlFor(databaseUrl, databaseName);
     const administrativePool = new Pool({ connectionString: databaseUrl });
@@ -451,12 +437,8 @@ describe("Phase 7 PostgreSQL storage", () => {
       await phaseSixPool.end();
     }
 
-    await expect(migrateDatabase(upgradeUrl)).rejects.toThrow(
-      "0009_workspace_behavior_controls requires an application-empty database",
-    );
-    await expect(migrateDatabase(upgradeUrl)).rejects.toThrow(
-      "0009_workspace_behavior_controls requires an application-empty database",
-    );
+    await migrateDatabase(upgradeUrl);
+    await migrateDatabase(upgradeUrl);
 
     const verificationPool = new Pool({ connectionString: upgradeUrl });
     try {
@@ -489,16 +471,31 @@ describe("Phase 7 PostgreSQL storage", () => {
           WHERE conversation.id = '60000000-0000-4000-8000-000000000003'
         `)
       ).rows[0];
-      const phaseSevenObjects = await verificationPool.query(`
-        SELECT to_regclass('public.workspace_catalog_approvals')::text AS approvals
+      const phaseSevenFields = await verificationPool.query(`
+        SELECT
+          membership.monthly_soft_budget_usd,
+          policy.revision,
+          approval.model_catalog_id
+        FROM workspace_memberships AS membership
+        INNER JOIN workspace_cost_policies AS policy
+          ON policy.workspace_id = membership.workspace_id
+        INNER JOIN workspace_catalog_approvals AS approval
+          ON approval.workspace_id = membership.workspace_id
+        WHERE membership.workspace_id = '60000000-0000-4000-8000-000000000001'
       `);
       const migrations = await verificationPool.query(
         "SELECT hash FROM drizzle.__drizzle_migrations ORDER BY created_at",
       );
 
       expect(afterUpgrade).toEqual(beforeUpgrade);
-      expect(phaseSevenObjects.rows).toEqual([{ approvals: null }]);
-      expect(migrations.rows).toHaveLength(4);
+      expect(phaseSevenFields.rows).toEqual([
+        {
+          model_catalog_id: "60000000-0000-4000-8000-000000000006",
+          monthly_soft_budget_usd: null,
+          revision: 1,
+        },
+      ]);
+      expect(migrations.rows).toHaveLength(9);
     } finally {
       await verificationPool.end();
     }
@@ -510,7 +507,7 @@ describe("Phase 7 PostgreSQL storage", () => {
       conversationId: conversationOneId,
       id: "40000000-0000-4000-8000-000000000001",
       idempotencyKey: "41000000-0000-4000-8000-000000000001",
-      promptVersion: "capstone-chat-base-v2",
+      promptVersion: "capstone-chat-v1",
       purpose: "chat",
       status: "preparing",
     });
@@ -520,7 +517,7 @@ describe("Phase 7 PostgreSQL storage", () => {
         conversationId: conversationOneId,
         id: "40000000-0000-4000-8000-000000000002",
         idempotencyKey: "41000000-0000-4000-8000-000000000002",
-        promptVersion: "capstone-chat-base-v2",
+        promptVersion: "capstone-chat-v1",
         purpose: "chat",
         status: "active",
       }),
@@ -804,7 +801,7 @@ describe("Phase 7 PostgreSQL storage", () => {
       pool.query(`
         INSERT INTO generations (
           workspace_id, user_id, conversation_id, idempotency_key, requested_tier,
-          purpose, system_prompt_version, model_policy_revision, effective_parameters, status,
+          purpose, system_prompt_version, effective_parameters, status,
           terminal_reason, error_code, completed_at, accounting_status
         ) VALUES (
           '${workspaceOneId}',
@@ -814,7 +811,6 @@ describe("Phase 7 PostgreSQL storage", () => {
           'balanced',
           'compaction',
           'capstone-compaction-v1',
-          1,
           '{}'::jsonb,
           'failed',
           'error',
@@ -853,7 +849,6 @@ describe("Phase 7 PostgreSQL storage", () => {
         id, workspace_id, user_id, conversation_id, assistant_message_id,
         idempotency_key, requested_tier, purpose, requested_model, resolved_model,
         provider, openrouter_generation_id, system_prompt_version, effective_parameters,
-        model_policy_revision,
         status, terminal_reason, prompt_tokens, completion_tokens, cost_usd, cost_basis,
         accounting_status, estimated_input_tokens, maximum_output_tokens, reserved_cost_usd,
         prompt_price_ceiling_per_token, completion_price_ceiling_per_token,
@@ -875,7 +870,6 @@ describe("Phase 7 PostgreSQL storage", () => {
         'phase-seven-retained',
         'capstone-compaction-v1',
         '{}'::jsonb,
-        1,
         'completed',
         'stop',
         10,

@@ -1,6 +1,6 @@
 import { and, eq, isNull, or, sql } from "drizzle-orm";
 import { user as authUser } from "../database/auth-schema.generated.js";
-import type { AppDatabase, AppTransaction } from "../database/database.js";
+import type { AppDatabase } from "../database/database.js";
 import {
   employeeApprovals,
   workspaceMemberships,
@@ -306,100 +306,92 @@ export function createIdentityService(database: AppDatabase) {
       .limit(2);
   }
 
-  async function bootstrapInTransaction(
-    transaction: AppTransaction,
-    input: {
-      adminEmail: string;
-      displayName: string;
-      workspaceIdentity: string;
-    },
-  ): Promise<BootstrapResult> {
-    const normalizedEmail = normalizeApprovalEmail(input.adminEmail);
-    await transaction.execute(
-      sql`SELECT pg_advisory_xact_lock(hashtext('capstone.identity.bootstrap'))`,
-    );
-    const existingWorkspaces = await transaction.select().from(workspaces).limit(2);
-    let workspace = existingWorkspaces[0];
-    const workspaceWasCreated = workspace === undefined;
-
-    if (workspaceWasCreated) {
-      const inserted = await transaction
-        .insert(workspaces)
-        .values({ displayName: input.displayName, identity: input.workspaceIdentity })
-        .returning();
-      workspace = inserted[0];
-    }
-
-    if (
-      workspace === undefined ||
-      existingWorkspaces.length > 1 ||
-      workspace.identity !== input.workspaceIdentity ||
-      workspace.displayName !== input.displayName ||
-      workspace.timezone !== "America/Guayaquil"
-    ) {
-      throw new IdentityConflictError("The existing workspace conflicts with bootstrap input");
-    }
-
-    const existing = await transaction
-      .select()
-      .from(employeeApprovals)
-      .where(
-        and(
-          eq(employeeApprovals.workspaceId, workspace.id),
-          eq(employeeApprovals.normalizedEmail, normalizedEmail),
-        ),
-      )
-      .for("update");
-    const approval = existing[0];
-
-    if (approval !== undefined) {
-      if (existing.length !== 1 || approval.role !== "admin" || approval.status === "revoked") {
-        throw new IdentityConflictError(
-          "The existing administrator approval conflicts with bootstrap input",
-        );
-      }
-
-      return {
-        approvalId: approval.id,
-        normalizedEmail,
-        repeated: true,
-        role: "admin",
-        workspaceId: workspace.id,
-        workspaceIdentity: workspace.identity,
-      };
-    }
-
-    if (!workspaceWasCreated) {
-      throw new IdentityConflictError(
-        "The existing workspace was bootstrapped with different administrator input",
-      );
-    }
-
-    const inserted = await transaction
-      .insert(employeeApprovals)
-      .values({ normalizedEmail, role: "admin", workspaceId: workspace.id })
-      .returning({ id: employeeApprovals.id });
-    const approvalId = inserted[0]?.id;
-    if (approvalId === undefined) {
-      throw new Error("Administrator approval was not created");
-    }
-
-    return {
-      approvalId,
-      normalizedEmail,
-      repeated: false,
-      role: "admin",
-      workspaceId: workspace.id,
-      workspaceIdentity: workspace.identity,
-    };
-  }
-
   async function bootstrap(input: {
     adminEmail: string;
     displayName: string;
     workspaceIdentity: string;
   }): Promise<BootstrapResult> {
-    return database.transaction((transaction) => bootstrapInTransaction(transaction, input));
+    const normalizedEmail = normalizeApprovalEmail(input.adminEmail);
+
+    return database.transaction(async (transaction) => {
+      await transaction.execute(
+        sql`SELECT pg_advisory_xact_lock(hashtext('capstone.identity.bootstrap'))`,
+      );
+      const existingWorkspaces = await transaction.select().from(workspaces).limit(2);
+      let workspace = existingWorkspaces[0];
+      const workspaceWasCreated = workspace === undefined;
+
+      if (workspaceWasCreated) {
+        const inserted = await transaction
+          .insert(workspaces)
+          .values({ displayName: input.displayName, identity: input.workspaceIdentity })
+          .returning();
+        workspace = inserted[0];
+      }
+
+      if (
+        workspace === undefined ||
+        existingWorkspaces.length > 1 ||
+        workspace.identity !== input.workspaceIdentity ||
+        workspace.displayName !== input.displayName ||
+        workspace.timezone !== "America/Guayaquil"
+      ) {
+        throw new IdentityConflictError("The existing workspace conflicts with bootstrap input");
+      }
+
+      const existing = await transaction
+        .select()
+        .from(employeeApprovals)
+        .where(
+          and(
+            eq(employeeApprovals.workspaceId, workspace.id),
+            eq(employeeApprovals.normalizedEmail, normalizedEmail),
+          ),
+        )
+        .for("update");
+      const approval = existing[0];
+
+      if (approval !== undefined) {
+        if (existing.length !== 1 || approval.role !== "admin" || approval.status === "revoked") {
+          throw new IdentityConflictError(
+            "The existing administrator approval conflicts with bootstrap input",
+          );
+        }
+
+        return {
+          approvalId: approval.id,
+          normalizedEmail,
+          repeated: true,
+          role: "admin",
+          workspaceId: workspace.id,
+          workspaceIdentity: workspace.identity,
+        };
+      }
+
+      if (!workspaceWasCreated) {
+        throw new IdentityConflictError(
+          "The existing workspace was bootstrapped with different administrator input",
+        );
+      }
+
+      const inserted = await transaction
+        .insert(employeeApprovals)
+        .values({ normalizedEmail, role: "admin", workspaceId: workspace.id })
+        .returning({ id: employeeApprovals.id });
+      const approvalId = inserted[0]?.id;
+      if (approvalId === undefined) {
+        throw new Error("Administrator approval was not created");
+      }
+
+      return {
+        approvalId,
+        normalizedEmail,
+        repeated: false,
+        role: "admin",
+        workspaceId: workspace.id,
+        workspaceIdentity: workspace.identity,
+      };
+    });
   }
 
   async function approve(input: {
@@ -481,7 +473,6 @@ export function createIdentityService(database: AppDatabase) {
     activateMembership,
     approve,
     bootstrap,
-    bootstrapInTransaction,
     canSignIn,
     findActiveMemberships,
     findPendingApproval,

@@ -24,7 +24,6 @@ import { createGenerationService, type GenerationService } from "../src/generati
 import type { RequestActor } from "../src/identity/authorization.js";
 import { createModelPolicyService } from "../src/model-policy/service.js";
 import { bootstrapSimulatedModelPolicy } from "./support/model-policy.js";
-import { bootstrapTestAssistantRules } from "./support/workspace-behavior.js";
 
 function createActor(userId: string, workspaceId: string, sessionId: string): RequestActor {
   return {
@@ -116,7 +115,6 @@ describe.sequential("durable response updates", () => {
       { role: "member", userId, workspaceId },
       { role: "member", userId: strangerId, workspaceId },
     ]);
-    await bootstrapTestAssistantRules(database, workspaceId);
     await bootstrapSimulatedModelPolicy(createModelPolicyService(database), workspaceIdentity);
     actor = createActor(userId, workspaceId, sessionId);
     stranger = createActor(strangerId, workspaceId, strangerSessionId);

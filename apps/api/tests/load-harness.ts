@@ -11,7 +11,6 @@ import {
   StreamEventSchema,
 } from "@capstone/protocol";
 import Value from "typebox/value";
-import { bootstrapAssistantRulesInTransaction } from "../src/assistant-rules/service.js";
 import { session as authenticationSessions, user } from "../src/database/auth-schema.generated.js";
 import { createDatabase } from "../src/database/database.js";
 import { createDatabasePool } from "../src/database/pool.js";
@@ -404,11 +403,6 @@ async function bootstrapEmployees(
       displayName: managedRehearsal ? "Capstone" : "Capstone Load Rehearsal",
       workspaceIdentity: managedRehearsal ? "capstone" : "capstone-load",
     });
-    if (!managedRehearsal) {
-      await database.transaction((transaction) =>
-        bootstrapAssistantRulesInTransaction(transaction, bootstrap.workspaceId, new Date()),
-      );
-    }
     const output = { balanced: 8_192, fast: 4_096, pro: 16_384 } as const;
     await modelPolicy.bootstrap({
       catalog: createLoadRehearsalCatalog(validatedAt),

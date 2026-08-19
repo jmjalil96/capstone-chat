@@ -12,13 +12,6 @@ export class ModelPolicyUnavailableError extends Error {
   }
 }
 
-export class ModelPolicyRevisionNotFoundError extends Error {
-  constructor() {
-    super("Workspace model-policy revision was not found");
-    this.name = "ModelPolicyRevisionNotFoundError";
-  }
-}
-
 export class ModelPolicyNotFoundError extends Error {
   constructor() {
     super("Owned conversation was not found");

@@ -11,6 +11,7 @@ import {
   ContextBudgetExceededError,
   WorkspaceBudgetExceededError,
 } from "../model-policy/budget-service.js";
+import { unitPricePerMillion } from "../model-policy/money.js";
 import type { ModelPolicyMode, ResolvedTierPolicy } from "../model-policy/service.js";
 import type {
   ApplicationTelemetry,
@@ -249,12 +250,35 @@ export function createCompactionService(input: {
             conversationId: context.conversationId,
             createdAt: startedAt,
             effectiveParameters: {
-              ...context.plan.compaction.request.effectiveParameters,
+              context: {
+                sourceTurnCount: context.plan.compaction.sourceTurnCount,
+                strategy: context.plan.strategy,
+                throughMessageId: context.plan.compaction.throughMessageId,
+              },
+              ...(mode === "openrouter"
+                ? {
+                    maximumOutputTokens: context.plan.compaction.maximumOutputTokens,
+                    priceCeiling: {
+                      completionUsdPerMillion: unitPricePerMillion(
+                        context.fastPolicy.completionPriceCeilingPerToken,
+                      ),
+                      promptUsdPerMillion: unitPricePerMillion(
+                        context.fastPolicy.promptPriceCeilingPerToken,
+                      ),
+                      requestUsd: context.fastPolicy.requestPriceCeilingUsd,
+                    },
+                    provider: {
+                      dataCollection: "deny",
+                      requireParameters: true,
+                      zeroDataRetention: true,
+                    },
+                    reasoning: { exclude: true },
+                  }
+                : {}),
             },
             idempotencyKey: randomUUID(),
             purpose: "compaction",
             requestedTier: "fast",
-            modelPolicyRevision: context.fastPolicy.policyRevision,
             ...(mode === "openrouter"
               ? {
                   accountingStatus: reservation.accountingStatus,

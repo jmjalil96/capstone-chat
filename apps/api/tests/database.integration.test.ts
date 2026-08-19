@@ -29,14 +29,10 @@ const productTableNames = [
   "session",
   "user",
   "verification",
-  "workspace_assistant_prompt_revisions",
-  "workspace_assistant_prompts",
   "workspace_catalog_approvals",
   "workspace_cost_policies",
   "workspace_memberships",
   "workspace_model_policies",
-  "workspace_model_policy_revision_tiers",
-  "workspace_model_policy_revisions",
   "workspaces",
 ] as const;
 
@@ -86,82 +82,6 @@ describe("PostgreSQL application schema", () => {
     }
   });
 
-  it("enforces truthful system and user attribution in behavior ledgers", async () => {
-    const verificationPool = new Pool({ connectionString: databaseUrl });
-    const client = await verificationPool.connect();
-    const workspaceId = "12121212-1212-4212-8212-121212121212";
-    const userId = "ledger-attribution-user";
-    try {
-      await client.query("BEGIN");
-      await client.query(
-        "INSERT INTO workspaces (id, identity, display_name) VALUES ($1::uuid, 'ledger-attribution', 'Ledger Attribution')",
-        [workspaceId],
-      );
-      await client.query(
-        `INSERT INTO "user" (id, name, email, email_verified)
-          VALUES ($1, 'Ledger User', 'ledger-attribution@example.test', true)`,
-        [userId],
-      );
-      await client.query(
-        `INSERT INTO workspace_memberships (workspace_id, user_id, role, status)
-          VALUES ($1::uuid, $2, 'admin', 'active')`,
-        [workspaceId, userId],
-      );
-
-      const expectAttributionConstraint = async (
-        query: string,
-        constraint: string,
-      ): Promise<void> => {
-        await client.query("SAVEPOINT attribution_case");
-        const values = query.includes("$2") ? [workspaceId, userId] : [workspaceId];
-        await expect(client.query(query, values)).rejects.toMatchObject({
-          code: "23514",
-          constraint,
-        });
-        await client.query("ROLLBACK TO SAVEPOINT attribution_case");
-      };
-
-      await expectAttributionConstraint(
-        `
-          INSERT INTO workspace_model_policy_revisions (
-            workspace_id, revision, default_tier, monthly_budget_usd, actor_kind, change_kind
-          ) VALUES ($1::uuid, 1, 'balanced', 100, 'system', 'update')
-        `,
-        "workspace_model_policy_revisions_attribution_check",
-      );
-      await expectAttributionConstraint(
-        `
-          INSERT INTO workspace_model_policy_revisions (
-            workspace_id, revision, default_tier, monthly_budget_usd,
-            actor_kind, actor_user_id, actor_display_name, change_kind
-          ) VALUES ($1::uuid, 1, 'balanced', 100, 'user', $2, 'Ledger User', 'bootstrap')
-        `,
-        "workspace_model_policy_revisions_attribution_check",
-      );
-      await expectAttributionConstraint(
-        `
-          INSERT INTO workspace_assistant_prompt_revisions (
-            workspace_id, revision, workspace_text, actor_kind, change_kind
-          ) VALUES ($1::uuid, 1, '', 'system', 'save')
-        `,
-        "workspace_assistant_prompt_revisions_attribution_check",
-      );
-      await expectAttributionConstraint(
-        `
-          INSERT INTO workspace_assistant_prompt_revisions (
-            workspace_id, revision, workspace_text,
-            actor_kind, actor_user_id, actor_display_name, change_kind
-          ) VALUES ($1::uuid, 1, '', 'user', $2, 'Ledger User', 'bootstrap')
-        `,
-        "workspace_assistant_prompt_revisions_attribution_check",
-      );
-    } finally {
-      await client.query("ROLLBACK");
-      client.release();
-      await verificationPool.end();
-    }
-  });
-
   it("upgrades the exact empty Phase 1 migration state and remains retry-safe", async () => {
     const phaseOneDatabaseName = "capstone_phase_one_upgrade";
     const phaseOneDatabaseUrl = databaseUrlFor(databaseUrl, phaseOneDatabaseName);
@@ -204,7 +124,7 @@ describe("PostgreSQL application schema", () => {
         "SELECT table_name AS \"tableName\" FROM information_schema.tables WHERE table_schema = 'public'",
       );
 
-      expect(appliedMigrations.rows).toHaveLength(10);
+      expect(appliedMigrations.rows).toHaveLength(9);
       expect(appliedMigrations.rows[0]?.hash).toMatch(/^[a-f0-9]{64}$/u);
       expect(Number(appliedMigrations.rows[0]?.createdAt)).toBeGreaterThan(0);
       expect(productTables.rows.map(({ tableName }) => tableName).sort()).toEqual(
@@ -215,7 +135,7 @@ describe("PostgreSQL application schema", () => {
     }
   });
 
-  it("rejects a nonempty Phase 2 database before the clean-slate schema cutover", async () => {
+  it("upgrades the exact accepted Phase 2 schema without changing its data", async () => {
     const databaseName = "capstone_phase_two_upgrade";
     const upgradeUrl = databaseUrlFor(databaseUrl, databaseName);
     const administrativePool = new Pool({ connectionString: databaseUrl });
@@ -255,12 +175,8 @@ describe("PostgreSQL application schema", () => {
       await phaseTwoPool.end();
     }
 
-    await expect(migrateDatabase(upgradeUrl)).rejects.toThrow(
-      "0009_workspace_behavior_controls requires an application-empty database",
-    );
-    await expect(migrateDatabase(upgradeUrl)).rejects.toThrow(
-      "0009_workspace_behavior_controls requires an application-empty database",
-    );
+    await migrateDatabase(upgradeUrl);
+    await migrateDatabase(upgradeUrl);
 
     const verificationPool = new Pool({ connectionString: upgradeUrl });
     try {
@@ -274,15 +190,19 @@ describe("PostgreSQL application schema", () => {
         "SELECT table_name AS \"tableName\" FROM information_schema.tables WHERE table_schema = 'public' AND table_name IN ('conversations', 'drafts', 'messages') ORDER BY table_name",
       );
 
-      expect(migrations.rows).toHaveLength(1);
+      expect(migrations.rows).toHaveLength(9);
       expect(workspace.rows).toEqual([{ displayName: "Phase Two Preserved" }]);
-      expect(phaseThreeTables.rows).toEqual([]);
+      expect(phaseThreeTables.rows.map((row) => row.tableName)).toEqual([
+        "conversations",
+        "drafts",
+        "messages",
+      ]);
     } finally {
       await verificationPool.end();
     }
   });
 
-  it("rejects a nonempty Phase 3 database without changing conversation data", async () => {
+  it("upgrades the exact accepted Phase 3 schema without changing conversation data", async () => {
     const databaseName = "capstone_phase_three_upgrade";
     const upgradeUrl = databaseUrlFor(databaseUrl, databaseName);
     const administrativePool = new Pool({ connectionString: databaseUrl });
@@ -381,12 +301,8 @@ describe("PostgreSQL application schema", () => {
       await phaseThreePool.end();
     }
 
-    await expect(migrateDatabase(upgradeUrl)).rejects.toThrow(
-      "0009_workspace_behavior_controls requires an application-empty database",
-    );
-    await expect(migrateDatabase(upgradeUrl)).rejects.toThrow(
-      "0009_workspace_behavior_controls requires an application-empty database",
-    );
+    await migrateDatabase(upgradeUrl);
+    await migrateDatabase(upgradeUrl);
 
     const verificationPool = new Pool({ connectionString: upgradeUrl });
     try {
@@ -410,11 +326,11 @@ describe("PostgreSQL application schema", () => {
         INNER JOIN messages AS message ON message.id = conversation.selected_leaf_message_id
         WHERE conversation.id = '22222222-2222-4222-8222-222222222222'
       `);
-      const generationTable = await verificationPool.query<{ tableName: string | null }>(
-        "SELECT to_regclass('public.generations')::text AS \"tableName\"",
+      const generationCount = await verificationPool.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM generations",
       );
 
-      expect(migrations.rows).toHaveLength(2);
+      expect(migrations.rows).toHaveLength(9);
       expect(preserved.rows).toEqual([
         {
           draftContent: "Borrador preservado",
@@ -424,13 +340,13 @@ describe("PostgreSQL application schema", () => {
           title: "Conversación preservada",
         },
       ]);
-      expect(generationTable.rows).toEqual([{ tableName: null }]);
+      expect(generationCount.rows).toEqual([{ count: "0" }]);
     } finally {
       await verificationPool.end();
     }
   });
 
-  it("rejects a nonempty Phase 5 database while preserving prior deferred deletion", async () => {
+  it("upgrades the exact Phase 5 generation shape as untracked and preserves deferred deletion", async () => {
     const databaseName = "capstone_phase_five_upgrade";
     const upgradeUrl = databaseUrlFor(databaseUrl, databaseName);
     const administrativePool = new Pool({ connectionString: databaseUrl });
@@ -526,28 +442,23 @@ describe("PostgreSQL application schema", () => {
       await phaseFivePool.end();
     }
 
-    await expect(migrateDatabase(upgradeUrl)).rejects.toThrow(
-      "0009_workspace_behavior_controls requires an application-empty database",
-    );
-    await expect(migrateDatabase(upgradeUrl)).rejects.toThrow(
-      "0009_workspace_behavior_controls requires an application-empty database",
-    );
+    await migrateDatabase(upgradeUrl);
+    await migrateDatabase(upgradeUrl);
 
     const verificationPool = new Pool({ connectionString: upgradeUrl });
     try {
-      const preserved = await verificationPool.query<{
-        assistantMessageId: string | null;
-        conversationId: string | null;
-        requestedTier: string;
-        status: string;
-        systemPromptVersion: string;
+      const upgraded = await verificationPool.query<{
+        accountingStatus: string | null;
+        preferredTier: string;
+        purpose: string | null;
+        reservedCostUsd: string | null;
       }>(`
-        SELECT generation.conversation_id AS "conversationId",
-          generation.assistant_message_id AS "assistantMessageId",
-          generation.requested_tier AS "requestedTier",
-          generation.system_prompt_version AS "systemPromptVersion",
-          generation.status
-        FROM generations AS generation
+        SELECT conversation.preferred_tier AS "preferredTier",
+          generation.accounting_status AS "accountingStatus",
+          generation.purpose,
+          generation.reserved_cost_usd::text AS "reservedCostUsd"
+        FROM conversations AS conversation
+        INNER JOIN generations AS generation ON generation.conversation_id = conversation.id
         WHERE generation.id = '50505050-5050-4050-8050-505050505050'
       `);
       const ownedForeignKey = await verificationPool.query<{ deferred: boolean }>(`
@@ -555,13 +466,12 @@ describe("PostgreSQL application schema", () => {
         FROM pg_constraint
         WHERE conname = 'generations_owned_conversation_fk'
       `);
-      expect(preserved.rows).toEqual([
+      expect(upgraded.rows).toEqual([
         {
-          assistantMessageId: "40404040-4040-4040-8040-404040404040",
-          conversationId: "20202020-2020-4020-8020-202020202020",
-          requestedTier: "balanced",
-          status: "active",
-          systemPromptVersion: "capstone-chat-v1",
+          accountingStatus: null,
+          preferredTier: "balanced",
+          purpose: null,
+          reservedCostUsd: null,
         },
       ]);
       expect(ownedForeignKey.rows).toEqual([{ deferred: true }]);
@@ -582,11 +492,13 @@ describe("PostgreSQL application schema", () => {
         throw error;
       }
       const retained = await verificationPool.query(`
-        SELECT conversation_id, assistant_message_id
+        SELECT conversation_id, assistant_message_id, accounting_status
         FROM generations
         WHERE id = '50505050-5050-4050-8050-505050505050'
       `);
-      expect(retained.rows).toEqual([{ assistant_message_id: null, conversation_id: null }]);
+      expect(retained.rows).toEqual([
+        { accounting_status: null, assistant_message_id: null, conversation_id: null },
+      ]);
     } finally {
       await verificationPool.end();
     }
@@ -691,13 +603,11 @@ describe("PostgreSQL application schema", () => {
             'generations_content_references_check',
             'generations_effective_parameters_check',
             'generations_lifecycle_check',
-            'generations_model_policy_revision_fk',
             'generations_owned_conversation_fk',
             'generations_requested_tier_check',
             'generations_system_prompt_version_check',
             'generations_timestamps_check',
-            'generations_token_counts_check',
-            'generations_workspace_prompt_revision_fk'
+            'generations_token_counts_check'
           )
         ORDER BY conname
       `);
@@ -760,8 +670,6 @@ describe("PostgreSQL application schema", () => {
         "budget_period_end",
         "reservation_expires_at",
         "accounting_settled_at",
-        "model_policy_revision",
-        "workspace_prompt_revision",
       ]);
       expect(enumValues.rows).toEqual([
         { enumName: "generation_status", value: "preparing" },
@@ -778,7 +686,7 @@ describe("PostgreSQL application schema", () => {
         { enumName: "generation_terminal_reason", value: "cancelled" },
         { enumName: "generation_terminal_reason", value: "error" },
       ]);
-      expect(constraints.rows.map((row) => row.name)).toHaveLength(12);
+      expect(constraints.rows.map((row) => row.name)).toHaveLength(10);
       expect(
         constraints.rows.find((row) => row.name === "generations_owned_conversation_fk"),
       ).toMatchObject({ deferred: true });
@@ -814,18 +722,6 @@ describe("PostgreSQL application schema", () => {
         VALUES
           ('generation-schema-user', 'Generation User', 'generation@example.test', true),
           ('generation-other-user', 'Other User', 'generation-other@example.test', true)
-      `);
-      await verificationPool.query(`
-        INSERT INTO workspace_model_policy_revisions (
-          workspace_id, revision, default_tier, monthly_budget_usd, actor_kind, change_kind
-        ) VALUES (
-          '66666666-6666-4666-8666-666666666666', 1, 'balanced', 100, 'system', 'bootstrap'
-        );
-        INSERT INTO workspace_assistant_prompt_revisions (
-          workspace_id, revision, workspace_text, actor_kind, change_kind
-        ) VALUES (
-          '66666666-6666-4666-8666-666666666666', 1, '', 'system', 'bootstrap'
-        )
       `);
       await verificationPool.query(`
         INSERT INTO conversations (id, workspace_id, user_id)
@@ -890,8 +786,6 @@ describe("PostgreSQL application schema", () => {
           idempotency_key,
           requested_tier,
           system_prompt_version,
-          model_policy_revision,
-          workspace_prompt_revision,
           effective_parameters,
           status
         ) VALUES (
@@ -902,9 +796,7 @@ describe("PostgreSQL application schema", () => {
           '99999999-9999-4999-8999-999999999999',
           'ffffffff-ffff-4fff-8fff-ffffffffffff',
           'balanced',
-          'capstone-chat-base-v2',
-          1,
-          1,
+          'capstone-chat-v1',
           '{}'::jsonb,
           'active'
         )
@@ -914,8 +806,7 @@ describe("PostgreSQL application schema", () => {
         verificationPool.query(`
           INSERT INTO generations (
             workspace_id, user_id, conversation_id, assistant_message_id, idempotency_key,
-            requested_tier, system_prompt_version, model_policy_revision,
-            workspace_prompt_revision, effective_parameters, status,
+            requested_tier, system_prompt_version, effective_parameters, status,
             accounting_status
           ) VALUES (
             '66666666-6666-4666-8666-666666666666',
@@ -924,9 +815,7 @@ describe("PostgreSQL application schema", () => {
             'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
             '12345678-1234-4234-8234-123456789019',
             'balanced',
-            'capstone-chat-base-v2',
-            1,
-            1,
+            'capstone-chat-v1',
             '{}'::jsonb,
             'active',
             'reserved'
@@ -938,8 +827,7 @@ describe("PostgreSQL application schema", () => {
         verificationPool.query(`
           INSERT INTO generations (
             workspace_id, user_id, conversation_id, assistant_message_id, idempotency_key,
-            requested_tier, system_prompt_version, model_policy_revision,
-            workspace_prompt_revision, effective_parameters, status
+            requested_tier, system_prompt_version, effective_parameters, status
           ) VALUES (
             '66666666-6666-4666-8666-666666666666',
             'generation-schema-user',
@@ -947,9 +835,7 @@ describe("PostgreSQL application schema", () => {
             'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
             '12345678-1234-4234-8234-123456789012',
             'balanced',
-            'capstone-chat-base-v2',
-            1,
-            1,
+            'capstone-chat-v1',
             '{}'::jsonb,
             'active'
           )
@@ -962,8 +848,7 @@ describe("PostgreSQL application schema", () => {
         verificationPool.query(`
           INSERT INTO generations (
             workspace_id, user_id, conversation_id, assistant_message_id, idempotency_key,
-            requested_tier, system_prompt_version, model_policy_revision,
-            workspace_prompt_revision, effective_parameters, status
+            requested_tier, system_prompt_version, effective_parameters, status
           ) VALUES (
             '66666666-6666-4666-8666-666666666666',
             'generation-schema-user',
@@ -971,9 +856,7 @@ describe("PostgreSQL application schema", () => {
             'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
             'ffffffff-ffff-4fff-8fff-ffffffffffff',
             'balanced',
-            'capstone-chat-base-v2',
-            1,
-            1,
+            'capstone-chat-v1',
             '{}'::jsonb,
             'active'
           )
@@ -986,8 +869,7 @@ describe("PostgreSQL application schema", () => {
         verificationPool.query(`
           INSERT INTO generations (
             workspace_id, user_id, conversation_id, assistant_message_id, idempotency_key,
-            requested_tier, system_prompt_version, model_policy_revision,
-            workspace_prompt_revision, effective_parameters, status
+            requested_tier, system_prompt_version, effective_parameters, status
           ) VALUES (
             '66666666-6666-4666-8666-666666666666',
             'generation-other-user',
@@ -995,9 +877,7 @@ describe("PostgreSQL application schema", () => {
             'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
             '12345678-1234-4234-8234-123456789013',
             'balanced',
-            'capstone-chat-base-v2',
-            1,
-            1,
+            'capstone-chat-v1',
             '{}'::jsonb,
             'active'
           )
@@ -1007,8 +887,7 @@ describe("PostgreSQL application schema", () => {
         verificationPool.query(`
           INSERT INTO generations (
             workspace_id, user_id, conversation_id, assistant_message_id, idempotency_key,
-            requested_tier, system_prompt_version, model_policy_revision,
-            workspace_prompt_revision, effective_parameters, status
+            requested_tier, system_prompt_version, effective_parameters, status
           ) VALUES (
             '66666666-6666-4666-8666-666666666666',
             'generation-schema-user',
@@ -1016,9 +895,7 @@ describe("PostgreSQL application schema", () => {
             'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
             '12345678-1234-4234-8234-123456789014',
             'ultra',
-            'capstone-chat-base-v2',
-            1,
-            1,
+            'capstone-chat-v1',
             '{}'::jsonb,
             'active'
           )
@@ -1028,8 +905,7 @@ describe("PostgreSQL application schema", () => {
         verificationPool.query(`
           INSERT INTO generations (
             workspace_id, user_id, conversation_id, assistant_message_id, idempotency_key,
-            requested_tier, system_prompt_version, model_policy_revision,
-            workspace_prompt_revision, effective_parameters, status,
+            requested_tier, system_prompt_version, effective_parameters, status,
             terminal_reason, completed_at
           ) VALUES (
             '66666666-6666-4666-8666-666666666666',
@@ -1038,9 +914,7 @@ describe("PostgreSQL application schema", () => {
             'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
             '12345678-1234-4234-8234-123456789015',
             'balanced',
-            'capstone-chat-base-v2',
-            1,
-            1,
+            'capstone-chat-v1',
             '{}'::jsonb,
             'completed',
             'error',
@@ -1052,8 +926,7 @@ describe("PostgreSQL application schema", () => {
         verificationPool.query(`
           INSERT INTO generations (
             workspace_id, user_id, conversation_id, assistant_message_id, idempotency_key,
-            requested_tier, system_prompt_version, model_policy_revision,
-            workspace_prompt_revision, effective_parameters, status,
+            requested_tier, system_prompt_version, effective_parameters, status,
             terminal_reason, started_at, first_token_at, completed_at
           ) VALUES (
             '66666666-6666-4666-8666-666666666666',
@@ -1062,9 +935,7 @@ describe("PostgreSQL application schema", () => {
             'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
             '12345678-1234-4234-8234-123456789016',
             'balanced',
-            'capstone-chat-base-v2',
-            1,
-            1,
+            'capstone-chat-v1',
             '{}'::jsonb,
             'completed',
             'stop',
@@ -1078,8 +949,7 @@ describe("PostgreSQL application schema", () => {
         verificationPool.query(`
           INSERT INTO generations (
             workspace_id, user_id, conversation_id, assistant_message_id, idempotency_key,
-            requested_tier, system_prompt_version, model_policy_revision,
-            workspace_prompt_revision, effective_parameters, status,
+            requested_tier, system_prompt_version, effective_parameters, status,
             started_at, created_at, updated_at
           ) VALUES (
             '66666666-6666-4666-8666-666666666666',
@@ -1088,9 +958,7 @@ describe("PostgreSQL application schema", () => {
             'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
             '12345678-1234-4234-8234-123456789017',
             'balanced',
-            'capstone-chat-base-v2',
-            1,
-            1,
+            'capstone-chat-v1',
             '{}'::jsonb,
             'active',
             '2026-08-07T12:00:00.000Z'::timestamptz,
@@ -1103,8 +971,7 @@ describe("PostgreSQL application schema", () => {
         verificationPool.query(`
           INSERT INTO generations (
             workspace_id, user_id, conversation_id, assistant_message_id, idempotency_key,
-            requested_tier, system_prompt_version, model_policy_revision,
-            workspace_prompt_revision, effective_parameters, status,
+            requested_tier, system_prompt_version, effective_parameters, status,
             terminal_reason, started_at, completed_at, created_at, updated_at
           ) VALUES (
             '66666666-6666-4666-8666-666666666666',
@@ -1113,9 +980,7 @@ describe("PostgreSQL application schema", () => {
             'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
             '12345678-1234-4234-8234-123456789018',
             'balanced',
-            'capstone-chat-base-v2',
-            1,
-            1,
+            'capstone-chat-v1',
             '{}'::jsonb,
             'completed',
             'stop',

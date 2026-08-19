@@ -4,14 +4,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   type AdministrationApiError,
   administrationQueryScope,
-  fetchAdminAssistantRulesHistory,
   fetchAdminEmployees,
   fetchAdminPolicy,
-  fetchAdminPolicyHistory,
-  previewAdminAssistantRules,
   refreshAdminCatalog,
-  revertAdminAssistantRules,
-  revertAdminPolicy,
   revokeAdminEmployeeSessions,
   updateAdminEmployeeSoftBudget,
 } from "./api";
@@ -163,79 +158,5 @@ describe("administration API client", () => {
         method: "POST",
       }),
     );
-  });
-
-  it("validates assistant previews and encodes assistant history cursors", async () => {
-    const signal = new AbortController().signal;
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(
-        json({
-          normalizedWorkspaceText: "Regla normalizada",
-          effectivePrompt: "CONTEXTO EDITABLE\n\nRegla normalizada\n\nREGLAS BASE",
-          estimate: {
-            counts: { codePoints: 17, utf8Bytes: 17, approximateInputTokens: 5 },
-            balancedMaximumResponseCostPercent: "0.25",
-          },
-        }),
-      )
-      .mockResolvedValueOnce(json({ items: [], nextCursor: null }));
-    vi.stubGlobal("fetch", fetchMock);
-
-    await expect(
-      previewAdminAssistantRules({ workspaceText: "Regla normalizada" }, signal),
-    ).resolves.toMatchObject({ normalizedWorkspaceText: "Regla normalizada" });
-    await expect(fetchAdminAssistantRulesHistory("opaque/assistant +")).resolves.toEqual({
-      items: [],
-      nextCursor: null,
-    });
-
-    expect(fetchMock.mock.calls[0]).toEqual([
-      "/api/admin/assistant-rules/preview",
-      expect.objectContaining({
-        body: JSON.stringify({ workspaceText: "Regla normalizada" }),
-        method: "POST",
-        signal,
-      }),
-    ]);
-    expect(fetchMock.mock.calls[1]?.[0]).toBe(
-      "/api/admin/assistant-rules/revisions?cursor=opaque%2Fassistant+%2B",
-    );
-  });
-
-  it("uses closed policy history and revision-revert endpoints", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(json({ items: [], nextCursor: null }))
-      .mockResolvedValueOnce(
-        json(
-          { code: "MODEL_POLICY_CONFLICT", message: "Conflict", requestId: "request-policy" },
-          409,
-        ),
-      )
-      .mockResolvedValueOnce(
-        json(
-          { code: "ASSISTANT_RULES_CHANGED", message: "Changed", requestId: "request-rules" },
-          409,
-        ),
-      );
-    vi.stubGlobal("fetch", fetchMock);
-
-    await expect(fetchAdminPolicyHistory()).resolves.toEqual({ items: [], nextCursor: null });
-    await expect(revertAdminPolicy(7, { observedRevision: 9 })).rejects.toMatchObject({
-      code: "MODEL_POLICY_CONFLICT",
-    });
-    await expect(revertAdminAssistantRules(4, { observedRevision: 6 })).rejects.toMatchObject({
-      code: "ASSISTANT_RULES_CHANGED",
-    });
-
-    expect(fetchMock.mock.calls[1]).toEqual([
-      "/api/admin/model-policy/revisions/7/revert",
-      expect.objectContaining({
-        body: JSON.stringify({ observedRevision: 9 }),
-        method: "POST",
-      }),
-    ]);
-    expect(fetchMock.mock.calls[2]?.[0]).toBe("/api/admin/assistant-rules/revisions/4/revert");
   });
 });

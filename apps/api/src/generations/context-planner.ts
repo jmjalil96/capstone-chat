@@ -1,6 +1,4 @@
 import type { GenerationModelTier } from "@capstone/protocol";
-import type { SystemPromptSnapshot } from "../assistant-rules/prompt.js";
-import type { EffectiveModelParameters } from "../model-policy/effective-parameters.js";
 import { conservativeTokenEstimate } from "../model-policy/settings.js";
 import { compactionPrompt, serializeCompactionInput } from "./compaction-prompt.js";
 import {
@@ -9,6 +7,7 @@ import {
   type GenerationContextMessage,
   generationRequestEstimatorInputs,
 } from "./model-gateway.js";
+import { systemPrompt } from "./prompt.js";
 
 export const contextCompactionTuning = Object.freeze({
   fallbackMinimumTurns: 6,
@@ -40,14 +39,11 @@ export interface ContextRouteCapacity {
 }
 
 export interface ContextPlannerInput {
-  readonly chatParameters: EffectiveModelParameters;
   readonly chatRoute: ContextRouteCapacity;
-  readonly fastCompactionParameters: EffectiveModelParameters | null;
   readonly fastRoute: ContextRouteCapacity | null;
   readonly latestMessage: string;
   readonly modelTier: GenerationModelTier;
   readonly previousCompaction: ApplicableCompaction | null;
-  readonly promptSnapshot: SystemPromptSnapshot;
   /** Chronological complete turns after the previous compaction and before recentTurns. */
   readonly sourceTurns: readonly ContextTurn[];
   /** True when another complete turn remains between sourceTurns and recentTurns. */
@@ -94,7 +90,6 @@ export interface PendingContextPlan {
   readonly fallback: PlannedChatContext;
   readonly maximumChatInputTokens: bigint;
   readonly mode: "pending";
-  readonly promptSnapshot: SystemPromptSnapshot;
   readonly recentHistory: readonly GenerationContextMessage[];
   readonly strategy: "catch-up" | "normal";
 }
@@ -145,8 +140,6 @@ function chatRequest(input: {
   readonly history: readonly GenerationContextMessage[];
   readonly latestMessage: string;
   readonly modelTier: GenerationModelTier;
-  readonly parameters: EffectiveModelParameters;
-  readonly promptSnapshot: SystemPromptSnapshot;
 }): ChatGenerationRequest {
   return {
     ...(input.derivedSummary === undefined
@@ -158,14 +151,10 @@ function chatRequest(input: {
           },
         }),
     history: input.history,
-    effectiveParameters: input.parameters,
     message: { role: "user", text: input.latestMessage },
     modelTier: input.modelTier,
     purpose: "chat",
-    systemPrompt: {
-      text: input.promptSnapshot.text,
-      version: input.promptSnapshot.baseVersion,
-    },
+    systemPrompt,
   };
 }
 
@@ -188,8 +177,6 @@ function fallbackContext(input: ContextPlannerInput, chatSafeInput: bigint): Pla
       history: historyFromTurns(retainedTurns),
       latestMessage: input.latestMessage,
       modelTier: input.modelTier,
-      parameters: input.chatParameters,
-      promptSnapshot: input.promptSnapshot,
     });
     const estimatedInputTokens = estimate(request);
     if (estimatedInputTokens <= chatSafeInput) {
@@ -200,13 +187,11 @@ function fallbackContext(input: ContextPlannerInput, chatSafeInput: bigint): Pla
 }
 
 function compactionRequest(
-  parameters: EffectiveModelParameters,
   previousSummary: string | null,
   turns: readonly ContextTurn[],
 ): CompactionGenerationRequest {
   return {
     history: [],
-    effectiveParameters: parameters,
     message: {
       role: "user",
       text: serializeCompactionInput({
@@ -236,8 +221,6 @@ function plannedMaximumChatInput(input: ContextPlannerInput): bigint {
       history: historyFromTurns(input.recentTurns),
       latestMessage: input.latestMessage,
       modelTier: input.modelTier,
-      parameters: input.chatParameters,
-      promptSnapshot: input.promptSnapshot,
     }),
   );
 }
@@ -261,11 +244,7 @@ function pendingPlan(
   while (lowerBound <= upperBound) {
     const candidateCount = Math.floor((lowerBound + upperBound) / 2);
     const candidateTurns = input.sourceTurns.slice(0, candidateCount);
-    if (input.fastCompactionParameters === null) {
-      throw new Error("Compaction parameters are required for a pending plan");
-    }
     const candidateRequest = compactionRequest(
-      input.fastCompactionParameters,
       input.previousCompaction?.summary ?? null,
       candidateTurns,
     );
@@ -308,7 +287,6 @@ function pendingPlan(
     fallback,
     maximumChatInputTokens,
     mode: "pending",
-    promptSnapshot: input.promptSnapshot,
     recentHistory: historyFromTurns(input.recentTurns),
     strategy,
   };
@@ -354,8 +332,6 @@ export function planContext(input: ContextPlannerInput): ContextPlan {
     history: historyFromTurns([...input.sourceTurns, ...input.recentTurns]),
     latestMessage: input.latestMessage,
     modelTier: input.modelTier,
-    parameters: input.chatParameters,
-    promptSnapshot: input.promptSnapshot,
   });
   const estimatedInputTokens = estimate(request);
   const triggerSafeInput =
@@ -398,8 +374,6 @@ export function materializeCompactedChat(
     history: plan.recentHistory,
     latestMessage: plan.fallback.request.message.text,
     modelTier: plan.fallback.request.modelTier,
-    parameters: plan.fallback.request.effectiveParameters,
-    promptSnapshot: plan.promptSnapshot,
   });
   const estimatedInputTokens = estimate(request);
   if (estimatedInputTokens > plan.maximumChatInputTokens) {

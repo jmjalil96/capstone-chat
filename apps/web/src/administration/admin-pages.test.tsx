@@ -1,5 +1,4 @@
 import type {
-  AdminAssistantRulesResponse,
   AdminEmployeeListResponse,
   AdminModelPolicyResponse,
   AdminUsageResponse,
@@ -15,7 +14,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { copy } from "../copy";
 import { AdminGuard } from "./admin-guard";
 import { AdminShell } from "./admin-shell";
-import { AssistantPage } from "./assistant-page";
 import { EmployeesPage } from "./employees-page";
 import { formatAdminUsd } from "./formatting";
 import { ModelsPage } from "./models-page";
@@ -37,17 +35,6 @@ const session = {
 } satisfies SessionResponse;
 
 const catalogId = "11111111-1111-4111-8111-111111111111";
-const capability = {
-  temperatureSupported: true,
-  reasoning: {
-    kind: "optional",
-    effortSupport: { kind: "all" },
-    maxTokensAccepted: true,
-    defaultEffort: null,
-    defaultEnabled: null,
-    traceSafety: "provider_excluded",
-  },
-} as const;
 
 function json(payload: unknown, status = 200): Response {
   return new Response(JSON.stringify(payload), {
@@ -78,7 +65,6 @@ function renderAdministration(path: string) {
                 children: [
                   { index: true, element: <Navigate to="/admin/employees" replace /> },
                   { path: "employees", Component: EmployeesPage },
-                  { path: "assistant", Component: AssistantPage },
                   { path: "models", Component: ModelsPage },
                   { path: "usage", Component: UsagePage },
                   { path: "reports", Component: ReportsPage },
@@ -107,7 +93,6 @@ function modelPolicy(revision: number, monthlyBudgetUsd: string): AdminModelPoli
     available: true,
     contextLength: 131_072,
     maximumOutputTokens: 16_384,
-    capability,
     validatedAt: "2026-08-08T12:00:00.000Z",
   } as const;
   return {
@@ -115,10 +100,6 @@ function modelPolicy(revision: number, monthlyBudgetUsd: string): AdminModelPoli
     currency: "USD",
     defaultTier: "balanced",
     monthlyBudgetUsd,
-    actor: { kind: "user", userId: "employee-admin", displayName: "Ana Pérez" },
-    changeKind: revision === 1 ? "bootstrap" : "update",
-    revertedFromRevision: null,
-    updatedAt: "2026-08-08T12:00:00.000Z",
     tiers: [
       {
         tier: "fast",
@@ -126,12 +107,6 @@ function modelPolicy(revision: number, monthlyBudgetUsd: string): AdminModelPoli
         enabled: true,
         available: true,
         maximumOutputTokens: 4096,
-        reasoningEffort: "off",
-        reasoningBudgetTokens: 0,
-        temperaturePreset: "precise",
-        temperatureStatus: { kind: "exact", reason: "supported" },
-        effortStatus: { kind: "exact", reason: "reasoning_disabled" },
-        budgetStatus: { kind: "exact", reason: "reasoning_disabled" },
         catalog,
       },
       {
@@ -140,12 +115,6 @@ function modelPolicy(revision: number, monthlyBudgetUsd: string): AdminModelPoli
         enabled: true,
         available: true,
         maximumOutputTokens: 8192,
-        reasoningEffort: "off",
-        reasoningBudgetTokens: 0,
-        temperaturePreset: "balanced",
-        temperatureStatus: { kind: "exact", reason: "supported" },
-        effortStatus: { kind: "exact", reason: "reasoning_disabled" },
-        budgetStatus: { kind: "exact", reason: "reasoning_disabled" },
         catalog,
       },
       {
@@ -154,48 +123,9 @@ function modelPolicy(revision: number, monthlyBudgetUsd: string): AdminModelPoli
         enabled: true,
         available: true,
         maximumOutputTokens: 16_384,
-        reasoningEffort: "high",
-        reasoningBudgetTokens: 8192,
-        temperaturePreset: "balanced",
-        temperatureStatus: { kind: "exact", reason: "supported" },
-        effortStatus: { kind: "translated", reason: "max_tokens_precision_unverified" },
-        budgetStatus: { kind: "translated", reason: "max_tokens_precision_unverified" },
         catalog,
       },
     ],
-  };
-}
-
-function assistantRules(
-  revision: number,
-  workspaceText: string,
-  changeKind: AdminAssistantRulesResponse["changeKind"] = "save",
-): AdminAssistantRulesResponse {
-  const utf8Bytes = new TextEncoder().encode(workspaceText).length;
-  return {
-    revision,
-    baseVersion: "capstone-chat-base-v2",
-    baseText: "REGLAS BASE OBLIGATORIAS",
-    workspaceText,
-    effectivePrompt: `CONTEXTO EDITABLE\n\n${workspaceText || "Sin reglas adicionales."}\n\nREGLAS BASE OBLIGATORIAS`,
-    actor: { kind: "user", userId: "employee-admin", displayName: "Ana Pérez" },
-    changeKind,
-    revertedFromRevision: null,
-    updatedAt: "2026-08-17T12:00:00.000Z",
-    limits: { maximumCodePoints: 3_200, maximumUtf8Bytes: 12_800 },
-    disclosure: {
-      visibleToActiveMembers: true,
-      sentToConfiguredZdrProvider: true,
-      retainedInImmutableHistory: true,
-    },
-    estimate: {
-      counts: {
-        codePoints: [...workspaceText].length,
-        utf8Bytes,
-        approximateInputTokens: Math.ceil(utf8Bytes / 4),
-      },
-      balancedMaximumResponseCostPercent: "0.25",
-    },
   };
 }
 
@@ -288,196 +218,6 @@ describe("administration pages", () => {
     await waitFor(() => expect(deactivateButton).toHaveFocus());
   });
 
-  it("debounces and aborts assistant previews while preserving a stale local draft", async () => {
-    let currentReads = 0;
-    const previewSignals: AbortSignal[] = [];
-    const writes: Array<{ observedRevision: number; workspaceText: string }> = [];
-    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-      const url = typeof input === "string" ? input : input.toString();
-      const method = init?.method ?? "GET";
-      if (url === "/api/admin/assistant-rules" && method === "GET") {
-        currentReads += 1;
-        return json(
-          currentReads === 1
-            ? assistantRules(1, "Regla inicial", "bootstrap")
-            : assistantRules(2, "Cambio remoto"),
-        );
-      }
-      if (url === "/api/admin/assistant-rules/revisions" && method === "GET") {
-        return json({
-          items: [
-            {
-              revision: 1,
-              workspaceText: "Regla inicial",
-              actor: { kind: "system", label: "Sistema" },
-              changeKind: "bootstrap",
-              revertedFromRevision: null,
-              createdAt: "2026-08-17T12:00:00.000Z",
-            },
-          ],
-          nextCursor: null,
-        });
-      }
-      if (url === "/api/admin/assistant-rules/preview" && method === "POST") {
-        const body = JSON.parse(String(init?.body)) as { workspaceText: string };
-        if (init?.signal) {
-          previewSignals.push(init.signal);
-        }
-        if (body.workspaceText === "Primera") {
-          return new Promise<Response>(() => undefined);
-        }
-        const response = assistantRules(1, body.workspaceText);
-        return json({
-          normalizedWorkspaceText: response.workspaceText,
-          effectivePrompt: response.effectivePrompt,
-          estimate: response.estimate,
-        });
-      }
-      if (url === "/api/admin/assistant-rules" && method === "PUT") {
-        const body = JSON.parse(String(init?.body)) as {
-          observedRevision: number;
-          workspaceText: string;
-        };
-        writes.push(body);
-        if (writes.length === 1) {
-          return json(
-            {
-              code: "ASSISTANT_RULES_CHANGED",
-              message: "Changed",
-              requestId: "assistant-stale",
-            },
-            409,
-          );
-        }
-        return json(assistantRules(3, body.workspaceText));
-      }
-      throw new Error(`Unexpected request: ${method} ${url}`);
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    const { user } = renderAdministration("/admin/assistant");
-
-    const editor = await screen.findByRole("textbox", {
-      name: copy.administration.assistant.label,
-    });
-    const saveButton = screen.getByRole("button", { name: copy.administration.common.save });
-    await waitFor(() => expect(saveButton).toBeDisabled());
-
-    await user.clear(editor);
-    await user.type(editor, "Primera");
-    await waitFor(() => expect(previewSignals.some((signal) => !signal.aborted)).toBe(true), {
-      timeout: 1_000,
-    });
-    const supersededSignal = previewSignals.at(-1);
-    await user.clear(editor);
-    await user.type(editor, "Segunda");
-    expect(supersededSignal?.aborted).toBe(true);
-    await waitFor(() => expect(saveButton).toBeEnabled(), { timeout: 1_000 });
-
-    await user.click(saveButton);
-    expect(await screen.findByText(copy.administration.assistant.stale)).toBeVisible();
-    await waitFor(() => expect(currentReads).toBe(2));
-    expect(editor).toHaveValue("Segunda");
-
-    await waitFor(() => expect(saveButton).toBeEnabled(), { timeout: 1_000 });
-    await user.click(saveButton);
-    await waitFor(() => expect(writes).toHaveLength(2));
-    expect(writes).toEqual([
-      { observedRevision: 1, workspaceText: "Segunda" },
-      { observedRevision: 2, workspaceText: "Segunda" },
-    ]);
-    expect(await screen.findByText(copy.administration.assistant.saved)).toBeVisible();
-  });
-
-  it("confirms assistant reset and appends a history revert with the latest revision", async () => {
-    const resetBodies: unknown[] = [];
-    const revertBodies: unknown[] = [];
-    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-      const url = typeof input === "string" ? input : input.toString();
-      const method = init?.method ?? "GET";
-      if (url === "/api/admin/assistant-rules" && method === "GET") {
-        return json(assistantRules(3, "Regla actual"));
-      }
-      if (url === "/api/admin/assistant-rules/revisions" && method === "GET") {
-        return json({
-          items: [
-            {
-              revision: 3,
-              workspaceText: "Regla actual",
-              actor: { kind: "user", userId: "employee-admin", displayName: "Ana Pérez" },
-              changeKind: "save",
-              revertedFromRevision: null,
-              createdAt: "2026-08-17T12:03:00.000Z",
-            },
-            {
-              revision: 1,
-              workspaceText: "Regla histórica",
-              actor: { kind: "system", label: "Sistema" },
-              changeKind: "bootstrap",
-              revertedFromRevision: null,
-              createdAt: "2026-08-17T12:00:00.000Z",
-            },
-          ],
-          nextCursor: null,
-        });
-      }
-      if (url === "/api/admin/assistant-rules/preview" && method === "POST") {
-        const body = JSON.parse(String(init?.body)) as { workspaceText: string };
-        const response = assistantRules(3, body.workspaceText);
-        return json({
-          normalizedWorkspaceText: response.workspaceText,
-          effectivePrompt: response.effectivePrompt,
-          estimate: response.estimate,
-        });
-      }
-      if (url === "/api/admin/assistant-rules/reset" && method === "POST") {
-        resetBodies.push(JSON.parse(String(init?.body)));
-        return json(assistantRules(4, copy.administration.assistant.resetTarget, "reset"));
-      }
-      if (url === "/api/admin/assistant-rules/revisions/1/revert" && method === "POST") {
-        revertBodies.push(JSON.parse(String(init?.body)));
-        return json({
-          ...assistantRules(5, "Regla histórica", "revert"),
-          revertedFromRevision: 1,
-        });
-      }
-      throw new Error(`Unexpected request: ${method} ${url}`);
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    const { user } = renderAdministration("/admin/assistant");
-
-    const resetButton = await screen.findByRole("button", {
-      name: copy.administration.assistant.reset,
-    });
-    await user.click(resetButton);
-    const resetDialog = screen.getByRole("dialog", {
-      name: copy.administration.assistant.resetTitle,
-    });
-    expect(resetDialog).toHaveTextContent(copy.administration.assistant.resetTarget);
-    await user.click(
-      within(resetDialog).getByRole("button", {
-        name: copy.administration.assistant.confirmReset,
-      }),
-    );
-    await waitFor(() => expect(resetBodies).toEqual([{ observedRevision: 3 }]));
-    expect(await screen.findByText(copy.administration.assistant.resetSuccess)).toBeVisible();
-
-    const revertButton = await screen.findByRole("button", {
-      name: `${copy.administration.common.revert}: ${copy.administration.assistant.revision(1)}`,
-    });
-    await user.click(revertButton);
-    const revertDialog = screen.getByRole("dialog", {
-      name: copy.administration.assistant.revertTitle,
-    });
-    expect(revertDialog).toHaveTextContent("Regla histórica");
-    await user.click(
-      within(revertDialog).getByRole("button", {
-        name: copy.administration.common.revert,
-      }),
-    );
-    await waitFor(() => expect(revertBodies).toEqual([{ observedRevision: 4 }]));
-    expect(await screen.findByText(copy.administration.assistant.reverted)).toBeVisible();
-  });
-
   it("preserves local policy edits across a stale revision and retries with the refreshed revision", async () => {
     let policyReads = 0;
     const writes: Array<Record<string, unknown>> = [];
@@ -494,7 +234,6 @@ describe("administration pages", () => {
               available: true,
               contextLength: 131_072,
               maximumOutputTokens: 16_384,
-              capability,
               validatedAt: "2026-08-08T12:00:00.000Z",
             },
           ],
@@ -504,9 +243,6 @@ describe("administration pages", () => {
       if (url === "/api/admin/model-policy" && method === "GET") {
         policyReads += 1;
         return json(modelPolicy(policyReads === 1 ? 1 : 2, policyReads === 1 ? "100" : "110"));
-      }
-      if (url === "/api/admin/model-policy/revisions" && method === "GET") {
-        return json({ items: [modelPolicy(1, "100")], nextCursor: null });
       }
       if (url === "/api/admin/model-policy" && method === "PUT") {
         const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
@@ -531,7 +267,7 @@ describe("administration pages", () => {
     const budget = await screen.findByRole("textbox", {
       name: copy.administration.models.monthlyBudget,
     });
-    expect(screen.getAllByText("capstone/approved-model")[0]).toBeVisible();
+    expect(screen.getByText("capstone/approved-model")).toBeVisible();
     expect(screen.getByText("131.072")).toBeVisible();
     await user.clear(budget);
     await user.type(budget, "125");
@@ -544,93 +280,7 @@ describe("administration pages", () => {
     await user.click(screen.getByRole("button", { name: copy.administration.common.save }));
     await waitFor(() => expect(writes).toHaveLength(2));
     expect(writes.map((write) => write.observedRevision)).toEqual([1, 2]);
-    expect(writes[1]?.tiers).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          tier: "pro",
-          reasoningEffort: "high",
-          reasoningBudgetTokens: 8192,
-          temperaturePreset: "balanced",
-        }),
-      ]),
-    );
     expect(await screen.findByText(copy.administration.models.saved)).toBeVisible();
-  });
-
-  it("renders complete model controls and reverts a historical policy atomically", async () => {
-    const revertBodies: unknown[] = [];
-    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-      const url = typeof input === "string" ? input : input.toString();
-      const method = init?.method ?? "GET";
-      if (url === "/api/admin/model-catalog" && method === "GET") {
-        return json({
-          items: [
-            {
-              catalogId,
-              modelId: "capstone/approved-model",
-              displayName: "Modelo aprobado",
-              available: true,
-              contextLength: 131_072,
-              maximumOutputTokens: 16_384,
-              capability,
-              validatedAt: "2026-08-08T12:00:00.000Z",
-            },
-          ],
-          nextCursor: null,
-        });
-      }
-      if (url === "/api/admin/model-policy" && method === "GET") {
-        return json(modelPolicy(2, "100"));
-      }
-      if (url === "/api/admin/model-policy/revisions" && method === "GET") {
-        return json({ items: [modelPolicy(1, "90")], nextCursor: null });
-      }
-      if (url === "/api/admin/model-policy/revisions/1/revert" && method === "POST") {
-        revertBodies.push(JSON.parse(String(init?.body)));
-        return json({
-          ...modelPolicy(3, "90"),
-          changeKind: "revert",
-          revertedFromRevision: 1,
-        });
-      }
-      throw new Error(`Unexpected request: ${method} ${url}`);
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    const { user } = renderAdministration("/admin/models");
-
-    expect(
-      await screen.findByRole("combobox", {
-        name: `${copy.administration.models.effort}: Pro`,
-      }),
-    ).toHaveValue("high");
-    expect(
-      screen.getByRole("combobox", {
-        name: `${copy.administration.models.reasoningBudget}: Pro`,
-      }),
-    ).toHaveValue("8192");
-    expect(
-      screen.getByRole("combobox", {
-        name: `${copy.administration.models.temperature}: Fast`,
-      }),
-    ).toHaveValue("precise");
-    expect(
-      screen.getAllByText(copy.administration.models.statusKinds.translated).length,
-    ).toBeGreaterThan(0);
-
-    await user.click(
-      await screen.findByRole("button", {
-        name: `${copy.administration.common.revert}: ${copy.administration.models.revision(1)}`,
-      }),
-    );
-    const dialog = screen.getByRole("dialog", {
-      name: copy.administration.models.revertTitle,
-    });
-    expect(dialog).toHaveTextContent(copy.administration.models.monthlyBudget);
-    await user.click(
-      within(dialog).getByRole("button", { name: copy.administration.common.revert }),
-    );
-    await waitFor(() => expect(revertBodies).toEqual([{ observedRevision: 2 }]));
-    expect(await screen.findByText(copy.administration.models.reverted)).toBeVisible();
   });
 
   it("renders exact decimal and large token strings without linking to employee content", async () => {

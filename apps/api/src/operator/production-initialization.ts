@@ -1,4 +1,3 @@
-import { bootstrapAssistantRulesInTransaction } from "../assistant-rules/service.js";
 import type { AppDatabase } from "../database/database.js";
 import { createDatabase } from "../database/database.js";
 import { migrateDatabase } from "../database/migrate.js";
@@ -89,50 +88,65 @@ async function initializeWithCatalog(
   await dependencies.migrate(input.migrationDatabaseUrl);
   dependencies.afterCheckpoint("migrations-complete");
 
-  const claimed = await useDatabase(dependencies, input.applicationDatabaseUrl, async (database) =>
-    createProductionInitializationLatch(database).claim(input.document.documentSha256),
-  );
-  if (claimed.phase === "complete") {
-    return Object.freeze({ outcome: "already-complete", phase: "complete" });
-  }
+  let phase = await useDatabase(dependencies, input.applicationDatabaseUrl, async (database) => {
+    const latch = createProductionInitializationLatch(database);
+    return (await latch.claim(input.document.documentSha256)).phase;
+  });
   dependencies.afterCheckpoint("latch-claimed");
 
-  // Catalog and privacy validation complete before the coherent application-state transaction.
+  if (phase === "complete") {
+    return Object.freeze({ outcome: "already-complete", phase: "complete" });
+  }
+
+  if (phase === "claimed") {
+    phase = await useDatabase(dependencies, input.applicationDatabaseUrl, async (database) => {
+      await createIdentityService(database).bootstrap({
+        adminEmail: input.document.administratorEmail,
+        displayName: input.document.workspaceDisplayName,
+        workspaceIdentity: input.document.workspaceIdentity,
+      });
+      return (
+        await createProductionInitializationLatch(database).markIdentityComplete(
+          input.document.documentSha256,
+        )
+      ).phase;
+    });
+  }
+  if (phase !== "identity-complete") {
+    throw new Error("Production identity initialization is incomplete");
+  }
+  dependencies.afterCheckpoint("identity-complete");
+
+  // Every database pool is fully closed before this provider network request begins.
   const catalog = await loadCatalog();
   dependencies.afterCheckpoint("catalog-loaded");
 
-  const outcome = await useDatabase(
-    dependencies,
-    input.applicationDatabaseUrl,
-    async (database) => {
-      const latch = createProductionInitializationLatch(database);
-      const identity = createIdentityService(database);
-      const modelPolicy = createModelPolicyService(database);
-      await latch.completeWith(input.document.documentSha256, async (transaction) => {
-        const workspace = await identity.bootstrapInTransaction(transaction, {
-          adminEmail: input.document.administratorEmail,
-          displayName: input.document.workspaceDisplayName,
-          workspaceIdentity: input.document.workspaceIdentity,
-        });
-        dependencies.afterCheckpoint("identity-complete");
-        await bootstrapAssistantRulesInTransaction(transaction, workspace.workspaceId, new Date());
-        await modelPolicy.bootstrapInTransaction(transaction, {
-          catalog,
-          employeeActiveGenerationLimit: input.document.employeeActiveGenerationLimit,
-          maximumOutputTokens: input.document.maximumOutputTokens,
-          mode: "openrouter",
-          monthlyBudgetUsd: input.document.monthlyBudgetUsd,
-          privacyAttestation: input.document.privacyAttestation,
-          reservationMarginBasisPoints: input.document.reservationMarginBasisPoints,
-          workspaceIdentity: input.document.workspaceIdentity,
-        });
-        dependencies.afterCheckpoint("policy-complete");
+  await useDatabase(dependencies, input.applicationDatabaseUrl, async (database) => {
+    const latch = createProductionInitializationLatch(database);
+    const state = await latch.claim(input.document.documentSha256);
+    if (state.phase === "complete") {
+      return;
+    }
+    if (state.phase !== "identity-complete") {
+      throw new Error("Production identity initialization is incomplete");
+    }
+    const modelPolicy = createModelPolicyService(database);
+    await latch.completeWith(input.document.documentSha256, async (transaction) => {
+      await modelPolicy.bootstrapInTransaction(transaction, {
+        catalog,
+        employeeActiveGenerationLimit: input.document.employeeActiveGenerationLimit,
+        maximumOutputTokens: input.document.maximumOutputTokens,
+        mode: "openrouter",
+        monthlyBudgetUsd: input.document.monthlyBudgetUsd,
+        privacyAttestation: input.document.privacyAttestation,
+        reservationMarginBasisPoints: input.document.reservationMarginBasisPoints,
+        workspaceIdentity: input.document.workspaceIdentity,
       });
-      return "completed" as const;
-    },
-  );
+      dependencies.afterCheckpoint("policy-complete");
+    });
+  });
 
-  return Object.freeze({ outcome, phase: "complete" });
+  return Object.freeze({ outcome: "completed", phase: "complete" });
 }
 
 export async function initializeProduction(

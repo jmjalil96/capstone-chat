@@ -19,7 +19,6 @@ import type { CostControlMaintenance } from "../src/model-policy/maintenance.js"
 import type { ApplicationTelemetry } from "../src/observability/telemetry-contract.js";
 import { httpServerTuning } from "../src/security/http.js";
 import { applicationShutdownBudget } from "../src/shutdown-budget.js";
-import { testEffectiveParameters } from "./support/generation.js";
 
 const completingResponse: StartedResponse = {
   admittedAt: new Date(),
@@ -27,7 +26,6 @@ const completingResponse: StartedResponse = {
   generationId: "00000000-0000-4000-8000-000000000012",
   messageId: "00000000-0000-4000-8000-000000000013",
   request: {
-    effectiveParameters: testEffectiveParameters(),
     history: [],
     message: { role: "user", text: "complete-during-drain" },
     modelTier: "balanced",
@@ -44,7 +42,6 @@ const stalledResponse: StartedResponse = {
   generationId: "00000000-0000-4000-8000-000000000022",
   messageId: "00000000-0000-4000-8000-000000000023",
   request: {
-    effectiveParameters: testEffectiveParameters(),
     history: [],
     message: { role: "user", text: "stall-until-shutdown" },
     modelTier: "balanced",

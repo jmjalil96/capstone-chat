@@ -34,11 +34,6 @@ const EmployeesPage = lazy(() =>
     default: Component,
   })),
 );
-const AssistantPage = lazy(() =>
-  import("./administration/assistant-page").then(({ AssistantPage: Component }) => ({
-    default: Component,
-  })),
-);
 const ModelsPage = lazy(() =>
   import("./administration/models-page").then(({ ModelsPage: Component }) => ({
     default: Component,
@@ -51,11 +46,6 @@ const ReportsPage = lazy(() =>
 );
 const UsagePage = lazy(() =>
   import("./administration/usage-page").then(({ UsagePage: Component }) => ({
-    default: Component,
-  })),
-);
-const AssistantRulesPage = lazy(() =>
-  import("./identity/assistant-rules-page").then(({ AssistantRulesPage: Component }) => ({
     default: Component,
   })),
 );
@@ -96,14 +86,6 @@ export const appRoutes = [
             ],
           },
           {
-            path: "/account/assistant-rules",
-            element: (
-              <IdentityFrame>
-                <AssistantRulesPage />
-              </IdentityFrame>
-            ),
-          },
-          {
             path: "/account/security",
             element: (
               <IdentityFrame>
@@ -120,7 +102,6 @@ export const appRoutes = [
                 children: [
                   { index: true, element: <Navigate to="/admin/employees" replace /> },
                   { path: "employees", Component: EmployeesPage },
-                  { path: "assistant", Component: AssistantPage },
                   { path: "models", Component: ModelsPage },
                   { path: "usage", Component: UsagePage },
                   { path: "reports", Component: ReportsPage },

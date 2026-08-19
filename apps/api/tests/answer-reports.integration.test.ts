@@ -28,7 +28,6 @@ import type { RequestActor } from "../src/identity/authorization.js";
 import type { IdentityService } from "../src/identity/service.js";
 import { createModelPolicyService } from "../src/model-policy/service.js";
 import { bootstrapSimulatedModelPolicy } from "./support/model-policy.js";
-import { bootstrapTestAssistantRules } from "./support/workspace-behavior.js";
 
 function createActor(userId: string, workspaceId: string, name: string): RequestActor {
   return {
@@ -131,7 +130,6 @@ describe.sequential("answer reports", () => {
       { role: "member", userId, workspaceId },
       { role: "member", userId: strangerId, workspaceId },
     ]);
-    await bootstrapTestAssistantRules(database, workspaceId);
     await bootstrapSimulatedModelPolicy(createModelPolicyService(database), workspaceIdentity);
     actor = createActor(userId, workspaceId, "Ana Pérez");
     stranger = createActor(strangerId, workspaceId, "Otro");

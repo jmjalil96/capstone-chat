@@ -3,7 +3,6 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testconta
 import { and, eq } from "drizzle-orm";
 import { Pool } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { bootstrapAssistantRulesInTransaction } from "../src/assistant-rules/service.js";
 import { createCursorCodec } from "../src/conversations/cursor.js";
 import {
   type ConversationService,
@@ -17,7 +16,6 @@ import { workspaceMemberships, workspaces } from "../src/database/identity-schem
 import { migrateDatabase } from "../src/database/migrate.js";
 import { createGenerationAdministrationService } from "../src/generations/administration.js";
 import { FakeModelGateway } from "../src/generations/fake-model-gateway.js";
-import type { TitleGenerationRequest } from "../src/generations/model-gateway.js";
 import { createGenerationService, type GenerationService } from "../src/generations/service.js";
 import {
   buildTitleRequest,
@@ -34,7 +32,6 @@ import {
   WorkspaceBudgetExceededError,
 } from "../src/model-policy/budget-service.js";
 import { createModelPolicyService } from "../src/model-policy/service.js";
-import { testCatalogCapability, testEffectiveParameters } from "./support/generation.js";
 import { bootstrapSimulatedModelPolicy } from "./support/model-policy.js";
 
 async function waitForCondition(
@@ -63,13 +60,6 @@ function createActor(sessionId: string, userId: string, workspaceId: string): Re
   };
 }
 
-function testTitleRequest(prompt: string, answer: string): TitleGenerationRequest {
-  return {
-    ...buildTitleRequest(prompt, answer),
-    effectiveParameters: testEffectiveParameters("title", "fast"),
-  };
-}
-
 describe("title normalization", () => {
   it("normalizes model output into a bounded one-line title", () => {
     expect(normalizeGeneratedTitle('  "Plan  de\nlanzamiento."  ')).toBe("Plan de lanzamiento");
@@ -87,7 +77,7 @@ describe("title normalization", () => {
 
   it("builds UTF-8-safe excerpts and the fixed title request", () => {
     expect(leadingExcerpt("ññññ", 5)).toBe("ññ");
-    const request = testTitleRequest("¿Prima?", "La prima es…");
+    const request = buildTitleRequest("¿Prima?", "La prima es…");
     expect(request).toMatchObject({
       history: [
         { role: "user", text: "¿Prima?" },
@@ -100,7 +90,7 @@ describe("title normalization", () => {
   });
 
   it("runs the fake title call and rejects unusable outcomes", async () => {
-    const request = testTitleRequest("p", "a");
+    const request = { ...buildTitleRequest("p", "a") };
     await expect(
       runTitleGeneration(new FakeModelGateway(), request, new AbortController().signal),
     ).resolves.toMatchObject({ kind: "titled", title: "Conversación simulada" });
@@ -245,7 +235,7 @@ describe("title normalization", () => {
           },
         ],
       }),
-      testTitleRequest("p", "a"),
+      { ...buildTitleRequest("p", "a") },
       new AbortController().signal,
       undefined,
       undefined,
@@ -321,9 +311,6 @@ describe.sequential("automatic title lifecycle", () => {
       userId,
     });
     await database.insert(workspaceMemberships).values({ role: "member", userId, workspaceId });
-    await database.transaction((transaction) =>
-      bootstrapAssistantRulesInTransaction(transaction, workspaceId, new Date()),
-    );
     await bootstrapSimulatedModelPolicy(createModelPolicyService(database), workspaceIdentity);
     actor = createActor(sessionId, userId, workspaceId);
     conversationsService = createConversationService(
@@ -594,20 +581,15 @@ describe.sequential("automatic title lifecycle", () => {
           workspaceId: actor.workspace.id,
         },
         {
-          capability: testCatalogCapability,
           completionPriceCeilingPerToken: "0.001",
           contextLength: 1_000,
           employeeActiveGenerationLimit: 2,
           maximumOutputTokens: 32,
           monthlyBudgetUsd: "0",
-          policyRevision: 1,
           promptPriceCeilingPerToken: "0.001",
           requestPriceCeilingUsd: "0",
           reservationMarginBasisPoints: 0,
-          reasoningBudgetTokens: 1_024,
-          reasoningEffort: "high",
           resolvedModel: "fixture/title-model",
-          temperaturePreset: "balanced",
           tier: "fast",
         },
         1n,

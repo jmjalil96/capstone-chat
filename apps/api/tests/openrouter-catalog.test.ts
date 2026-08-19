@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   OpenRouterCatalogClient,
-  OpenRouterCatalogUnavailableError,
   validateOpenRouterCatalogModel,
 } from "../src/openrouter/catalog-client.js";
 import type { OpenRouterFetch } from "../src/openrouter/openrouter-gateway.js";
@@ -18,14 +17,7 @@ function modelPayload(overrides: Record<string, unknown> = {}, modelId = exactMo
       context_length: 16_384,
       id: modelId,
       name: "Synthetic Model",
-      reasoning: {
-        default_effort: "medium",
-        default_enabled: true,
-        mandatory: false,
-        supported_efforts: ["low", "medium", "high"],
-        supports_max_tokens: true,
-      },
-      supported_parameters: ["max_tokens", "reasoning", "reasoning_effort", "temperature"],
+      supported_parameters: ["max_tokens", "reasoning", "temperature"],
       top_provider: { context_length: 16_000, max_completion_tokens: 4096 },
       ...overrides,
     },
@@ -57,7 +49,7 @@ function endpoint(overrides: Record<string, unknown> = {}): Record<string, unkno
       request: "0",
     },
     status: 0,
-    supported_parameters: ["max_tokens", "reasoning", "reasoning_effort", "temperature"],
+    supported_parameters: ["max_tokens", "reasoning", "temperature"],
     ...overrides,
   };
 }
@@ -133,19 +125,6 @@ describe("OpenRouter catalog validation", () => {
     expect(snapshot).toEqual({
       available: true,
       canonicalSlug: "example/model-v1-20260808",
-      capability: {
-        reasoning: {
-          contractSource: "openrouter-reasoning-docs-2026-08-17",
-          defaultEffort: "medium",
-          defaultEnabled: true,
-          effortSupport: { kind: "listed", values: ["low", "medium", "high"] },
-          exclusionVerifiedAt: validatedAt,
-          kind: "optional",
-          maxTokensAccepted: true,
-          traceSafety: "provider_excluded",
-        },
-        temperatureSupported: true,
-      },
       completionPricePerToken: "0.000006",
       contextLength: 10_000,
       displayName: "Synthetic Model",
@@ -156,7 +135,7 @@ describe("OpenRouter catalog validation", () => {
       outputModalities: ["text"],
       promptPricePerToken: "0.000006",
       requestPriceUsd: "0.01",
-      supportedParameters: ["max_tokens", "reasoning", "reasoning_effort", "temperature"],
+      supportedParameters: ["max_tokens", "reasoning"],
       validatedAt,
     });
     expect(Object.isFrozen(snapshot)).toBe(true);
@@ -164,6 +143,7 @@ describe("OpenRouter catalog validation", () => {
 
   it.each([
     ["unhealthy endpoint", { status: 1 }, {}],
+    ["missing reasoning support", { supported_parameters: ["max_tokens"] }, {}],
     ["nonzero image charge", { pricing: { ...endpointPricing(), image: "0.1" } }, {}],
     ["unknown charge dimension", { pricing: { ...endpointPricing(), future_charge: "0.1" } }, {}],
     ["conditional pricing", { pricing: { ...endpointPricing(), prompt: { if: "condition" } } }, {}],
@@ -172,6 +152,7 @@ describe("OpenRouter catalog validation", () => {
       {},
       { architecture: { input_modalities: ["image"], output_modalities: ["text"] } },
     ],
+    ["model without reasoning", {}, { supported_parameters: ["max_tokens"] }],
   ])("fails closed for %s", (_name, endpointOverrides, modelOverrides) => {
     expect(
       validateOpenRouterCatalogModel(
@@ -182,88 +163,6 @@ describe("OpenRouter catalog validation", () => {
         validatedAt,
       ),
     ).toBeNull();
-  });
-
-  it("intersects optional capability support across every otherwise eligible endpoint", () => {
-    const snapshot = validateOpenRouterCatalogModel(
-      exactModelId,
-      {
-        data: [
-          endpoint(),
-          endpoint({
-            supported_parameters: ["max_tokens", "reasoning"],
-          }),
-        ],
-      },
-      modelPayload(),
-      2048,
-      validatedAt,
-    );
-
-    expect(snapshot).toMatchObject({
-      available: true,
-      capability: {
-        reasoning: {
-          effortSupport: { kind: "none" },
-          kind: "optional",
-          maxTokensAccepted: true,
-          traceSafety: "provider_excluded",
-        },
-        temperatureSupported: false,
-      },
-      supportedParameters: ["max_tokens", "reasoning"],
-    });
-  });
-
-  it("marks inconsistent reasoning metadata unavailable while preserving sanitized diagnostics", () => {
-    const snapshot = validateOpenRouterCatalogModel(
-      exactModelId,
-      {
-        data: [endpoint({ supported_parameters: ["max_tokens", "temperature"] })],
-      },
-      modelPayload(),
-      2048,
-      validatedAt,
-    );
-
-    expect(snapshot).toMatchObject({
-      available: false,
-      capability: {
-        reasoning: {
-          effortSupport: { kind: "none" },
-          kind: "unverified",
-          maxTokensAccepted: false,
-          traceSafety: "unverified",
-        },
-        temperatureSupported: true,
-      },
-    });
-  });
-
-  it("normalizes an explicitly non-reasoning model without requiring reasoning parameters", () => {
-    const snapshot = validateOpenRouterCatalogModel(
-      exactModelId,
-      { data: [endpoint({ supported_parameters: ["max_tokens"] })] },
-      modelPayload({
-        reasoning: undefined,
-        supported_parameters: ["max_tokens"],
-      }),
-      2048,
-      validatedAt,
-    );
-
-    expect(snapshot).toMatchObject({
-      available: true,
-      capability: {
-        reasoning: {
-          effortSupport: { kind: "none" },
-          kind: "none",
-          maxTokensAccepted: false,
-          traceSafety: "non_reasoning",
-        },
-        temperatureSupported: false,
-      },
-    });
   });
 
   it("allows a bounded zero unsupported charge and ignores malformed endpoint entries", () => {
@@ -346,6 +245,7 @@ describe("OpenRouter catalog validation", () => {
       endpoint({ max_completion_tokens: 3072 }),
       endpoint({ max_completion_tokens: null }),
       endpoint({ max_completion_tokens: 1024, status: 1 }),
+      endpoint({ max_completion_tokens: 512, supported_parameters: ["max_tokens"] }),
       endpoint({
         max_completion_tokens: 256,
         pricing: { ...endpointPricing(), future_surcharge: "0.1" },
@@ -553,7 +453,7 @@ describe("OpenRouter catalog validation", () => {
     expect(calls.filter((url) => url.endsWith("/example/model-v1"))).toHaveLength(1);
   });
 
-  it("fails the batch when a successful exact-model response is malformed", async () => {
+  it("omits exact metadata that a successful response confirms is invalid", async () => {
     const transport: OpenRouterFetch = async (input) => {
       const url = String(input);
       return new Response(
@@ -572,37 +472,7 @@ describe("OpenRouter catalog validation", () => {
 
     await expect(
       client.loadSnapshots([exactModelId], new AbortController().signal),
-    ).rejects.toBeInstanceOf(OpenRouterCatalogUnavailableError);
-  });
-
-  it("fails the batch instead of disabling a model on malformed reasoning metadata", async () => {
-    const transport: OpenRouterFetch = async (input) => {
-      const url = String(input);
-      return new Response(
-        JSON.stringify(
-          url.endsWith("/endpoints/zdr")
-            ? { data: [endpoint()] }
-            : modelPayload({
-                reasoning: {
-                  default_effort: "medium\nunsafe",
-                  default_enabled: true,
-                  mandatory: false,
-                  supported_efforts: ["low", "medium", "high"],
-                  supports_max_tokens: true,
-                },
-              }),
-        ),
-        { headers: { "content-type": "application/json" }, status: 200 },
-      );
-    };
-    const client = new OpenRouterCatalogClient({
-      apiKey: "test-key-never-sent",
-      fetch: transport,
-    });
-
-    await expect(
-      client.loadSnapshots([exactModelId], new AbortController().signal),
-    ).rejects.toBeInstanceOf(OpenRouterCatalogUnavailableError);
+    ).resolves.toEqual([]);
   });
 
   it("fails the whole batch on transport availability so the last good catalog survives", async () => {

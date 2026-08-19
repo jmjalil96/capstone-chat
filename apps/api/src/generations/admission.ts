@@ -1,6 +1,4 @@
 import { and, eq, gt, type SQL, sql } from "drizzle-orm";
-import { AssistantRulesConflictError } from "../assistant-rules/errors.js";
-import { createSystemPromptSnapshot } from "../assistant-rules/prompt.js";
 import { session as authenticationSessions } from "../database/auth-schema.generated.js";
 import { type AppTransaction, executePrepared } from "../database/database.js";
 import {
@@ -101,8 +99,6 @@ interface DraftGenerationAdmissionRow
     NullableBudgetAdmissionStateRow,
     NullableGenerationPolicyRow {
   readonly admissionEligible: boolean;
-  readonly workspacePromptRevision: number | null;
-  readonly workspaceText: string | null;
 }
 
 function conversationAdmissionCtes(input: ConversationAdmissionInput): SQL {
@@ -224,8 +220,8 @@ export async function lockDraftGenerationAdmission(
   const result = await executePrepared<DraftGenerationAdmissionRow>(
     transaction,
     requestedTiers.length === 1
-      ? "generation-draft-admission-single-tier-v2"
-      : "generation-draft-admission-with-fast-v2",
+      ? "generation-draft-admission-single-tier-v1"
+      : "generation-draft-admission-with-fast-v1",
     sql`
     WITH ${conversationAdmissionCtes({ ...input, lockDraft: true })},
     lock_barrier AS MATERIALIZED (
@@ -267,19 +263,6 @@ export async function lockDraftGenerationAdmission(
           lockRows: true,
         })}
       ) AS policy_rows
-    ),
-    prompt_snapshot AS MATERIALIZED (
-      SELECT
-        prompt_head.revision AS "workspacePromptRevision",
-        prompt_revision.workspace_text AS "workspaceText"
-      FROM workspace_assistant_prompts AS prompt_head
-      INNER JOIN workspace_assistant_prompt_revisions AS prompt_revision
-        ON prompt_revision.workspace_id = prompt_head.workspace_id
-        AND prompt_revision.revision = prompt_head.revision
-      WHERE prompt_head.workspace_id = ${input.workspaceId}::uuid
-        AND EXISTS (SELECT 1 FROM admission_state)
-        AND EXISTS (SELECT 1 FROM resolved_tiers)
-      FOR SHARE OF prompt_head, prompt_revision
     )
     SELECT
       lock_barrier."idempotencyFound",
@@ -310,29 +293,14 @@ export async function lockDraftGenerationAdmission(
       resolved_tiers."maximumOutputTokens",
       resolved_tiers."metadataSource",
       resolved_tiers."monthlyBudgetUsd",
-      resolved_tiers."policyRevision",
       resolved_tiers."promptPricePerToken",
-      resolved_tiers."reasoningBudgetTokens",
-      resolved_tiers."reasoningDefaultEffort",
-      resolved_tiers."reasoningDefaultEnabled",
-      resolved_tiers."reasoningEffort",
-      resolved_tiers."reasoningEffortSupportKind",
-      resolved_tiers."reasoningEfforts",
-      resolved_tiers."reasoningMaxTokensAccepted",
-      resolved_tiers."reasoningMode",
-      resolved_tiers."reasoningTraceSafety",
       resolved_tiers."requestPriceUsd",
       resolved_tiers."reservationMarginBasisPoints",
       resolved_tiers."resolvedModel",
-      resolved_tiers."temperaturePreset",
-      resolved_tiers."temperatureSupported",
-      resolved_tiers.tier,
-      prompt_snapshot."workspacePromptRevision",
-      prompt_snapshot."workspaceText"
+      resolved_tiers.tier
     FROM lock_barrier
     LEFT JOIN admission_state ON true
     LEFT JOIN resolved_tiers ON true
-    LEFT JOIN prompt_snapshot ON true
     `,
   );
   const first = result.rows[0];
@@ -358,19 +326,7 @@ export async function lockDraftGenerationAdmission(
             };
       const admission = budgetAdmissionFromState(state, input.workspaceId, input.userId);
       const policies = modelPolicy.resolveGenerationPolicyRows(policyRows, input.tier, input.mode);
-      if (
-        first.workspacePromptRevision === null ||
-        !Number.isSafeInteger(first.workspacePromptRevision) ||
-        first.workspacePromptRevision <= 0 ||
-        first.workspaceText === null
-      ) {
-        throw new AssistantRulesConflictError("Workspace assistant rules are not initialized");
-      }
-      const promptSnapshot = createSystemPromptSnapshot(
-        first.workspacePromptRevision,
-        first.workspaceText,
-      );
-      return Object.freeze({ admission, policies, promptSnapshot });
+      return Object.freeze({ admission, policies });
     },
   });
 }

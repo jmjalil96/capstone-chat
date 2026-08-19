@@ -6,14 +6,7 @@ export const REVISION_PATTERN = /^[0-9a-f]{40}$/u;
 export const ENCRYPTED_VALUE_PATTERN = /^EV\[[^\r\n]{8,2048}\]$/u;
 
 const IPV4_PATTERN = /^(?:0|[1-9]\d{0,2})(?:\.(?:0|[1-9]\d{0,2})){3}$/u;
-const MODES = new Set([
-  "bootstrap",
-  "cutover-initialize",
-  "cutover-quiesced",
-  "live",
-  "rehearsal-bootstrap",
-  "rehearsal",
-]);
+const MODES = new Set(["bootstrap", "live", "rehearsal-bootstrap", "rehearsal"]);
 const OTEL_ENDPOINTS = new Set(["https://otlp.nr-data.net", "https://otlp.eu01.nr-data.net"]);
 const DEPLOYMENT_REVISION_BINDING = ["$", "{_self.COMMIT_HASH}"].join("");
 const STARTER_DOMAIN_BINDING = ["$", "{STARTER_DOMAIN}"].join("");
@@ -55,12 +48,7 @@ function rehearsalMode(mode) {
 }
 
 function finalMode(mode) {
-  return (
-    mode === "live" ||
-    mode === "rehearsal" ||
-    mode === "cutover-initialize" ||
-    mode === "cutover-quiesced"
-  );
+  return mode === "live" || mode === "rehearsal";
 }
 
 function expectedSource(mode) {
@@ -125,7 +113,7 @@ function expectedService(mode) {
             ]
           : [],
   };
-  if (mode === "live" || mode === "rehearsal") {
+  if (finalMode(mode)) {
     environment.general_keys = ["OTEL_EXPORTER_OTLP_ENDPOINT"];
   }
   return {
@@ -148,32 +136,6 @@ function expectedService(mode) {
 }
 
 function expectedJob(mode) {
-  if (mode === "cutover-initialize") {
-    return {
-      environment: {
-        general: {
-          CAPSTONE_INITIALIZATION_SCHEMA_VERSION: "2",
-          CAPSTONE_SECRET_SOURCE: "platform-environment",
-          DEPLOYMENT_REVISION: DEPLOYMENT_REVISION_BINDING,
-          DEPLOYMENT_TARGET: "digitalocean-app-platform",
-          MODEL_GATEWAY: "openrouter",
-          NODE_ENV: "production",
-        },
-        secret_keys: [
-          "CAPSTONE_BOOTSTRAP_DATABASE_URL",
-          "CAPSTONE_BOOTSTRAP_MIGRATION_DATABASE_URL",
-          "CAPSTONE_INITIALIZATION_DOCUMENT",
-          "OPENROUTER_API_KEY",
-        ],
-      },
-      grace_period_seconds: 300,
-      instance_count: 1,
-      instance_size_slug: "apps-s-1vcpu-0.5gb",
-      kind: "PRE_DEPLOY",
-      name: "capstone-initialize",
-      run_command: "node apps/api/dist/entrypoint.js initialize",
-    };
-  }
   const general = {
     CAPSTONE_SECRET_SOURCE: "platform-environment",
     DEPLOYMENT_REVISION: DEPLOYMENT_REVISION_BINDING,
@@ -232,9 +194,7 @@ function expectedContract(mode) {
       enhanced_threat_control_enabled: false,
     };
     value.egress = { type: "DEDICATED_IP" };
-    if (mode !== "cutover-quiesced") {
-      value.job = expectedJob(mode);
-    }
+    value.job = expectedJob(mode);
   }
   return value;
 }
@@ -686,10 +646,7 @@ function validateAppSpec(value, app, contract, label) {
     allowedKeys.push("domains");
   }
   if (finalMode(contract.mode)) {
-    allowedKeys.push("egress");
-    if (contract.job !== undefined) {
-      allowedKeys.push("jobs");
-    }
+    allowedKeys.push("egress", "jobs");
     for (const field of EDGE_FIELDS) {
       if (contract.edge[field] === true || spec[field] !== undefined) {
         allowedKeys.push(field);
@@ -742,12 +699,8 @@ function validateAppSpec(value, app, contract, label) {
       assert(typeof actual === "boolean", `DigitalOcean ${field} is invalid`);
       equal(actual, contract.edge[field], `${label} ${field}`);
     }
-    if (contract.job === undefined) {
-      assert(spec.jobs === undefined, `${label} cannot contain a job`);
-    } else {
-      assert(Array.isArray(spec.jobs) && spec.jobs.length === 1, `${label} job topology changed`);
-      validateJob(spec.jobs[0], contract);
-    }
+    assert(Array.isArray(spec.jobs) && spec.jobs.length === 1, `${label} job topology changed`);
+    validateJob(spec.jobs[0], contract);
   } else {
     assert(spec.jobs === undefined, "Bootstrap App cannot contain a job");
     assert(spec.egress === undefined, "Bootstrap App cannot request dedicated egress");

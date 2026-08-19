@@ -17,7 +17,6 @@ import {
 } from "../src/database/identity-schema.js";
 import { migrateDatabase } from "../src/database/migrate.js";
 import { createIdentityService } from "../src/identity/service.js";
-import { seedTestBehaviorRevisions } from "./support/workspace-behavior.js";
 
 const apiRoot = fileURLToPath(new URL("..", import.meta.url));
 const operatorExecutable = fileURLToPath(new URL("../node_modules/.bin/tsx", import.meta.url));
@@ -128,22 +127,15 @@ describe.sequential("identity operator commands", () => {
   }
 
   async function bootstrap(): Promise<OperatorResult> {
-    const result = await createIdentityService(createDatabase(pool)).bootstrap({
-      adminEmail: "  ADMIN.OPERATOR@EXAMPLE.TEST  ",
-      displayName: "Capstone Ecuador",
-      workspaceIdentity: "capstone-ecuador",
-    });
-    return {
-      code: 0,
-      stderr: "",
-      stdout: `${JSON.stringify({
-        command: "bootstrap",
-        repeated: result.repeated,
-        role: "admin",
-        signUpPath: "/sign-up",
-        workspace: "capstone-ecuador",
-      })}\n`,
-    };
+    return runOperator([
+      "bootstrap",
+      "--workspace",
+      "capstone-ecuador",
+      "--name",
+      "Capstone Ecuador",
+      "--email",
+      "  ADMIN.OPERATOR@EXAMPLE.TEST  ",
+    ]);
   }
 
   async function seedActiveWork(
@@ -155,8 +147,6 @@ describe.sequential("identity operator commands", () => {
     readonly chatGenerationId: string;
     readonly compactionGenerationId: string;
   }> {
-    await seedTestBehaviorRevisions(database, workspaceId, new Date());
-
     async function seedConversation(title: string) {
       const conversationRows = await database
         .insert(conversations)
@@ -206,14 +196,12 @@ describe.sequential("identity operator commands", () => {
         conversationId: chat.conversationId,
         effectiveParameters: {},
         idempotencyKey: randomUUID(),
-        modelPolicyRevision: 1,
         purpose: "chat",
         requestedTier: "balanced",
         status: "active",
-        systemPromptVersion: "capstone-chat-base-v2",
+        systemPromptVersion: "capstone-chat-v1",
         userId,
         workspaceId,
-        workspacePromptRevision: 1,
       })
       .returning({ id: generations.id });
     const chatGenerationId = chatGenerationRows[0]?.id;
@@ -232,7 +220,6 @@ describe.sequential("identity operator commands", () => {
         conversationId: compaction.conversationId,
         effectiveParameters: {},
         idempotencyKey: randomUUID(),
-        modelPolicyRevision: 1,
         purpose: "compaction",
         requestedTier: "balanced",
         status: "active",
@@ -283,7 +270,7 @@ describe.sequential("identity operator commands", () => {
     expect(await database.select().from(employeeApprovals)).toEqual([]);
   });
 
-  it("rejects the retired bootstrap command without preserving partial authority", async () => {
+  it("reports invitation delivery failure after preserving the committed approval", async () => {
     const result = await runOperator(
       [
         "bootstrap",
@@ -299,14 +286,30 @@ describe.sequential("identity operator commands", () => {
 
     expect(result.code).toBe(1);
     expect(result.stdout).toBe("");
-    expect(parseOperatorOutput(result.stderr)).toEqual({ errorName: "Error", outcome: "failed" });
+    expect(parseOperatorOutput(result.stderr)).toEqual({
+      errorName: "Error",
+      outcome: "approval-committed",
+      retrySafe: true,
+    });
 
     const database = createDatabase(pool);
-    expect(await database.select().from(workspaces)).toEqual([]);
-    expect(await database.select().from(employeeApprovals)).toEqual([]);
+    expect(await database.select().from(workspaces)).toEqual([
+      expect.objectContaining({
+        displayName: "Capstone Ecuador",
+        identity: "capstone-ecuador",
+      }),
+    ]);
+    expect(await database.select().from(employeeApprovals)).toEqual([
+      expect.objectContaining({
+        normalizedEmail: "admin.operator@example.test",
+        role: "admin",
+        status: "pending",
+        userId: null,
+      }),
+    ]);
   });
 
-  it("rejects the retired no-delivery bootstrap command", async () => {
+  it("bootstraps only a pending synthetic rehearsal approval when delivery is explicitly disabled", async () => {
     const result = await runOperator(
       [
         "bootstrap",
@@ -322,12 +325,26 @@ describe.sequential("identity operator commands", () => {
       { EMAIL_DELIVERY: "disabled" },
     );
 
-    expect(result.code).toBe(1);
-    expect(result.stdout).toBe("");
-    expect(parseOperatorOutput(result.stderr)).toEqual({ errorName: "Error", outcome: "failed" });
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(parseOperatorOutput(result.stdout)).toEqual({
+      command: "bootstrap",
+      invitationDelivery: "disabled",
+      repeated: false,
+      role: "admin",
+      signUpPath: "/sign-up",
+      workspace: "capstone-ecuador",
+    });
 
     const database = createDatabase(pool);
-    expect(await database.select().from(employeeApprovals)).toEqual([]);
+    expect(await database.select().from(employeeApprovals)).toEqual([
+      expect.objectContaining({
+        normalizedEmail: "admin.operator@example.test",
+        role: "admin",
+        status: "pending",
+        userId: null,
+      }),
+    ]);
     expect(await database.select().from(user)).toEqual([]);
     expect(await database.select().from(account)).toEqual([]);
     expect(await database.select().from(session)).toEqual([]);
@@ -442,8 +459,8 @@ describe.sequential("identity operator commands", () => {
     for (const conflict of [displayNameConflict, administratorConflict]) {
       expect(conflict.code).toBe(1);
       expect(parseOperatorOutput(conflict.stderr)).toEqual({
-        errorName: "Error",
-        outcome: "failed",
+        errorName: "IdentityConflictError",
+        outcome: "conflict",
       });
     }
     expect(await database.select().from(workspaces)).toHaveLength(1);

@@ -16,10 +16,8 @@ import {
   openRouterPrivacyAttestations,
   workspaceCatalogApprovals,
   workspaceCostPolicies,
-  workspaceModelPolicies,
 } from "../src/database/model-policy-schema.js";
 import { createGenerationService } from "../src/generations/service.js";
-import type { RequestActor } from "../src/identity/authorization.js";
 import {
   workspaceBudgetConsumptionUsd,
   workspaceBudgetPeriod,
@@ -41,12 +39,6 @@ import {
   ModelPolicyUnavailableError,
 } from "../src/model-policy/service.js";
 import { costControlTuning } from "../src/model-policy/settings.js";
-import { testCatalogCapability } from "./support/generation.js";
-import {
-  bootstrapTestAssistantRules,
-  seedTestPolicyRevision,
-  seedTestPromptRevision,
-} from "./support/workspace-behavior.js";
 
 function realCatalog(validatedAt: Date): Readonly<Record<ModelTier, CatalogModelSnapshot>> {
   return Object.freeze(
@@ -56,12 +48,11 @@ function realCatalog(validatedAt: Date): Readonly<Record<ModelTier, CatalogModel
         Object.freeze({
           available: true,
           canonicalSlug: initialTierModels[tier],
-          capability: testCatalogCapability,
           completionPricePerToken: "0.000002",
           contextLength: 128_000,
           displayName: `Model ${tier}`,
           inputModalities: Object.freeze(["text"]),
-          maximumOutputTokens: 32_768,
+          maximumOutputTokens: 8_192,
           metadataSource: "openrouter",
           modelId: initialTierModels[tier],
           outputModalities: Object.freeze(["text"]),
@@ -75,7 +66,7 @@ function realCatalog(validatedAt: Date): Readonly<Record<ModelTier, CatalogModel
   );
 }
 
-const limits = Object.freeze({ balanced: 2_000, fast: 1_000, pro: 16_384 });
+const limits = Object.freeze({ balanced: 2_000, fast: 1_000, pro: 4_000 });
 function verifiedPrivacyAttestation(verifiedAt: Date) {
   return verifyPrivacyAttestation({
     attestationVersion: "openrouter-privacy-v1",
@@ -96,23 +87,6 @@ function fixedModelPolicyService(database: AppDatabase) {
     ),
     now: () => new Date(modelPolicyTestNow.getTime()),
   });
-}
-
-function requestActor(userId: string, workspaceId: string): RequestActor {
-  return {
-    employee: {
-      email: `${userId}@example.test`,
-      id: userId,
-      name: "Policy Administrator",
-    },
-    role: "admin",
-    session: {
-      createdAt: new Date("2026-08-08T12:00:00.000Z"),
-      expiresAt: new Date("2026-08-09T12:00:00.000Z"),
-      id: `session-${userId}`,
-    },
-    workspace: { id: workspaceId, identity: "test", name: "Test" },
-  };
 }
 
 describe.sequential("model policy and budget persistence", () => {
@@ -161,12 +135,11 @@ describe.sequential("model policy and budget persistence", () => {
     return Object.freeze({
       available: true,
       canonicalSlug: modelId,
-      capability: testCatalogCapability,
       completionPricePerToken: source === "simulated" ? "0" : "0.000002",
       contextLength: 128_000,
       displayName: `Model ${modelId}`,
       inputModalities: Object.freeze(["text"]),
-      maximumOutputTokens: 32_768,
+      maximumOutputTokens: 8_192,
       metadataSource: source,
       modelId,
       outputModalities: Object.freeze(["text"]),
@@ -200,22 +173,8 @@ describe.sequential("model policy and budget persistence", () => {
             openRouterModelId: snapshot.modelId,
             outputModalities: snapshot.outputModalities,
             promptPricePerToken: snapshot.promptPricePerToken,
-            reasoningContractSource: snapshot.capability.reasoning.contractSource,
-            reasoningDefaultEffort: snapshot.capability.reasoning.defaultEffort,
-            reasoningDefaultEnabled: snapshot.capability.reasoning.defaultEnabled,
-            reasoningEffortSupportKind: snapshot.capability.reasoning.effortSupport.kind,
-            reasoningEfforts:
-              snapshot.capability.reasoning.effortSupport.kind === "listed"
-                ? snapshot.capability.reasoning.effortSupport.values
-                : [],
-            reasoningExclusionVerifiedAt: snapshot.capability.reasoning.exclusionVerifiedAt,
-            reasoningMandatory: snapshot.capability.reasoning.kind === "mandatory",
-            reasoningMaxTokensAccepted: snapshot.capability.reasoning.maxTokensAccepted,
-            reasoningMode: snapshot.capability.reasoning.kind,
-            reasoningTraceSafety: snapshot.capability.reasoning.traceSafety,
             requestPriceUsd: snapshot.requestPriceUsd,
             supportedParameters: snapshot.supportedParameters,
-            temperatureSupported: snapshot.capability.temperatureSupported,
             updatedAt: createdAt,
             validatedAt: snapshot.validatedAt,
           };
@@ -229,8 +188,7 @@ describe.sequential("model policy and budget persistence", () => {
   }
 
   it("rejects a simulated policy when the runtime is configured for OpenRouter", async () => {
-    const workspaceId = await insertWorkspace("runtime-policy", "America/Guayaquil");
-    await bootstrapTestAssistantRules(database, workspaceId);
+    await insertWorkspace("runtime-policy", "America/Guayaquil");
     const service = fixedModelPolicyService(database);
     const validatedAt = new Date("2026-08-08T12:00:00.000Z");
     await service.bootstrap({
@@ -255,22 +213,6 @@ describe.sequential("model policy and budget persistence", () => {
     await expect(service.assertRuntimeMode("openrouter")).rejects.toBeInstanceOf(
       ModelPolicyUnavailableError,
     );
-
-    await database
-      .update(workspaceModelPolicies)
-      .set({ maximumOutputTokens: limits.balanced - 1 })
-      .where(
-        and(
-          eq(workspaceModelPolicies.workspaceId, workspaceId),
-          eq(workspaceModelPolicies.tier, "balanced"),
-        ),
-      );
-    await expect(service.readAdminPolicy(workspaceId, "simulated")).rejects.toBeInstanceOf(
-      ModelPolicyConflictError,
-    );
-    await expect(service.assertRuntimeMode("simulated")).rejects.toBeInstanceOf(
-      ModelPolicyConflictError,
-    );
   });
 
   async function insertExpiredReservedGeneration(input: {
@@ -282,8 +224,6 @@ describe.sequential("model policy and budget persistence", () => {
     readonly userId: string;
     readonly workspaceId: string;
   }): Promise<{ readonly conversationId: string; readonly generationId: string }> {
-    await seedTestPolicyRevision(database, input.workspaceId, input.startedAt);
-    await seedTestPromptRevision(database, input.workspaceId, input.startedAt);
     const conversationRows = await database
       .insert(conversations)
       .values({ userId: input.userId, workspaceId: input.workspaceId })
@@ -328,7 +268,6 @@ describe.sequential("model policy and budget persistence", () => {
         estimatedInputTokens: 1_000n,
         idempotencyKey: randomUUID(),
         maximumOutputTokens: 2_000,
-        modelPolicyRevision: 1,
         promptPriceCeilingPerToken: "0.000001",
         purpose: "chat",
         requestPriceCeilingUsd: "0",
@@ -340,11 +279,10 @@ describe.sequential("model policy and budget persistence", () => {
         resolvedModel: initialTierModels.balanced,
         startedAt: input.startedAt,
         status: "active",
-        systemPromptVersion: "capstone-chat-base-v2",
+        systemPromptVersion: "capstone-chat-v1",
         updatedAt: input.startedAt,
         userId: input.userId,
         workspaceId: input.workspaceId,
-        workspacePromptRevision: 1,
       })
       .returning({ id: generations.id });
     const generationId = generationRows[0]?.id;
@@ -424,11 +362,7 @@ describe.sequential("model policy and budget persistence", () => {
   });
 
   it("fails closed when privacy verification expires and accepts only a fresh renewal", async () => {
-    const privacyBoundaryWorkspaceId = await insertWorkspace(
-      "privacy-boundary",
-      "America/Guayaquil",
-    );
-    await bootstrapTestAssistantRules(database, privacyBoundaryWorkspaceId);
+    await insertWorkspace("privacy-boundary", "America/Guayaquil");
     await insertWorkspace("privacy-stale-bootstrap", "America/Guayaquil");
     await insertWorkspace("privacy-future-bootstrap", "America/Guayaquil");
     const initialVerifiedAt = privacyAttestation.verifiedAt;
@@ -674,20 +608,6 @@ describe.sequential("model policy and budget persistence", () => {
 
   it("applies revisioned policy changes while tolerating unchanged unavailable mappings", async () => {
     const workspaceId = await insertWorkspace("policy-administration", "America/Guayaquil");
-    const actorUserId = `policy-admin-${randomUUID()}`;
-    await database.insert(user).values({
-      email: `${actorUserId}@example.test`,
-      emailVerified: true,
-      id: actorUserId,
-      name: "Policy Administrator",
-    });
-    await database.insert(workspaceMemberships).values({
-      role: "admin",
-      status: "active",
-      userId: actorUserId,
-      workspaceId,
-    });
-    const actor = requestActor(actorUserId, workspaceId);
     const service = fixedModelPolicyService(database);
     await service.bootstrap({
       catalog: Object.freeze(
@@ -727,7 +647,7 @@ describe.sequential("model policy and budget persistence", () => {
       .update(modelCatalog)
       .set({ available: false })
       .where(eq(modelCatalog.id, initial.tiers[1].catalogId));
-    const changed = await service.replaceAdminPolicy(workspaceId, "simulated", actor, {
+    const changed = await service.replaceAdminPolicy(workspaceId, "simulated", {
       defaultTier: "fast",
       monthlyBudgetUsd: "101",
       observedRevision: initial.revision,
@@ -736,27 +656,18 @@ describe.sequential("model policy and budget persistence", () => {
           catalogId: initial.tiers[0].catalogId,
           enabled: true,
           maximumOutputTokens: initial.tiers[0].maximumOutputTokens,
-          reasoningBudgetTokens: initial.tiers[0].reasoningBudgetTokens,
-          reasoningEffort: initial.tiers[0].reasoningEffort,
-          temperaturePreset: initial.tiers[0].temperaturePreset,
           tier: "fast",
         },
         {
           catalogId: initial.tiers[1].catalogId,
           enabled: true,
           maximumOutputTokens: initial.tiers[1].maximumOutputTokens,
-          reasoningBudgetTokens: initial.tiers[1].reasoningBudgetTokens,
-          reasoningEffort: initial.tiers[1].reasoningEffort,
-          temperaturePreset: initial.tiers[1].temperaturePreset,
           tier: "balanced",
         },
         {
           catalogId: initial.tiers[2].catalogId,
           enabled: false,
           maximumOutputTokens: initial.tiers[2].maximumOutputTokens,
-          reasoningBudgetTokens: initial.tiers[2].reasoningBudgetTokens,
-          reasoningEffort: initial.tiers[2].reasoningEffort,
-          temperaturePreset: initial.tiers[2].temperaturePreset,
           tier: "pro",
         },
       ],
@@ -765,33 +676,20 @@ describe.sequential("model policy and budget persistence", () => {
     expect(changed.tiers[1]?.available).toBe(false);
 
     await expect(
-      service.replaceAdminPolicy(workspaceId, "simulated", actor, {
+      service.replaceAdminPolicy(workspaceId, "simulated", {
         defaultTier: "fast",
         monthlyBudgetUsd: "102",
         observedRevision: initial.revision,
-        tiers: changed.tiers.map(
-          ({
-            catalogId,
-            enabled,
-            maximumOutputTokens,
-            reasoningBudgetTokens,
-            reasoningEffort,
-            temperaturePreset,
-            tier,
-          }) => ({
-            catalogId,
-            enabled,
-            maximumOutputTokens,
-            reasoningBudgetTokens,
-            reasoningEffort,
-            temperaturePreset,
-            tier,
-          }),
-        ) as AdminUpdateModelPolicyRequest["tiers"],
+        tiers: changed.tiers.map(({ catalogId, enabled, maximumOutputTokens, tier }) => ({
+          catalogId,
+          enabled,
+          maximumOutputTokens,
+          tier,
+        })) as typeof initial.tiers,
       }),
     ).rejects.toBeInstanceOf(ModelPolicyChangedError);
 
-    const decreased = await service.replaceAdminPolicy(workspaceId, "simulated", actor, {
+    const decreased = await service.replaceAdminPolicy(workspaceId, "simulated", {
       defaultTier: "fast",
       monthlyBudgetUsd: "102",
       observedRevision: changed.revision,
@@ -800,27 +698,18 @@ describe.sequential("model policy and budget persistence", () => {
           catalogId: changed.tiers[0].catalogId,
           enabled: true,
           maximumOutputTokens: changed.tiers[0].maximumOutputTokens,
-          reasoningBudgetTokens: changed.tiers[0].reasoningBudgetTokens,
-          reasoningEffort: changed.tiers[0].reasoningEffort,
-          temperaturePreset: changed.tiers[0].temperaturePreset,
           tier: "fast",
         },
         {
           catalogId: changed.tiers[1].catalogId,
           enabled: true,
           maximumOutputTokens: changed.tiers[1].maximumOutputTokens - 1,
-          reasoningBudgetTokens: changed.tiers[1].reasoningBudgetTokens,
-          reasoningEffort: changed.tiers[1].reasoningEffort,
-          temperaturePreset: changed.tiers[1].temperaturePreset,
           tier: "balanced",
         },
         {
           catalogId: changed.tiers[2].catalogId,
           enabled: false,
           maximumOutputTokens: changed.tiers[2].maximumOutputTokens,
-          reasoningBudgetTokens: changed.tiers[2].reasoningBudgetTokens,
-          reasoningEffort: changed.tiers[2].reasoningEffort,
-          temperaturePreset: changed.tiers[2].temperaturePreset,
           tier: "pro",
         },
       ],
@@ -832,32 +721,23 @@ describe.sequential("model policy and budget persistence", () => {
         catalogId: decreased.tiers[0].catalogId,
         enabled: decreased.tiers[0].enabled,
         maximumOutputTokens: decreased.tiers[0].maximumOutputTokens,
-        reasoningBudgetTokens: decreased.tiers[0].reasoningBudgetTokens,
-        reasoningEffort: decreased.tiers[0].reasoningEffort,
-        temperaturePreset: decreased.tiers[0].temperaturePreset,
         tier: "fast",
       },
       {
         catalogId: decreased.tiers[1].catalogId,
         enabled: decreased.tiers[1].enabled,
         maximumOutputTokens: decreased.tiers[1].maximumOutputTokens,
-        reasoningBudgetTokens: decreased.tiers[1].reasoningBudgetTokens,
-        reasoningEffort: decreased.tiers[1].reasoningEffort,
-        temperaturePreset: decreased.tiers[1].temperaturePreset,
         tier: "balanced",
       },
       {
         catalogId: decreased.tiers[2].catalogId,
         enabled: decreased.tiers[2].enabled,
         maximumOutputTokens: decreased.tiers[2].maximumOutputTokens,
-        reasoningBudgetTokens: decreased.tiers[2].reasoningBudgetTokens,
-        reasoningEffort: decreased.tiers[2].reasoningEffort,
-        temperaturePreset: decreased.tiers[2].temperaturePreset,
         tier: "pro",
       },
     ];
     await expect(
-      service.replaceAdminPolicy(workspaceId, "simulated", actor, {
+      service.replaceAdminPolicy(workspaceId, "simulated", {
         defaultTier: "balanced",
         monthlyBudgetUsd: decreased.monthlyBudgetUsd,
         observedRevision: decreased.revision,
@@ -865,7 +745,7 @@ describe.sequential("model policy and budget persistence", () => {
       }),
     ).rejects.toBeInstanceOf(ModelPolicyConflictError);
     await expect(
-      service.replaceAdminPolicy(workspaceId, "simulated", actor, {
+      service.replaceAdminPolicy(workspaceId, "simulated", {
         defaultTier: decreased.defaultTier,
         monthlyBudgetUsd: decreased.monthlyBudgetUsd,
         observedRevision: decreased.revision,
@@ -884,7 +764,7 @@ describe.sequential("model policy and budget persistence", () => {
       .set({ available: false })
       .where(eq(modelCatalog.id, unchangedTiers[2].catalogId));
     await expect(
-      service.replaceAdminPolicy(workspaceId, "simulated", actor, {
+      service.replaceAdminPolicy(workspaceId, "simulated", {
         defaultTier: decreased.defaultTier,
         monthlyBudgetUsd: decreased.monthlyBudgetUsd,
         observedRevision: decreased.revision,
@@ -892,7 +772,7 @@ describe.sequential("model policy and budget persistence", () => {
       }),
     ).rejects.toBeInstanceOf(ModelPolicyConflictError);
     await expect(
-      service.replaceAdminPolicy(workspaceId, "simulated", actor, {
+      service.replaceAdminPolicy(workspaceId, "simulated", {
         defaultTier: decreased.defaultTier,
         monthlyBudgetUsd: decreased.monthlyBudgetUsd,
         observedRevision: decreased.revision,
@@ -902,15 +782,6 @@ describe.sequential("model policy and budget persistence", () => {
           unchangedTiers[2],
         ],
       }),
-    ).rejects.toBeInstanceOf(ModelPolicyConflictError);
-    await expect(
-      service.revertAdminPolicy(
-        workspaceId,
-        "simulated",
-        actor,
-        initial.revision,
-        decreased.revision,
-      ),
     ).rejects.toBeInstanceOf(ModelPolicyConflictError);
     await expect(service.readAdminPolicy(workspaceId, "simulated")).resolves.toMatchObject({
       revision: 3,
@@ -932,7 +803,6 @@ describe.sequential("model policy and budget persistence", () => {
       userId,
       workspaceId,
     });
-    const actor = requestActor(userId, workspaceId);
     const service = fixedModelPolicyService(database);
     await service.bootstrap({
       catalog: Object.freeze(
@@ -968,32 +838,23 @@ describe.sequential("model policy and budget persistence", () => {
         catalogId: policy.tiers[0].catalogId,
         enabled: policy.tiers[0].enabled,
         maximumOutputTokens: policy.tiers[0].maximumOutputTokens,
-        reasoningBudgetTokens: policy.tiers[0].reasoningBudgetTokens,
-        reasoningEffort: policy.tiers[0].reasoningEffort,
-        temperaturePreset: policy.tiers[0].temperaturePreset,
         tier: "fast",
       },
       {
         catalogId: policy.tiers[1].catalogId,
         enabled: policy.tiers[1].enabled,
         maximumOutputTokens: policy.tiers[1].maximumOutputTokens,
-        reasoningBudgetTokens: policy.tiers[1].reasoningBudgetTokens,
-        reasoningEffort: policy.tiers[1].reasoningEffort,
-        temperaturePreset: policy.tiers[1].temperaturePreset,
         tier: "balanced",
       },
       {
         catalogId: policy.tiers[2].catalogId,
         enabled: policy.tiers[2].enabled,
         maximumOutputTokens: policy.tiers[2].maximumOutputTokens,
-        reasoningBudgetTokens: policy.tiers[2].reasoningBudgetTokens,
-        reasoningEffort: policy.tiers[2].reasoningEffort,
-        temperaturePreset: policy.tiers[2].temperaturePreset,
         tier: "pro",
       },
     ];
     await expect(
-      service.replaceAdminPolicy(workspaceId, "simulated", actor, {
+      service.replaceAdminPolicy(workspaceId, "simulated", {
         defaultTier: policy.defaultTier,
         monthlyBudgetUsd: "9.999999999999999999",
         observedRevision: policy.revision,
@@ -1005,7 +866,7 @@ describe.sequential("model policy and budget persistence", () => {
       revision: 1,
     });
     await expect(
-      service.replaceAdminPolicy(workspaceId, "simulated", actor, {
+      service.replaceAdminPolicy(workspaceId, "simulated", {
         defaultTier: policy.defaultTier,
         monthlyBudgetUsd: "10",
         observedRevision: policy.revision,
@@ -1390,7 +1251,6 @@ describe.sequential("model policy and budget persistence", () => {
       },
     });
     const startedAt = new Date();
-    await seedTestPromptRevision(database, workspaceId, startedAt);
     const generationId = await database.transaction(async (transaction) => {
       const admission = await budget.lockAdmission(transaction, workspaceId, userId, startedAt);
       const policy = await policyService.resolveTier(
@@ -1420,7 +1280,6 @@ describe.sequential("model policy and budget persistence", () => {
           estimatedInputTokens: reservation.estimatedInputTokens,
           idempotencyKey: randomUUID(),
           maximumOutputTokens: reservation.maximumOutputTokens,
-          modelPolicyRevision: policy.policyRevision,
           promptPriceCeilingPerToken: reservation.promptPriceCeilingPerToken,
           purpose: "chat",
           requestPriceCeilingUsd: reservation.requestPriceCeilingUsd,
@@ -1432,11 +1291,10 @@ describe.sequential("model policy and budget persistence", () => {
           resolvedModel: initialTierModels.balanced,
           startedAt,
           status: "active",
-          systemPromptVersion: "capstone-chat-base-v2",
+          systemPromptVersion: "capstone-chat-v1",
           updatedAt: startedAt,
           userId,
           workspaceId,
-          workspacePromptRevision: 1,
           accountingStatus: "reserved",
         })
         .returning({ id: generations.id });

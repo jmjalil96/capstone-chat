@@ -16,11 +16,7 @@ export const initialTierModels = {
   pro: "moonshotai/kimi-k3",
 } as const satisfies Readonly<Record<ModelTier, string>>;
 
-export const gatewayEfforts = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
-export type GatewayEffort = (typeof gatewayEfforts)[number];
-
-const requiredParameters = ["max_tokens"] as const;
-const reasoningContractSource = "openrouter-reasoning-docs-2026-08-17";
+const requiredParameters = ["max_tokens", "reasoning"] as const;
 const pricedTextComponents = new Set([
   "cache_read",
   "cache_write",
@@ -65,13 +61,6 @@ export interface OpenRouterModelMetadata {
   readonly maximumOutputTokens: number | null;
   readonly modelId: string;
   readonly outputModalities: readonly string[];
-  readonly reasoning?: Readonly<{
-    readonly defaultEffort?: string;
-    readonly defaultEnabled?: boolean;
-    readonly mandatory?: boolean;
-    readonly supportedEfforts?: readonly string[] | null;
-    readonly supportsMaxTokens?: boolean;
-  }>;
   readonly supportedParameters: readonly string[];
 }
 
@@ -90,7 +79,6 @@ export interface ZdrEndpointMetadata {
 export interface CatalogModelSnapshot {
   readonly available: boolean;
   readonly canonicalSlug: string | null;
-  readonly capability: CatalogModelCapability;
   readonly completionPricePerToken: string;
   readonly contextLength: number;
   readonly displayName: string;
@@ -103,27 +91,6 @@ export interface CatalogModelSnapshot {
   readonly requestPriceUsd: string;
   readonly supportedParameters: readonly string[];
   readonly validatedAt: Date;
-}
-
-export type CatalogEffortSupport =
-  | Readonly<{ kind: "none" }>
-  | Readonly<{ kind: "all" }>
-  | Readonly<{ kind: "listed"; values: readonly GatewayEffort[] }>;
-
-export interface CatalogReasoningCapability {
-  readonly contractSource: string;
-  readonly defaultEffort: GatewayEffort | null;
-  readonly defaultEnabled: boolean | null;
-  readonly effortSupport: CatalogEffortSupport;
-  readonly exclusionVerifiedAt: Date | null;
-  readonly kind: "none" | "optional" | "mandatory" | "unverified";
-  readonly maxTokensAccepted: boolean;
-  readonly traceSafety: "non_reasoning" | "provider_excluded" | "unverified";
-}
-
-export interface CatalogModelCapability {
-  readonly reasoning: CatalogReasoningCapability;
-  readonly temperatureSupported: boolean;
 }
 
 export interface ChargeCeilings {
@@ -248,95 +215,6 @@ function isEligibleEndpoint(endpoint: ZdrEndpointMetadata, modelId: string): boo
   );
 }
 
-function normalizedEffortSupport(
-  reasoning: NonNullable<OpenRouterModelMetadata["reasoning"]>,
-  effortParameterAccepted: boolean,
-): CatalogEffortSupport {
-  if (!effortParameterAccepted || reasoning.supportedEfforts === undefined) {
-    return Object.freeze({ kind: "none" });
-  }
-  if (reasoning.supportedEfforts === null) {
-    return Object.freeze({ kind: "all" });
-  }
-  const recognized = gatewayEfforts.filter((effort) =>
-    reasoning.supportedEfforts?.includes(effort),
-  );
-  return recognized.length === 0
-    ? Object.freeze({ kind: "none" })
-    : Object.freeze({ kind: "listed", values: Object.freeze(recognized) });
-}
-
-function normalizedCapability(
-  model: OpenRouterModelMetadata,
-  eligibleEndpoints: readonly ZdrEndpointMetadata[],
-  validatedAt: Date,
-): CatalogModelCapability {
-  const modelReasoningParameter = model.supportedParameters.includes("reasoning");
-  const structuredReasoning = model.reasoning;
-  const endpointReasoningParameter = eligibleEndpoints.every((endpoint) =>
-    endpoint.supportedParameters.includes("reasoning"),
-  );
-  const modelHasStructuredReasoning = structuredReasoning !== undefined;
-  const modelAndEndpointsAcceptReasoning = modelReasoningParameter && endpointReasoningParameter;
-  const temperatureSupported =
-    model.supportedParameters.includes("temperature") &&
-    eligibleEndpoints.every((endpoint) => endpoint.supportedParameters.includes("temperature"));
-
-  if (!modelHasStructuredReasoning && !modelReasoningParameter) {
-    return Object.freeze({
-      reasoning: Object.freeze({
-        contractSource: reasoningContractSource,
-        defaultEffort: null,
-        defaultEnabled: null,
-        effortSupport: Object.freeze({ kind: "none" }),
-        exclusionVerifiedAt: null,
-        kind: "none",
-        maxTokensAccepted: false,
-        traceSafety: "non_reasoning",
-      }),
-      temperatureSupported,
-    });
-  }
-
-  if (!modelHasStructuredReasoning || !modelAndEndpointsAcceptReasoning) {
-    return Object.freeze({
-      reasoning: Object.freeze({
-        contractSource: reasoningContractSource,
-        defaultEffort: null,
-        defaultEnabled: null,
-        effortSupport: Object.freeze({ kind: "none" }),
-        exclusionVerifiedAt: null,
-        kind: "unverified",
-        maxTokensAccepted: false,
-        traceSafety: "unverified",
-      }),
-      temperatureSupported,
-    });
-  }
-
-  const defaultEffort = gatewayEfforts.find(
-    (effort) => effort === structuredReasoning.defaultEffort,
-  );
-  const effortParameterAccepted =
-    model.supportedParameters.includes("reasoning_effort") &&
-    eligibleEndpoints.every((endpoint) =>
-      endpoint.supportedParameters.includes("reasoning_effort"),
-    );
-  return Object.freeze({
-    reasoning: Object.freeze({
-      contractSource: reasoningContractSource,
-      defaultEffort: defaultEffort ?? null,
-      defaultEnabled: structuredReasoning.defaultEnabled ?? null,
-      effortSupport: normalizedEffortSupport(structuredReasoning, effortParameterAccepted),
-      exclusionVerifiedAt: validatedAt,
-      kind: structuredReasoning.mandatory === true ? "mandatory" : "optional",
-      maxTokensAccepted: structuredReasoning.supportsMaxTokens === true,
-      traceSafety: "provider_excluded",
-    }),
-    temperatureSupported,
-  });
-}
-
 export function buildOpenRouterCatalogSnapshot(
   model: OpenRouterModelMetadata,
   endpoints: readonly ZdrEndpointMetadata[],
@@ -346,7 +224,7 @@ export function buildOpenRouterCatalogSnapshot(
     throw new CatalogValidationError("Approved model must accept and produce text");
   }
   if (!includesEvery(model.supportedParameters, requiredParameters)) {
-    throw new CatalogValidationError("Approved model must support max_tokens");
+    throw new CatalogValidationError("Approved model must support max_tokens and reasoning");
   }
   positiveInteger(model.contextLength, "model context length");
   if (model.maximumOutputTokens !== null) {
@@ -388,16 +266,10 @@ export function buildOpenRouterCatalogSnapshot(
   if (maximumOutputTokens > contextLength) {
     throw new CatalogValidationError("Eligible output limit exceeds the conservative context");
   }
-  const capability = normalizedCapability(
-    model,
-    eligible.map(({ endpoint }) => endpoint),
-    validatedAt,
-  );
 
   return Object.freeze({
-    available: capability.reasoning.kind !== "unverified",
+    available: true,
     canonicalSlug: model.canonicalSlug,
-    capability,
     completionPricePerToken: maximumDecimal(
       priceCeilings.map(({ completionPricePerToken }) => completionPricePerToken),
     ),
@@ -412,11 +284,7 @@ export function buildOpenRouterCatalogSnapshot(
       priceCeilings.map(({ promptPricePerToken }) => promptPricePerToken),
     ),
     requestPriceUsd: maximumDecimal(priceCeilings.map(({ requestPriceUsd }) => requestPriceUsd)),
-    supportedParameters: Object.freeze(
-      model.supportedParameters.filter((parameter) =>
-        eligible.every(({ endpoint }) => endpoint.supportedParameters.includes(parameter)),
-      ),
-    ),
+    supportedParameters: Object.freeze([...requiredParameters]),
     validatedAt,
   });
 }
@@ -434,19 +302,6 @@ export function buildSimulatedCatalogSnapshot(
   return Object.freeze({
     available: true,
     canonicalSlug: null,
-    capability: Object.freeze({
-      reasoning: Object.freeze({
-        contractSource: "simulated",
-        defaultEffort: null,
-        defaultEnabled: null,
-        effortSupport: Object.freeze({ kind: "all" }),
-        exclusionVerifiedAt: validatedAt,
-        kind: "optional",
-        maxTokensAccepted: true,
-        traceSafety: "provider_excluded",
-      }),
-      temperatureSupported: true,
-    }),
     completionPricePerToken: "0",
     contextLength: simulatedContextLength,
     displayName: "Capstone simulated model",
@@ -457,12 +312,7 @@ export function buildSimulatedCatalogSnapshot(
     outputModalities: Object.freeze(["text"]),
     promptPricePerToken: "0",
     requestPriceUsd: "0",
-    supportedParameters: Object.freeze([
-      "max_tokens",
-      "reasoning",
-      "reasoning_effort",
-      "temperature",
-    ]),
+    supportedParameters: Object.freeze([...requiredParameters]),
     validatedAt,
   });
 }

@@ -39,11 +39,8 @@ pnpm verify:recovery -- "replace-with-safe-evidence.json"
    credentials. Never open a general range.
 4. Verify PostgreSQL version, migration ledger, search objects, constraints/indexes, `unaccent`,
    timeouts, connections, application DDL/admin denial, and forced reconnect after restriction.
-   Content-free preparation must also prove every assistant-rule and model-policy head references
-   its immutable ledger, every policy revision has exactly fast/balanced/pro tiers, and every
-   generation references its captured policy revision and, where required, prompt revision.
-5. Verify the schema-2 initialization latch and existing workspace/admin/model/prompt authority.
-   Never provide the original initialization document/job/key/roles or send the first invitation.
+5. Verify the initialization latch and existing workspace/admin/model authority. Never provide the
+   original initialization document/job/key/roles or send the first invitation.
 6. Deploy the exact source commit with only steady service/migration variables. Require service/job
    `source_commit_hash`, migration, runtime revision, readiness, content-free integrity counts,
    authentication, reconciliation, and markers.
@@ -61,12 +58,6 @@ pnpm verify:recovery -- "replace-with-safe-evidence.json"
    authority receives writes.
 6. Verify source/migration/latch/markers, auth, critical flow, accounting, and telemetry before
    ending maintenance. Retain the old source until divergence decisions are explicit.
-
-Workspace behavior history is database authority, not rebuildable configuration. Never rewrite a
-prompt or model-policy ledger row, repoint a head by hand, or substitute current policy for a
-generation's captured revision. If restored heads or references fail integrity, keep the target
-isolated and choose another restore point. Once migration `0009` has committed, recovery and
-rollback candidates must be forward-compatible descendants; do not reverse the migration.
 
 ## Cold App recreation
 
