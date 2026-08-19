@@ -4,11 +4,6 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testconta
 import { eq } from "drizzle-orm";
 import { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { WORKSPACE_ASSISTANT_RULES_PRESET } from "../src/assistant-rules/defaults.js";
-import {
-  workspaceAssistantPromptRevisions,
-  workspaceAssistantPrompts,
-} from "../src/database/assistant-rules-schema.js";
 import { createDatabase } from "../src/database/database.js";
 import { employeeApprovals, workspaces } from "../src/database/identity-schema.js";
 import { productionInitialization } from "../src/database/initialization-schema.js";
@@ -16,8 +11,6 @@ import { migrateDatabase } from "../src/database/migrate.js";
 import {
   workspaceCostPolicies,
   workspaceModelPolicies,
-  workspaceModelPolicyRevisions,
-  workspaceModelPolicyRevisionTiers,
 } from "../src/database/model-policy-schema.js";
 import { createIdentityService } from "../src/identity/service.js";
 import {
@@ -26,7 +19,6 @@ import {
   type ModelTier,
   modelTiers,
 } from "../src/model-policy/catalog.js";
-import { INITIAL_TIER_BEHAVIOR_DEFAULTS } from "../src/model-policy/defaults.js";
 import { parseProductionInitializationDocument } from "../src/operator/initialization-document.js";
 import {
   createProductionInitializationLatch,
@@ -37,7 +29,6 @@ import {
   initializeManagedRehearsal,
   initializeProduction,
 } from "../src/operator/production-initialization.js";
-import { testCatalogCapability } from "./support/generation.js";
 
 const apiRoot = fileURLToPath(new URL("..", import.meta.url));
 const operatorExecutable = fileURLToPath(new URL("../node_modules/.bin/tsx", import.meta.url));
@@ -46,13 +37,11 @@ const entrypointScript = fileURLToPath(new URL("../src/entrypoint.ts", import.me
 function documentContents(email = "administrator@capstone.com.ec"): string {
   return JSON.stringify({
     administrator: { email },
-    assistantRules: { preset: WORKSPACE_ASSISTANT_RULES_PRESET },
     modelPolicy: {
       employeeActiveGenerationLimit: 2,
       maximumOutputTokens: { balanced: 8_192, fast: 4_096, pro: 16_384 },
       monthlyBudgetUsd: "100",
       reservationMarginBasisPoints: 2_000,
-      tierBehavior: INITIAL_TIER_BEHAVIOR_DEFAULTS,
     },
     privacyAttestation: {
       attestationVersion: "openrouter-privacy-v1",
@@ -61,7 +50,7 @@ function documentContents(email = "administrator@capstone.com.ec"): string {
       inputOutputLoggingEnabled: false,
       verifiedAt: new Date().toISOString(),
     },
-    schemaVersion: 2,
+    schemaVersion: 1,
     workspace: { displayName: "Capstone", identity: "capstone" },
   });
 }
@@ -80,7 +69,6 @@ function catalog(
         Object.freeze({
           available: true,
           canonicalSlug: initialTierModels[tier],
-          capability: testCatalogCapability,
           completionPricePerToken,
           contextLength: 128_000,
           displayName: `Model ${tier}`,
@@ -204,7 +192,7 @@ describe.sequential("production initialization", () => {
         {
           documentSha256: initializationDocument.documentSha256,
           phase: "complete",
-          schemaVersion: 2,
+          schemaVersion: 1,
           singletonId: 1,
         },
       ]);
@@ -220,18 +208,6 @@ describe.sequential("production initialization", () => {
         { employeeActiveGenerationLimit: 2, monthlyBudgetUsd: "100.000000000000000000" },
       ]);
       await expect(database.select().from(workspaceModelPolicies)).resolves.toHaveLength(3);
-      await expect(database.select().from(workspaceAssistantPrompts)).resolves.toMatchObject([
-        { revision: 1 },
-      ]);
-      await expect(
-        database.select().from(workspaceAssistantPromptRevisions),
-      ).resolves.toMatchObject([{ actorKind: "system", changeKind: "bootstrap", revision: 1 }]);
-      await expect(database.select().from(workspaceModelPolicyRevisions)).resolves.toMatchObject([
-        { actorKind: "system", changeKind: "bootstrap", revision: 1 },
-      ]);
-      await expect(database.select().from(workspaceModelPolicyRevisionTiers)).resolves.toHaveLength(
-        3,
-      );
       await expect(
         createIdentityService(database).initialInvitationTarget({
           adminEmail: initializationDocument.administratorEmail,
@@ -404,22 +380,21 @@ describe.sequential("production initialization", () => {
     expect(loadCatalog).not.toHaveBeenCalled();
   }, 120_000);
 
-  it("uses one schema-2 latch transition despite a skewed process clock", async () => {
+  it("uses the database clock for latch transitions despite a skewed process clock", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2000-01-01T00:00:00.000Z"));
     const pool = new Pool({ connectionString: databaseUrl });
     try {
       const latch = createProductionInitializationLatch(createDatabase(pool));
       const documentSha256 = "a".repeat(64);
-      await expect(latch.claim(documentSha256)).resolves.toMatchObject({
-        phase: "claimed",
-        schemaVersion: 2,
+      await expect(latch.claim(documentSha256)).resolves.toMatchObject({ phase: "claimed" });
+      await expect(latch.markIdentityComplete(documentSha256)).resolves.toMatchObject({
+        phase: "identity-complete",
       });
       await expect(
         latch.completeWith(documentSha256, async () => undefined),
       ).resolves.toMatchObject({
         phase: "complete",
-        schemaVersion: 2,
       });
     } finally {
       await pool.end();
@@ -427,7 +402,7 @@ describe.sequential("production initialization", () => {
     }
   }, 120_000);
 
-  it("leaves application state untouched when provider catalog loading fails", async () => {
+  it("resumes after identity when provider catalog loading fails", async () => {
     const initializationDocument = document();
     await expect(
       initializeProduction(
@@ -449,8 +424,8 @@ describe.sequential("production initialization", () => {
           .select({ phase: productionInitialization.phase })
           .from(productionInitialization)
           .where(eq(productionInitialization.singletonId, 1)),
-      ).resolves.toEqual([{ phase: "claimed" }]);
-      await expect(database.select().from(employeeApprovals)).resolves.toHaveLength(0);
+      ).resolves.toEqual([{ phase: "identity-complete" }]);
+      await expect(database.select().from(employeeApprovals)).resolves.toHaveLength(1);
       await expect(database.select().from(workspaceCostPolicies)).resolves.toHaveLength(0);
     } finally {
       await pool.end();
@@ -552,7 +527,7 @@ describe.sequential("production initialization", () => {
     const database = createDatabase(pool);
     try {
       await expect(database.select().from(productionInitialization)).resolves.toMatchObject([
-        { documentSha256: initializationDocument.documentSha256, phase: "claimed" },
+        { documentSha256: initializationDocument.documentSha256, phase: "identity-complete" },
       ]);
       await expect(database.select().from(workspaceCostPolicies)).resolves.toHaveLength(0);
       await expect(database.select().from(workspaceModelPolicies)).resolves.toHaveLength(0);

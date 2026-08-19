@@ -25,7 +25,6 @@ import type { RequestActor } from "../src/identity/authorization.js";
 import type { IdentityService } from "../src/identity/service.js";
 import { createModelPolicyService } from "../src/model-policy/service.js";
 import { bootstrapSimulatedModelPolicy } from "./support/model-policy.js";
-import { bootstrapTestAssistantRules } from "./support/workspace-behavior.js";
 
 const publicOrigin = "http://localhost:5173";
 
@@ -147,8 +146,6 @@ describe.sequential("conversation core integration", () => {
     const modelPolicy = createModelPolicyService(database);
     await bootstrapSimulatedModelPolicy(modelPolicy, primaryWorkspaceIdentity);
     await bootstrapSimulatedModelPolicy(modelPolicy, secondaryWorkspaceIdentity);
-    await bootstrapTestAssistantRules(database, primaryWorkspaceId);
-    await bootstrapTestAssistantRules(database, secondaryWorkspaceId);
     primary = actor({
       email: "primary@example.test",
       userId: primaryUserId,
@@ -533,17 +530,15 @@ describe.sequential("conversation core integration", () => {
         createdAt: now,
         effectiveParameters: { context: { mode: "full" } },
         idempotencyKey: randomUUID(),
-        modelPolicyRevision: 1,
         purpose: "chat",
         requestedTier: "balanced",
         startedAt: now,
         status,
-        systemPromptVersion: "capstone-chat-base-v2",
+        systemPromptVersion: "capstone-chat-v1",
         terminalReason: status === "finalizing" ? "stop" : null,
         updatedAt: now,
         userId: primary.employee.id,
         workspaceId: primary.workspace.id,
-        workspacePromptRevision: 1,
       });
 
       await expectApplicationError(service.setArchived(primary, conversation.id, true, 0), {

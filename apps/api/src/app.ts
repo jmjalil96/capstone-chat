@@ -2,10 +2,6 @@ import { randomUUID } from "node:crypto";
 import { TypeBoxValidatorCompiler } from "@fastify/type-provider-typebox";
 import Fastify, { LogController } from "fastify";
 import type { Pool } from "pg";
-import {
-  type AssistantRulesService,
-  createAssistantRulesService,
-} from "./assistant-rules/service.js";
 import { type Authentication, createAuthentication } from "./auth/authentication.js";
 import type { ApiConfig } from "./config.js";
 import { createAnswerReportService } from "./conversations/answer-reports.js";
@@ -64,7 +60,6 @@ import { operationalErrorMetadata } from "./operator-error.js";
 import { registerAdminEmployeeRoutes } from "./routes/admin.js";
 import { registerAdminModelRoutes } from "./routes/admin-models.js";
 import { registerAnswerReportRoutes } from "./routes/answer-reports.js";
-import { registerAssistantRulesRoutes } from "./routes/assistant-rules.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerClientErrorRoute } from "./routes/client-errors.js";
 import { registerConversationRoutes } from "./routes/conversations.js";
@@ -89,7 +84,6 @@ import {
 } from "./static-application.js";
 
 export interface ApplicationDependencies {
-  readonly assistantRules?: AssistantRulesService;
   readonly authentication?: Authentication;
   readonly budget?: BudgetService;
   readonly compactions?: CompactionService;
@@ -245,15 +239,11 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
   const cursorCodec = createCursorCodec(config.authSecret);
   const modelPolicy =
     dependencies.modelPolicy ?? createModelPolicyService(database, { cursorCodec });
-  const assistantRules =
-    dependencies.assistantRules ?? createAssistantRulesService(database, { cursorCodec });
   const readinessPolicyMode =
     config.nodeEnv === "production" || config.deploymentProfile === "managed-rehearsal"
       ? "openrouter"
       : config.nodeEnv === "test" && config.webAssetsDirectory !== null
-        ? config.modelGateway === "openrouter"
-          ? "openrouter"
-          : "simulated"
+        ? "simulated"
         : null;
   const lifecycle = createApplicationLifecycle(pool, {
     ...(readinessPolicyMode === null
@@ -410,7 +400,6 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
   });
   registerAuthRoutes(server, { authentication, config });
   registerSessionRoute(server, resolveActor);
-  registerAssistantRulesRoutes(server, { assistantRules, resolveActor });
   registerAdminEmployeeRoutes(server, {
     authentication,
     employees: employeeAdministration,

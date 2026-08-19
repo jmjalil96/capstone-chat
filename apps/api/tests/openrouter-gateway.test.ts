@@ -4,16 +4,10 @@ import {
   serializeCompactionInput,
   serializeSummaryFrame,
 } from "../src/generations/compaction-prompt.js";
-import type {
-  ChatGenerationRequest,
-  GatewayEvent,
-  GenerationRequest,
-} from "../src/generations/model-gateway.js";
+import type { GatewayEvent, GenerationRequest } from "../src/generations/model-gateway.js";
 import { type OpenRouterFetch, OpenRouterGateway } from "../src/openrouter/openrouter-gateway.js";
-import { testEffectiveParameters } from "./support/generation.js";
 
-const request: ChatGenerationRequest = {
-  effectiveParameters: testEffectiveParameters(),
+const request: GenerationRequest = {
   history: [{ role: "user", text: "[synthetic-history]" }],
   message: { role: "user", text: "[synthetic-request]" },
   modelTier: "balanced",
@@ -391,7 +385,6 @@ describe("OpenRouterGateway", () => {
       previousSummary: null,
     });
     const compactionRequest: GenerationRequest = {
-      effectiveParameters: testEffectiveParameters("compaction", "fast"),
       history: [],
       message: { role: "user", text: input },
       modelTier: "fast",
@@ -435,7 +428,6 @@ describe("OpenRouterGateway", () => {
       },
     });
     const titleRequest: GenerationRequest = {
-      effectiveParameters: testEffectiveParameters("title", "fast"),
       history: [],
       message: { role: "user", text: "[synthetic-title-input]" },
       modelTier: "fast",

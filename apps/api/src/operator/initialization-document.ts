@@ -1,8 +1,6 @@
 import { createHash } from "node:crypto";
-import { WORKSPACE_ASSISTANT_RULES_PRESET } from "../assistant-rules/defaults.js";
 import { normalizeApprovalEmail } from "../identity/email-normalization.js";
 import type { VerifiedPrivacyAttestation } from "../model-policy/catalog.js";
-import { INITIAL_TIER_BEHAVIOR_DEFAULTS } from "../model-policy/defaults.js";
 import { canonicalUsd } from "../model-policy/money.js";
 import { parsePrivacyAttestationDocument } from "./model-policy-input.js";
 
@@ -20,9 +18,7 @@ export interface ProductionInitializationDocument {
   readonly monthlyBudgetUsd: "100";
   readonly privacyAttestation: VerifiedPrivacyAttestation;
   readonly reservationMarginBasisPoints: 2_000;
-  readonly schemaVersion: 2;
-  readonly tierBehavior: typeof INITIAL_TIER_BEHAVIOR_DEFAULTS;
-  readonly workspaceAssistantRulesPreset: typeof WORKSPACE_ASSISTANT_RULES_PRESET;
+  readonly schemaVersion: 1;
   readonly workspaceDisplayName: "Capstone";
   readonly workspaceIdentity: "capstone";
 }
@@ -76,22 +72,11 @@ export function parseProductionInitializationDocument(
   const root = record(value, "production initialization document");
   exactKeys(
     root,
-    [
-      "administrator",
-      "assistantRules",
-      "modelPolicy",
-      "privacyAttestation",
-      "schemaVersion",
-      "workspace",
-    ],
+    ["administrator", "modelPolicy", "privacyAttestation", "schemaVersion", "workspace"],
     "production initialization document",
   );
 
-  exactInteger(root.schemaVersion, 2, "schemaVersion");
-
-  const assistantRules = record(root.assistantRules, "assistantRules");
-  exactKeys(assistantRules, ["preset"], "assistantRules");
-  exactString(assistantRules.preset, WORKSPACE_ASSISTANT_RULES_PRESET, "assistantRules.preset");
+  exactInteger(root.schemaVersion, 1, "schemaVersion");
 
   const workspace = record(root.workspace, "workspace");
   exactKeys(workspace, ["displayName", "identity"], "workspace");
@@ -114,7 +99,6 @@ export function parseProductionInitializationDocument(
       "maximumOutputTokens",
       "monthlyBudgetUsd",
       "reservationMarginBasisPoints",
-      "tierBehavior",
     ],
     "modelPolicy",
   );
@@ -138,31 +122,6 @@ export function parseProductionInitializationDocument(
   exactInteger(limits.fast, 4_096, "modelPolicy.maximumOutputTokens.fast");
   exactInteger(limits.balanced, 8_192, "modelPolicy.maximumOutputTokens.balanced");
   exactInteger(limits.pro, 16_384, "modelPolicy.maximumOutputTokens.pro");
-  const tierBehavior = record(modelPolicy.tierBehavior, "modelPolicy.tierBehavior");
-  exactKeys(tierBehavior, ["balanced", "fast", "pro"], "modelPolicy.tierBehavior");
-  for (const tier of ["fast", "balanced", "pro"] as const) {
-    const behavior = record(tierBehavior[tier], `modelPolicy.tierBehavior.${tier}`);
-    exactKeys(
-      behavior,
-      ["reasoningBudgetTokens", "reasoningEffort", "temperaturePreset"],
-      `modelPolicy.tierBehavior.${tier}`,
-    );
-    exactInteger(
-      behavior.reasoningBudgetTokens,
-      INITIAL_TIER_BEHAVIOR_DEFAULTS[tier].reasoningBudgetTokens,
-      `modelPolicy.tierBehavior.${tier}.reasoningBudgetTokens`,
-    );
-    exactString(
-      behavior.reasoningEffort,
-      INITIAL_TIER_BEHAVIOR_DEFAULTS[tier].reasoningEffort,
-      `modelPolicy.tierBehavior.${tier}.reasoningEffort`,
-    );
-    exactString(
-      behavior.temperaturePreset,
-      INITIAL_TIER_BEHAVIOR_DEFAULTS[tier].temperaturePreset,
-      `modelPolicy.tierBehavior.${tier}.temperaturePreset`,
-    );
-  }
 
   const privacySource = record(root.privacyAttestation, "privacyAttestation");
   exactKeys(
@@ -181,13 +140,11 @@ export function parseProductionInitializationDocument(
 
   const canonical = JSON.stringify({
     administrator: { email: normalizedEmail },
-    assistantRules: { preset: WORKSPACE_ASSISTANT_RULES_PRESET },
     modelPolicy: {
       employeeActiveGenerationLimit: 2,
       maximumOutputTokens: { balanced: 8_192, fast: 4_096, pro: 16_384 },
       monthlyBudgetUsd: "100",
       reservationMarginBasisPoints: 2_000,
-      tierBehavior: INITIAL_TIER_BEHAVIOR_DEFAULTS,
     },
     privacyAttestation: {
       attestationVersion: "openrouter-privacy-v1",
@@ -196,7 +153,7 @@ export function parseProductionInitializationDocument(
       inputOutputLoggingEnabled: false,
       verifiedAt,
     },
-    schemaVersion: 2,
+    schemaVersion: 1,
     workspace: { displayName: "Capstone", identity: "capstone" },
   });
 
@@ -208,9 +165,7 @@ export function parseProductionInitializationDocument(
     monthlyBudgetUsd: "100",
     privacyAttestation,
     reservationMarginBasisPoints: 2_000,
-    schemaVersion: 2,
-    tierBehavior: INITIAL_TIER_BEHAVIOR_DEFAULTS,
-    workspaceAssistantRulesPreset: WORKSPACE_ASSISTANT_RULES_PRESET,
+    schemaVersion: 1,
     workspaceDisplayName: "Capstone",
     workspaceIdentity: "capstone",
   });

@@ -105,52 +105,30 @@ require a web deployment.
 
 **Locked**
 
-- All employee-visible chat tiers use one effective system message. A normalized,
-  administrator-owned workspace layer appears first; the mandatory code-owned
-  `capstone-chat-base-v2` block appears last and prevails on conflict.
-- The locked base identifies Capstone Chat, requires compatible Markdown rather than raw HTML,
-  direct and accurate answers, requested formatting, clear uncertainty, no invented sources or
-  access, and the language of the employee's latest request unless another language is requested.
-- Administrators may edit only the workspace layer. Active members may read the current workspace
-  layer and locked base but cannot edit them. The browser never constructs the authoritative
-  composition.
-- The workspace layer is normalized and stored only in immutable PostgreSQL revisions. The base,
-  headings, delimiters, empty marker, and composition function remain in version-controlled backend
-  code. A base change still requires PRD review, a new version, deployment, and exact tests.
-- Each chat generation records the base version and workspace-prompt revision but does not duplicate
-  prompt text. Admission captures the complete prompt snapshot before context planning.
-- Context compaction and automatic title generation use separate versioned prompts, receive no
-  workspace rules, and record their own prompt versions.
-- The exact base text, default workspace text, normalization limits, composition bytes, visibility,
-  retention, and incident behavior are locked by the
-  [Phase 11 plan](../implementation/11-workspace-behavior-controls-plan.md).
+- All three tiers use one minimal Capstone-owned system prompt.
+- It identifies the assistant as Capstone Chat and asks it to be helpful, accurate, and direct.
+- It asks the model to follow the employee's requested format, use Markdown when useful, and distinguish uncertainty from known facts.
+- It asks the model to respond in the language of the employee's latest request unless the employee requests another language.
+- It does not claim access to company systems, documents, or current information the model has not received.
+- It does not invent company knowledge or layer a large custom safety policy over provider behavior.
+- Employees and administrators cannot customize the system prompt in v1.
+- The prompt lives in version-controlled backend code, and every generation records its version.
+- Prompt changes require a reviewed deployment.
+- Context compaction uses a separate versioned prompt and records that version.
+- Prompt text is not supplied by the browser or database configuration.
 
 ## Generation controls
 
 **Locked**
 
 - Employees select only Fast, Balanced, or Pro.
-- Employees do not receive temperature, reasoning, context-size, or arbitrary output controls.
-  Administrators configure one closed temperature preset, reasoning effort, and reasoning-budget
-  choice per tier as part of the existing complete policy mutation. Top-p remains unexposed.
+- V1 does not expose temperature, top-p, reasoning-effort, context-size, or output-length controls.
 - Fastify sends only parameters supported by the resolved OpenRouter model.
-- Fastify resolves configured intent against normalized exact-model and every-eligible-endpoint
-  capabilities during admission. Unsupported optional controls are omitted or conservatively
-  translated without failing an otherwise valid chat. Unverified reasoning metadata makes the
-  catalog row unavailable.
-- Visible chat receives the supported effective temperature and reasoning controls. Compaction uses
-  provider-default reasoning strength and no temperature; title disables optional reasoning and
-  skips the provider call entirely when the Fast mapping has mandatory reasoning.
+- Provider defaults govern sampling and reasoning unless a model mapping requires an explicit backend override. Hidden automatic-title calls are the one fixed override: they disable reasoning entirely so the small output cap is spent on the visible title.
 - Workspace tier policy controls maximum output.
-- The maximum output allowance is the total visible-plus-hidden provider output envelope.
-  Reasoning budget is a non-additive sub-cap that never enlarges context allowance or reservation.
-- Every reasoning-capable request requires provider-side trace exclusion, and the response parser
-  independently discards recognized trace fields. Raw chain-of-thought or hidden reasoning content
-  is never stored, logged, exported, reported, or displayed.
+- Raw chain-of-thought or hidden reasoning content is not requested, stored, or displayed.
 - Reasoning-token counts and cost may be recorded when OpenRouter reports them.
-- Each generation records its model-policy revision and exact effective non-secret parameter
-  snapshot for diagnostics. An admitted generation retains that snapshot across later prompt,
-  policy, or catalog changes.
+- Each generation records its effective non-secret parameter configuration for diagnostics.
 - Parameter configuration is controlled by administrators or deployment, not arbitrary browser input.
 
 ## Streaming protocol
@@ -292,14 +270,6 @@ Compaction behavior:
 - Bound compaction output to 2,048 tokens or the lower effective Fast policy/catalog limit.
 - If fallback must reduce the verbatim window, keep at least the latest six complete turns or reject
   the oversized message before persistence.
-- The complete captured effective chat prompt participates in the conservative estimator, the 80%
-  boundary, full-context and summary-reuse paths, worst-case compaction planning, and the minimum
-  six-turn fallback. An impossible prompt/latest-message combination returns
-  `MESSAGE_TOO_LARGE` before message, generation, or reservation persistence and preserves the
-  draft.
-- Workspace text never enters the compaction request or its input estimate. A compaction required
-  by an admitted chat uses the Fast mapping and model-policy revision captured with that parent
-  admission.
 
 A compaction is identified by the message through which it summarizes the branch:
 

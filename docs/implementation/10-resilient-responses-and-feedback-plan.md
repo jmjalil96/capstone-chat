@@ -1,6 +1,6 @@
 # Phase 10 — Resilient Responses and Employee Feedback Plan
 
-Status: implemented and automated verification complete on 2026-08-15; user accepted on 2026-08-17
+Status: implemented and automated verification complete on 2026-08-15; user acceptance pending
 
 Code authorization: granted by the user on 2026-08-15 ("proceed"). It covers repository code,
 tests, and documentation only. It does not authorize a commit, push, pull request, production
@@ -8,10 +8,6 @@ deployment, external service mutation, or paid action.
 
 ## Planning record
 
-- The user explicitly accepted Phase 10 on 2026-08-17 while authorizing the dependency-ordered
-  Phase 11 implementation. The external paid-provider, managed-edge, container-size, and manual
-  accessibility evidence listed below remains production-launch acceptance work rather than a
-  blocker to the recorded local Phase 10 acceptance.
 - Phase 10 starts from commit `8871b9a` (`Simplify chat shell and composer`) with a clean working
   tree.
 - The user authored the plan below and accepted a read-only review on 2026-08-15. The review

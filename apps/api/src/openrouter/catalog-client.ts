@@ -157,7 +157,6 @@ function validatedCatalogSnapshot(
   zdrPayload: unknown,
   modelPayload: unknown,
   validatedAt: Date,
-  malformedMetadata: "omit" | "reject" = "omit",
 ): OpenRouterCatalogSnapshot | null {
   if (
     safeExactModelId(exactModelId) === null ||
@@ -173,29 +172,14 @@ function validatedCatalogSnapshot(
   const canonicalSlug =
     model.canonical_slug === null ? null : safeProviderIdentifier(model.canonical_slug);
   const displayName = safeProviderIdentifier(model.name);
-  const defaultReasoningEffort =
-    model.reasoning?.default_effort === undefined
-      ? undefined
-      : safeProviderIdentifier(model.reasoning.default_effort);
-  const supportedReasoningEfforts =
-    model.reasoning?.supported_efforts === undefined
-      ? undefined
-      : model.reasoning.supported_efforts === null
-        ? null
-        : safeStringArray(model.reasoning.supported_efforts);
   if (
     model.id !== exactModelId ||
     (model.canonical_slug !== null && canonicalSlug === null) ||
     displayName === null ||
     inputModalities === null ||
     outputModalities === null ||
-    supportedParameters === null ||
-    (model.reasoning?.default_effort !== undefined && defaultReasoningEffort === null) ||
-    (Array.isArray(model.reasoning?.supported_efforts) && supportedReasoningEfforts === null)
+    supportedParameters === null
   ) {
-    if (malformedMetadata === "reject") {
-      throw new OpenRouterCatalogUnavailableError();
-    }
     return null;
   }
   const metadata: OpenRouterModelMetadata = {
@@ -209,27 +193,6 @@ function validatedCatalogSnapshot(
     maximumOutputTokens: model.top_provider?.max_completion_tokens ?? null,
     modelId: exactModelId,
     outputModalities,
-    ...(model.reasoning === undefined
-      ? {}
-      : {
-          reasoning: {
-            ...(defaultReasoningEffort === undefined || defaultReasoningEffort === null
-              ? {}
-              : { defaultEffort: defaultReasoningEffort }),
-            ...(model.reasoning.default_enabled === undefined
-              ? {}
-              : { defaultEnabled: model.reasoning.default_enabled }),
-            ...(model.reasoning.mandatory === undefined
-              ? {}
-              : { mandatory: model.reasoning.mandatory }),
-            ...(supportedReasoningEfforts === undefined
-              ? {}
-              : { supportedEfforts: supportedReasoningEfforts }),
-            ...(model.reasoning.supports_max_tokens === undefined
-              ? {}
-              : { supportsMaxTokens: model.reasoning.supports_max_tokens }),
-          },
-        }),
     supportedParameters,
   };
   const endpoints = zdrPayload.data.flatMap((endpoint) =>
@@ -279,7 +242,7 @@ export class OpenRouterCatalogClient {
       return null;
     }
     if (!isOpenRouterModelResponse(payload)) {
-      throw new OpenRouterCatalogUnavailableError();
+      return null;
     }
     return payload;
   }
@@ -342,13 +305,7 @@ export class OpenRouterCatalogClient {
       if (payload === null) {
         continue;
       }
-      const snapshot = validatedCatalogSnapshot(
-        modelId,
-        zdrPayload,
-        payload,
-        validatedAt,
-        "reject",
-      );
+      const snapshot = validatedCatalogSnapshot(modelId, zdrPayload, payload, validatedAt);
       if (snapshot !== null) {
         snapshots.push(snapshot);
       }

@@ -10,7 +10,6 @@ on:
         type: choice
         options:
           - deploy
-          - cutover-stage
           - prepare-source
       release_revision:
         description: Exact green main commit to release
@@ -80,38 +79,38 @@ jobs:
           GH_TOKEN: ${{ github.token }}
 
       - name: Install pnpm
-        if: ${{ inputs.operation != 'prepare-source' }}
+        if: ${{ inputs.operation == 'deploy' }}
         uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
         with:
           version: 11.20.0
           run_install: false
 
       - name: Set up Node.js
-        if: ${{ inputs.operation != 'prepare-source' }}
+        if: ${{ inputs.operation == 'deploy' }}
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 24.13.0
           cache: pnpm
 
       - name: Install locked validator dependency
-        if: ${{ inputs.operation != 'prepare-source' }}
+        if: ${{ inputs.operation == 'deploy' }}
         run: pnpm install --frozen-lockfile --ignore-scripts --filter capstone-chat
 
       - name: Install doctl
-        if: ${{ inputs.operation != 'prepare-source' }}
+        if: ${{ inputs.operation == 'deploy' }}
         uses: digitalocean/action-doctl@3cb3953159719656269e044e0e24ca16dd2a690f # v2.5.2
         with:
           no_auth: true
           version: 1.166.0
 
       - name: Verify exact doctl version
-        if: ${{ inputs.operation != 'prepare-source' }}
+        if: ${{ inputs.operation == 'deploy' }}
         run: |-
           doctl_version="$(doctl version)"
           test "$(printf '%s\n' "$doctl_version" | sed -n '1p')" = "doctl version 1.166.0-release"
 
       - name: Validate App Platform source authority
-        if: ${{ inputs.operation != 'prepare-source' }}
+        if: ${{ inputs.operation == 'deploy' }}
         env:
           DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_DEPLOY_TOKEN }}
         run: |
@@ -137,14 +136,8 @@ jobs:
               else error("expected one active service") end
             | select(test("^[0-9a-f]{40}$"))
           ' "$app_file")"
-          expected_mode=live
-          if test "$CAPSTONE_RELEASE_OPERATION" = "cutover-stage"; then
-            expected_mode=cutover-quiesced
-          else
-            test "$CAPSTONE_RELEASE_OPERATION" = "deploy"
-          fi
           node deploy/app-platform/live-contract.mjs validate \
-            --mode "$expected_mode" \
+            --mode live \
             --live-file "$app_file" \
             --app-id "$DIGITALOCEAN_APP_ID" \
             --revision "$active_revision" > /dev/null
@@ -165,8 +158,7 @@ jobs:
               exit 0
             fi
           else
-            test "$CAPSTONE_RELEASE_OPERATION" = "deploy" \
-              || test "$CAPSTONE_RELEASE_OPERATION" = "cutover-stage"
+            test "$CAPSTONE_RELEASE_OPERATION" = "deploy"
             test -n "$current_revision"
             git fetch --no-tags origin "$pointer_ref:refs/remotes/origin/$CAPSTONE_RELEASE_BRANCH"
             git merge-base --is-ancestor "$current_revision" "$CAPSTONE_RELEASE_REVISION"
@@ -187,7 +179,7 @@ jobs:
             "$CAPSTONE_RELEASE_REVISION" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Build and deploy the source pointer
-        if: ${{ inputs.operation != 'prepare-source' }}
+        if: ${{ inputs.operation == 'deploy' }}
         id: deployment
         env:
           DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_DEPLOY_TOKEN }}
@@ -230,7 +222,7 @@ jobs:
           test "$phase" = "ACTIVE"
 
       - name: Verify deployed component revisions
-        if: ${{ inputs.operation != 'prepare-source' }}
+        if: ${{ inputs.operation == 'deploy' }}
         env:
           CAPSTONE_DEPLOYMENT_ID: ${{ steps.deployment.outputs.deployment_id }}
           DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_DEPLOY_TOKEN }}
@@ -244,16 +236,8 @@ jobs:
           doctl apps get "$DIGITALOCEAN_APP_ID" --output json > "$app_file"
           unset DIGITALOCEAN_ACCESS_TOKEN
 
-          expected_mode=live
-          component_names="capstone-chat, capstone-migrate"
-          if test "$CAPSTONE_RELEASE_OPERATION" = "cutover-stage"; then
-            expected_mode=cutover-quiesced
-            component_names=capstone-chat
-          else
-            test "$CAPSTONE_RELEASE_OPERATION" = "deploy"
-          fi
           node deploy/app-platform/live-contract.mjs validate \
-            --mode "$expected_mode" \
+            --mode live \
             --live-file "$app_file" \
             --app-id "$DIGITALOCEAN_APP_ID" \
             --revision "$CAPSTONE_RELEASE_REVISION" > "$validation_file"
@@ -265,7 +249,7 @@ jobs:
           printf 'Deployment `%s` built `%s` for: %s.\n' \
             "$CAPSTONE_DEPLOYMENT_ID" \
             "$CAPSTONE_RELEASE_REVISION" \
-            "$component_names" >> "$GITHUB_STEP_SUMMARY"
+            "capstone-chat, capstone-migrate" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify public readiness revision
         if: ${{ inputs.operation == 'deploy' }}

@@ -29,16 +29,12 @@ and the pnpm lockfile remain committed.
 
 ## Contracts
 
-There are six contracts:
+There are four contracts:
 
 - `bootstrap.contract.yaml`: production health-only service, before secrets, Dedicated Egress,
   the custom domain, or a migration job exist;
 - `app.contract.yaml`: final production service, Dedicated Egress, domain and edge policy,
   migration job, alerts, and component-scoped environment declarations;
-- `cutover-quiesced.contract.yaml`: temporary production health-only service at the existing
-  domain, without runtime secrets or a job, used to stop application access before Phase 11;
-- `cutover-initialize.contract.yaml`: the same quiesced service plus the temporary schema-2
-  unified initialization job with exactly its four bootstrap secrets;
 - `rehearsal-bootstrap.contract.yaml`: disposable rehearsal equivalent of bootstrap;
 - `rehearsal.contract.yaml`: final isolated load-rehearsal service and migration job.
 
@@ -60,7 +56,7 @@ variables and extra components, and verifies environment scope, source identity,
 termination policy, alerts, ingress, domain, edge settings, and Dedicated Egress.
 
 DigitalOcean canonically returns the top-level feature `buildpack-stack=ubuntu-22`, including for
-Dockerfile builds. All six contracts require that exact singleton value in both desired and
+Dockerfile builds. All four contracts require that exact singleton value in both desired and
 active deployment specs; missing, additional, or changed features fail closed.
 
 Validation covers both the outer desired App spec and `active_deployment.spec`. A dashboard change
@@ -89,15 +85,10 @@ node deploy/app-platform/live-contract.mjs validate \
   --revision "$EXPECTED_RELEASE_REVISION"
 ```
 
-Use `bootstrap`, `cutover-quiesced`, `cutover-initialize`, `rehearsal-bootstrap`, or `rehearsal`
-for the other contracts. Successful output contains only the App ID, deployment ID, mode, expected
-revision, and sorted Dedicated Egress addresses. The tool rejects non-regular inputs, symlinks,
-other owners, and modes other than `0600`.
-
-The Phase 11 sequence is `cutover-quiesced`, protected `cutover-stage`,
-`cutover-initialize`, then `live`. The initialization contract is temporary and must be removed,
-with its roles and OpenRouter key revoked, before the final contract is installed. These files
-validate provider state; applying each dashboard transition still requires its own authorization.
+Use `bootstrap`, `rehearsal-bootstrap`, or `rehearsal` for the other three contracts. Successful
+output contains only the App ID, deployment ID, mode, expected revision, and sorted Dedicated
+Egress addresses. The tool rejects non-regular inputs, symlinks, other owners, and modes other than
+`0600`.
 
 ## Local verification
 

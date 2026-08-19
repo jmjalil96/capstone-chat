@@ -14,7 +14,6 @@ import {
 } from "../src/model-policy/catalog.js";
 import { createModelPolicyService } from "../src/model-policy/service.js";
 import { costControlTuning } from "../src/model-policy/settings.js";
-import { testCatalogCapability } from "./support/generation.js";
 
 function catalog(validatedAt: Date): Readonly<Record<ModelTier, CatalogModelSnapshot>> {
   return Object.freeze(
@@ -24,7 +23,6 @@ function catalog(validatedAt: Date): Readonly<Record<ModelTier, CatalogModelSnap
         Object.freeze({
           available: true,
           canonicalSlug: initialTierModels[tier],
-          capability: testCatalogCapability,
           completionPricePerToken: "0.000002",
           contextLength: 128_000,
           displayName: `Model ${tier}`,

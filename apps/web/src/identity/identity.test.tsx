@@ -150,20 +150,6 @@ function renderRoute(
       );
     }
 
-    if (url.includes("/api/assistant-rules")) {
-      return response(
-        {
-          baseVersion: "capstone-chat-base-v2",
-          baseText: "REGLAS BASE OBLIGATORIAS",
-          workspaceText: "Usa USD para los ejemplos.",
-          effectivePrompt:
-            "CONTEXTO EDITABLE\n\nUsa USD para los ejemplos.\n\nREGLAS BASE OBLIGATORIAS",
-          updatedAt: "2026-08-17T12:00:00.000Z",
-        },
-        200,
-      );
-    }
-
     throw new Error(`Unexpected request: ${url}`);
   });
   vi.stubGlobal("fetch", fetchMock);
@@ -250,29 +236,6 @@ describe("identity routes", () => {
       await screen.findByRole("heading", { level: 1, name: copy.identity.security.title }),
     ).toBeVisible();
     expect(screen.queryByText(copy.conversations.draft.pendingNotice)).not.toBeInTheDocument();
-    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "PUT")).toHaveLength(1);
-  });
-
-  it("flushes the active draft before opening the read-only assistant rules page", async () => {
-    const { fetchMock, user } = renderRoute("/");
-    const editor = await screen.findByRole("textbox", { name: copy.conversations.draft.label });
-    await waitFor(() => expect(editor).toBeEnabled());
-    await user.type(editor, "Borrador antes de consultar reglas");
-
-    await user.click(screen.getAllByText(validSession.employee.name)[0] as HTMLElement);
-    await user.click(
-      screen.getByRole("link", { name: copy.conversations.navigation.assistantRules }),
-    );
-
-    expect(
-      await screen.findByRole("heading", { level: 1, name: copy.identity.assistantRules.title }),
-    ).toBeVisible();
-    expect(
-      await screen.findByText("Usa USD para los ejemplos.", { selector: "pre" }),
-    ).toBeVisible();
-    expect(
-      screen.queryByRole("textbox", { name: copy.administration.assistant.label }),
-    ).not.toBeInTheDocument();
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "PUT")).toHaveLength(1);
   });
 

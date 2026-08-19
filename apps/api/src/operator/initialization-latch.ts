@@ -2,12 +2,12 @@ import { and, eq, sql } from "drizzle-orm";
 import type { AppDatabase, AppTransaction } from "../database/database.js";
 import { productionInitialization } from "../database/initialization-schema.js";
 
-export type ProductionInitializationPhase = "claimed" | "complete";
+export type ProductionInitializationPhase = "claimed" | "complete" | "identity-complete";
 
 export interface ProductionInitializationState {
   readonly documentSha256: string;
   readonly phase: ProductionInitializationPhase;
-  readonly schemaVersion: 2;
+  readonly schemaVersion: 1;
 }
 
 export class ProductionInitializationConflictError extends Error {
@@ -22,7 +22,10 @@ function toState(row: {
   readonly phase: string;
   readonly schemaVersion: number;
 }): ProductionInitializationState {
-  if (row.schemaVersion !== 2 || (row.phase !== "claimed" && row.phase !== "complete")) {
+  if (
+    row.schemaVersion !== 1 ||
+    (row.phase !== "claimed" && row.phase !== "identity-complete" && row.phase !== "complete")
+  ) {
     throw new ProductionInitializationConflictError(
       "Production initialization state is incompatible",
     );
@@ -30,7 +33,7 @@ function toState(row: {
   return Object.freeze({
     documentSha256: row.documentSha256,
     phase: row.phase,
-    schemaVersion: 2,
+    schemaVersion: 1,
   });
 }
 
@@ -102,7 +105,7 @@ export function createProductionInitializationLatch(database: AppDatabase) {
         .values({
           documentSha256,
           phase: "claimed",
-          schemaVersion: 2,
+          schemaVersion: 1,
           singletonId: 1,
         })
         .returning({
@@ -118,9 +121,8 @@ export function createProductionInitializationLatch(database: AppDatabase) {
     });
   }
 
-  async function completeWith(
+  async function markIdentityComplete(
     documentSha256: string,
-    operation: (transaction: AppTransaction) => Promise<void>,
   ): Promise<ProductionInitializationState> {
     return database.transaction(async (transaction) => {
       const current = await lockedState(transaction);
@@ -130,13 +132,12 @@ export function createProductionInitializationLatch(database: AppDatabase) {
         );
       }
       assertDocument(current, documentSha256);
-      if (current.phase === "complete") {
+      if (current.phase !== "claimed") {
         return current;
       }
-      await operation(transaction);
       const rows = await transaction
         .update(productionInitialization)
-        .set({ completedAt: sql`now()`, phase: "complete", updatedAt: sql`now()` })
+        .set({ phase: "identity-complete", updatedAt: sql`now()` })
         .where(
           and(
             eq(productionInitialization.singletonId, 1),
@@ -159,9 +160,56 @@ export function createProductionInitializationLatch(database: AppDatabase) {
     });
   }
 
+  async function completeWith(
+    documentSha256: string,
+    operation: (transaction: AppTransaction) => Promise<void>,
+  ): Promise<ProductionInitializationState> {
+    return database.transaction(async (transaction) => {
+      const current = await lockedState(transaction);
+      if (current === null) {
+        throw new ProductionInitializationConflictError(
+          "Production initialization has not been claimed",
+        );
+      }
+      assertDocument(current, documentSha256);
+      if (current.phase === "complete") {
+        return current;
+      }
+      if (current.phase !== "identity-complete") {
+        throw new ProductionInitializationConflictError(
+          "Production identity authority is incomplete",
+        );
+      }
+      await operation(transaction);
+      const rows = await transaction
+        .update(productionInitialization)
+        .set({ completedAt: sql`now()`, phase: "complete", updatedAt: sql`now()` })
+        .where(
+          and(
+            eq(productionInitialization.singletonId, 1),
+            eq(productionInitialization.documentSha256, documentSha256),
+            eq(productionInitialization.phase, "identity-complete"),
+          ),
+        )
+        .returning({
+          documentSha256: productionInitialization.documentSha256,
+          phase: productionInitialization.phase,
+          schemaVersion: productionInitialization.schemaVersion,
+        });
+      const updated = rows[0];
+      if (updated === undefined) {
+        throw new ProductionInitializationConflictError(
+          "Production initialization phase changed unexpectedly",
+        );
+      }
+      return toState(updated);
+    });
+  }
+
   return Object.freeze({
     claim,
     completeWith,
+    markIdentityComplete,
     requireComplete,
   });
 }

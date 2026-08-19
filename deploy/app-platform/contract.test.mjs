@@ -91,7 +91,7 @@ function serviceAlerts(contract) {
 }
 
 function appFixture(contract) {
-  const final = !contract.mode.endsWith("bootstrap");
+  const final = contract.mode === "live" || contract.mode === "rehearsal";
   const defaultDomain = `${contract.name}-fixture.ondigitalocean.app`;
   const service = {
     envs: environment(contract.service.environment, contract.service.name),
@@ -153,22 +153,18 @@ function appFixture(contract) {
     Object.assign(spec, contract.edge, {
       domains: [{ domain: defaultDomain, type: "DEFAULT" }, { ...contract.domain }],
       egress: { ...contract.egress },
-      ...(contract.job === undefined
-        ? {}
-        : {
-            jobs: [
-              {
-                envs: environment(contract.job.environment, contract.job.name),
-                instance_count: contract.job.instance_count,
-                instance_size_slug: contract.job.instance_size_slug,
-                kind: contract.job.kind,
-                name: contract.job.name,
-                run_command: contract.job.run_command,
-                ...source(contract),
-                termination: { grace_period_seconds: contract.job.grace_period_seconds },
-              },
-            ],
-          }),
+      jobs: [
+        {
+          envs: environment(contract.job.environment, contract.job.name),
+          instance_count: contract.job.instance_count,
+          instance_size_slug: contract.job.instance_size_slug,
+          kind: contract.job.kind,
+          name: contract.job.name,
+          run_command: contract.job.run_command,
+          ...source(contract),
+          termination: { grace_period_seconds: contract.job.grace_period_seconds },
+        },
+      ],
     });
   } else {
     spec.domains = [{ domain: defaultDomain, type: "DEFAULT" }];
@@ -176,10 +172,7 @@ function appFixture(contract) {
   return {
     active_deployment: {
       id: "deployment-fixture-active",
-      jobs:
-        final && contract.job !== undefined
-          ? [{ name: contract.job.name, source_commit_hash: revision }]
-          : [],
+      jobs: final ? [{ name: contract.job.name, source_commit_hash: revision }] : [],
       services: [{ name: contract.service.name, source_commit_hash: revision }],
       spec: structuredClone(spec),
     },
@@ -198,7 +191,7 @@ function appFixture(contract) {
 
 function providerShapedFixture(contract) {
   const fixture = appFixture(contract);
-  const final = !contract.mode.endsWith("bootstrap");
+  const final = contract.mode === "live" || contract.mode === "rehearsal";
   fixture.spec.maintenance = {};
   delete fixture.spec.services[0].github.deploy_on_push;
   delete fixture.spec.services[0].protocol;
@@ -232,8 +225,6 @@ function providerShapedFixture(contract) {
 for (const [name, mode] of [
   ["app.contract.yaml", "live"],
   ["bootstrap.contract.yaml", "bootstrap"],
-  ["cutover-initialize.contract.yaml", "cutover-initialize"],
-  ["cutover-quiesced.contract.yaml", "cutover-quiesced"],
   ["rehearsal.contract.yaml", "rehearsal"],
   ["rehearsal-bootstrap.contract.yaml", "rehearsal-bootstrap"],
 ]) {
@@ -455,43 +446,6 @@ for (const [name, mode] of [
   });
   chmodSync(protectedPath, 0o644);
   assert.throws(() => readProtectedJson(protectedPath, "Fixture"), /0600/u);
-  rmSync(temporary, { force: true, recursive: true });
-}
-
-{
-  const temporary = mkdtempSync(path.join(os.tmpdir(), "capstone-app-contract-"));
-  const protectedPath = path.join(temporary, "cutover-quiesced.json");
-  const contract = readContract(
-    path.join(directory, "cutover-quiesced.contract.yaml"),
-    "cutover-quiesced",
-  );
-  writeFileSync(protectedPath, `${JSON.stringify(appFixture(contract))}\n`, { mode: 0o600 });
-  const command = spawnSync(
-    process.execPath,
-    [
-      path.join(directory, "live-contract.mjs"),
-      "validate",
-      "--mode",
-      "cutover-quiesced",
-      "--live-file",
-      protectedPath,
-      "--app-id",
-      "app-fixture-final",
-      "--revision",
-      revision,
-    ],
-    { encoding: "utf8" },
-  );
-  assert.equal(command.status, 0, command.stderr);
-  assert.deepEqual(JSON.parse(command.stdout), {
-    appId: "app-fixture-final",
-    dedicatedIps: ["192.0.2.10", "192.0.2.11"],
-    deploymentId: "deployment-fixture-active",
-    mode: "cutover-quiesced",
-    operation: "validate",
-    revision,
-    schema: 1,
-  });
   rmSync(temporary, { force: true, recursive: true });
 }
 

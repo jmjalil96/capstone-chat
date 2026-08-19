@@ -20,8 +20,6 @@ import {
   verifyPrivacyAttestation,
 } from "../src/model-policy/catalog.js";
 import { createModelPolicyService } from "../src/model-policy/service.js";
-import { testCatalogCapability } from "./support/generation.js";
-import { bootstrapSimulatedModelPolicy } from "./support/model-policy.js";
 
 const apiRoot = fileURLToPath(new URL("..", import.meta.url));
 const operatorExecutable = fileURLToPath(new URL("../node_modules/.bin/tsx", import.meta.url));
@@ -84,12 +82,11 @@ function realCatalog(validatedAt: Date): Readonly<Record<ModelTier, CatalogModel
         Object.freeze({
           available: true,
           canonicalSlug: initialTierModels[tier],
-          capability: testCatalogCapability,
           completionPricePerToken: "0.000002",
           contextLength: 128_000,
           displayName: `Model ${tier}`,
           inputModalities: Object.freeze(["text"]),
-          maximumOutputTokens: 16_384,
+          maximumOutputTokens: 8_192,
           metadataSource: "openrouter",
           modelId: initialTierModels[tier],
           outputModalities: Object.freeze(["text"]),
@@ -193,7 +190,7 @@ describe.sequential("model-policy operator commands", () => {
     await service.bootstrap({
       catalog: realCatalog(new Date(Date.now() - 1_000)),
       employeeActiveGenerationLimit: 2,
-      maximumOutputTokens: { balanced: 8_192, fast: 4_096, pro: 16_384 },
+      maximumOutputTokens: { balanced: 2, fast: 1, pro: 3 },
       mode: "openrouter",
       monthlyBudgetUsd: "100",
       privacyAttestation: verifyPrivacyAttestation({
@@ -226,34 +223,65 @@ describe.sequential("model-policy operator commands", () => {
     };
   }
 
-  it("rejects the retired simulated bootstrap command without provider access", async () => {
+  it("bootstraps simulated policy without a key or provider access and retries idempotently", async () => {
     const first = await runOperator(simulatedBootstrapArguments);
     const repeated = await runOperator(simulatedBootstrapArguments);
 
-    expect(first.code).toBe(1);
-    expect(first.stdout).toBe("");
-    expect(parseOperatorOutput(first.stderr)).toEqual({
-      errorName: "Error",
-      outcome: "failed",
+    expect(first.code).toBe(0);
+    expect(first.stderr).toBe("");
+    expect(parseOperatorOutput(first.stdout)).toEqual({
+      command: "bootstrap",
+      mode: "simulated",
+      repeated: false,
+      workspace: "capstone-ecuador",
     });
-    expect(repeated.code).toBe(1);
-    expect(repeated.stdout).toBe("");
-    expect(parseOperatorOutput(repeated.stderr)).toEqual({
-      errorName: "Error",
-      outcome: "failed",
+    expect(repeated.code).toBe(0);
+    expect(repeated.stderr).toBe("");
+    expect(parseOperatorOutput(repeated.stdout)).toEqual({
+      command: "bootstrap",
+      mode: "simulated",
+      repeated: true,
+      workspace: "capstone-ecuador",
     });
     expectNoProviderAccess(first);
     expectNoProviderAccess(repeated);
 
-    expect(await readPolicyState()).toEqual({
-      catalog: [],
-      costPolicies: [],
-      modelPolicies: [],
-      privacyAttestations: [],
-    });
+    const state = await readPolicyState();
+    expect(state.catalog).toHaveLength(3);
+    expect(state.catalog).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          completionPricePerToken: "0.000000000000000000000000",
+          metadataSource: "simulated",
+          promptPricePerToken: "0.000000000000000000000000",
+          requestPriceUsd: "0.000000000000000000",
+        }),
+      ]),
+    );
+    expect(state.costPolicies).toEqual([
+      expect.objectContaining({
+        defaultTier: "balanced",
+        employeeActiveGenerationLimit: 2,
+        monthlyBudgetUsd: "100.000000000000000000",
+        reservationMarginBasisPoints: 2000,
+      }),
+    ]);
+    expect(
+      state.modelPolicies.map(({ maximumOutputTokens, tier }) => ({
+        maximumOutputTokens,
+        tier,
+      })),
+    ).toEqual([
+      { maximumOutputTokens: 2, tier: "balanced" },
+      { maximumOutputTokens: 1, tier: "fast" },
+      { maximumOutputTokens: 3, tier: "pro" },
+    ]);
+    expect(state.privacyAttestations).toEqual([]);
   });
 
-  it("rejects retired bootstrap variations without mutating policy", async () => {
+  it("rejects a conflicting retry without mutating effective policy", async () => {
+    expect((await runOperator(simulatedBootstrapArguments)).code).toBe(0);
+    const before = await readPolicyState();
     const conflictingArguments = simulatedBootstrapArguments.map((value, index, values) =>
       values[index - 1] === "--monthly-budget-usd" ? "101" : value,
     );
@@ -263,11 +291,11 @@ describe.sequential("model-policy operator commands", () => {
     expect(conflict.code).toBe(1);
     expect(conflict.stdout).toBe("");
     expect(parseOperatorOutput(conflict.stderr)).toEqual({
-      errorName: "Error",
+      errorName: "ModelPolicyConflictError",
       outcome: "failed",
     });
     expectNoProviderAccess(conflict);
-    expect((await readPolicyState()).costPolicies).toEqual([]);
+    expect(await readPolicyState()).toEqual(before);
   });
 
   it("renews an existing real policy without provider access and retries idempotently", async () => {
@@ -337,10 +365,7 @@ describe.sequential("model-policy operator commands", () => {
     ] as const;
 
     const unbootstrapped = await runOperator(argumentsList);
-    await bootstrapSimulatedModelPolicy(
-      createModelPolicyService(createDatabase(pool)),
-      "capstone-ecuador",
-    );
+    expect((await runOperator(simulatedBootstrapArguments)).code).toBe(0);
     const simulated = await runOperator(argumentsList);
 
     for (const result of [unbootstrapped, simulated]) {
@@ -409,7 +434,7 @@ describe.sequential("model-policy operator commands", () => {
     });
   });
 
-  it("rejects the retired real bootstrap command before provider access or mutation", async () => {
+  it("fails real bootstrap without a key before provider access or policy mutation", async () => {
     const result = await runOperator([
       "bootstrap",
       "--workspace",
@@ -435,7 +460,8 @@ describe.sequential("model-policy operator commands", () => {
     expect(result.code).toBe(1);
     expect(result.stdout).toBe("");
     expect(parseOperatorOutput(result.stderr)).toEqual({
-      errorName: "Error",
+      configurationKey: "OPENROUTER_API_KEY",
+      errorName: "ConfigurationError",
       outcome: "failed",
     });
     expectNoProviderAccess(result);

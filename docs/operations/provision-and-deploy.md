@@ -61,18 +61,17 @@ release pointer fixed and verify the resulting component source commit after eve
    and the schema-versioned initialization document (maximum 32 KiB). It receives no final role,
    Better Auth, Resend, or New Relic credential. Production uses
    `node apps/api/dist/entrypoint.js initialize`, `NODE_ENV=production`,
-   `MODEL_GATEWAY=openrouter`, `CAPSTONE_INITIALIZATION_SCHEMA_VERSION=2`, and secrets
+   `MODEL_GATEWAY=openrouter`, `CAPSTONE_INITIALIZATION_SCHEMA_VERSION=1`, and secrets
    `CAPSTONE_BOOTSTRAP_MIGRATION_DATABASE_URL`, `CAPSTONE_BOOTSTRAP_DATABASE_URL`,
    `OPENROUTER_API_KEY`, and `CAPSTONE_INITIALIZATION_DOCUMENT`. Rehearsal uses
    `node apps/api/dist/entrypoint.js initialize-rehearsal`, `NODE_ENV=test`, the managed-rehearsal
    profile, and the same two database/document secrets without an OpenRouter key. Both jobs use
    the appropriate release pointer, Dockerfile, 512-MiB size, runtime commit binding, deployment
    target, and platform secret source.
-8. **Verify and remove initialization.** Require the durable document-hash latch, idempotent exact
-   repeat, conflict rejection before provider work, and one atomic workspace/admin/catalog/policy/
-   assistant-rules authority. Model-policy and assistant-rule heads must reference complete
-   revision-1 ledgers. Require no email. Remove the job/variables and revoke both roles/key before
-   continuing. Prove replay cannot mutate authority.
+8. **Verify and remove initialization.** Require the ordered durable document-hash latch,
+   idempotent exact repeat, conflict rejection before provider work, one workspace/admin approval,
+   and no email. Remove the job/variables and revoke both roles/key before continuing. Prove replay
+   cannot mutate authority.
 9. **Stage the exact final contract once.** Under the separately authorized first-provisioning
    grant, use the App Platform dashboard to replace the bootstrap service configuration with
    `app.contract.yaml` (or `rehearsal.contract.yaml`) exactly: steady service command and health,
@@ -107,13 +106,6 @@ release pointer fixed and verify the resulting component source commit after eve
     and records no email or action URL. Prove invitation, verification, and password-reset delivery,
     links, Spanish HTML/plain text, expiry, and current desktop/mobile rendering without retaining
     recipients or action URLs. Record final acceptance before inviting a second employee.
-
-For the authorized Phase 11 prelaunch change, replace the ordinary first-provisioning transition
-with the synchronized `cutover-quiesced` → protected `cutover-stage` →
-`cutover-initialize` → final `live` choreography in
-[Deploy and rollback](./deploy-and-rollback.md). Migration `0009` deliberately aborts unless every
-reviewed application-owned table is empty. The retired `identity:bootstrap` and
-`model-policy:bootstrap` commands are not valid alternatives to schema-2 initialization.
 
 ## Managed rehearsal
 

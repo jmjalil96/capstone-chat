@@ -17,7 +17,6 @@ import type { GenerationService } from "../src/generations/service.js";
 import { generationTuning } from "../src/generations/settings.js";
 import { createApplicationTelemetry } from "../src/observability/telemetry.js";
 import { OpenRouterGateway } from "../src/openrouter/openrouter-gateway.js";
-import { testEffectiveParameters } from "./support/generation.js";
 
 describe("Phase 4 generation configuration", () => {
   it("locks the approved operational values and versioned backend copy", () => {
@@ -37,19 +36,14 @@ describe("Phase 4 generation configuration", () => {
     });
     expect(systemPrompt).toEqual({
       text: [
-        "REGLAS BASE DE CAPSTONE CHAT — OBLIGATORIAS Y PREVALECEN ANTE CUALQUIER CONFLICTO",
-        "",
-        "- Eres Capstone Chat, el asistente de IA para empleados de Capstone.",
-        "- Responde en Markdown compatible con Capstone Chat. No emitas HTML sin procesar.",
-        "- Sé útil, preciso y directo, y respeta el formato solicitado.",
-        "- No afirmes que realizaste acciones ni que accediste a sistemas, cuentas, archivos, sitios,",
-        "  herramientas o información fuera de lo incluido explícitamente en esta conversación.",
-        "- No inventes fuentes, citas, cifras ni hechos. Distingue con claridad lo conocido, lo inferido y",
-        "  lo incierto; cuando no puedas verificar algo, dilo.",
-        "- Responde en el idioma de la solicitud más reciente, salvo que la persona pida explícitamente",
-        "  otro idioma.",
+        "You are Capstone Chat, an AI assistant for Capstone employees.",
+        "Be helpful, accurate, and direct.",
+        "Follow the employee's requested format and use Markdown when useful.",
+        "Clearly distinguish known facts from uncertainty.",
+        "Respond in the language of the employee's latest request unless they request another language.",
+        "Use only the conversation content provided. Do not claim access to company systems, documents, or current information you have not received, and do not invent company knowledge.",
       ].join("\n"),
-      version: "capstone-chat-base-v2",
+      version: "capstone-chat-v1",
     });
     expect(continueMessage).toEqual({
       text: "Continúa desde donde te detuviste, manteniendo el idioma y el formato de la respuesta anterior.",
@@ -369,7 +363,6 @@ describe("CheckpointScheduler", () => {
 
 describe("FakeModelGateway", () => {
   const request = {
-    effectiveParameters: testEffectiveParameters(),
     history: [],
     message: { role: "user" as const, text: "Mensaje sintético" },
     modelTier: "balanced" as const,
@@ -431,7 +424,6 @@ describe("FakeModelGateway", () => {
     const compactionEvents = [];
     for await (const event of gateway.stream(
       {
-        effectiveParameters: testEffectiveParameters("compaction", "fast"),
         history: [],
         message: { role: "user", text: "{}" },
         modelTier: "fast",

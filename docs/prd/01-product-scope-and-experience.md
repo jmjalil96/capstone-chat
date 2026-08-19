@@ -225,35 +225,15 @@ The same React application contains a role-gated `/admin` area. It provides simp
 
 - Approving and deactivating employees
 - Revoking an employee's sessions
-- Editing one workspace-wide plain-text layer of company context and assistant rules under
-  **Asistente**, previewing its effective composition with the mandatory locked base, and reviewing
-  or reverting its immutable actor-attributed revision history
 - Mapping Fast, Balanced, and Pro to curated OpenRouter models
 - Enabling or disabling a tier
 - Configuring the maximum output allowance for each tier
-- Choosing one bounded named temperature preset, reasoning effort, and non-additive reasoning
-  budget for each tier, with truthful capability status and complete immutable policy history under
-  **Modelos**
 - Setting the monthly workspace budget
 - Viewing current monthly spend
 - Viewing usage by employee and tier
 - Reading employee answer reports (Phase 10): a newest-first read-only inbox with no status, filters, edits, deletion, exports, or notifications
 
 Fastify enforces administrator authorization for every administrative operation. Hiding administrative screens in the browser is not an authorization boundary.
-
-Phase 11 adds **Reglas del asistente** to the authenticated account menu. Every active workspace
-member may read the current workspace layer, mandatory locked base, effective order, and last
-updated time. Employees receive no editor, history, actor metadata, model identity, parameter, or
-cost details. Administrator save, reset, and revert surfaces disclose before mutation that the
-workspace layer is visible to active members, is sent to the configured Zero Data Retention
-provider on each employee chat request, and remains in immutable revision history. The browser
-renders all rule text literally rather than as Markdown or HTML.
-
-The workspace layer is limited to normalized company context and house rules. V1 still excludes
-employee-authored or personal instructions, conversation-level controls, prompt libraries, model
-written memory, reasoning traces, and employee-facing model parameters. The exact limits, initial
-text, composition order, control presets, and retention behavior are locked by the
-[Phase 11 workspace behavior controls plan](../implementation/11-workspace-behavior-controls-plan.md).
 
 ## Out of scope
 

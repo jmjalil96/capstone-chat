@@ -9,8 +9,6 @@ import {
   type AdminApproveEmployeeRequest,
   type AdminApproveEmployeeResponse,
   AdminApproveEmployeeResponseSchema,
-  type AdminAssistantRulesResponse,
-  AdminAssistantRulesResponseSchema,
   type AdminDeactivateEmployeeResponse,
   AdminDeactivateEmployeeResponseSchema,
   type AdminEmployeeListResponse,
@@ -20,14 +18,11 @@ import {
   AdminEmployeeSoftBudgetResponseSchema,
   type AdminModelCatalogListResponse,
   AdminModelCatalogListResponseSchema,
-  type AdminModelPolicyHistoryResponse,
-  AdminModelPolicyHistoryResponseSchema,
   type AdminModelPolicyResponse,
   AdminModelPolicyResponseSchema,
   type AdminRefreshModelCatalogRequest,
   type AdminRefreshModelCatalogResponse,
   AdminRefreshModelCatalogResponseSchema,
-  type AdminRevertModelPolicyRequest,
   type AdminUpdateModelPolicyRequest,
   type AdminUpdateModelPolicyResponse,
   AdminUpdateModelPolicyResponseSchema,
@@ -35,19 +30,10 @@ import {
   AdminUsageResponseSchema,
   type ApiErrorCode,
   ApiErrorSchema,
-  type AssistantRulesHistoryResponse,
-  AssistantRulesHistoryResponseSchema,
-  type PreviewAssistantRulesRequest,
-  type PreviewAssistantRulesResponse,
-  PreviewAssistantRulesResponseSchema,
-  type ResetAssistantRulesRequest,
-  type RevertAssistantRulesRequest,
   type SessionResponse,
-  type UpdateAssistantRulesRequest,
 } from "@capstone/protocol";
 import type { TSchema } from "typebox";
 import Value from "typebox/value";
-import { reportAuthenticationRequired, reportWorkspaceAccessDenied } from "../api/session-boundary";
 
 export class AdministrationApiError extends Error {
   readonly code: ApiErrorCode;
@@ -79,12 +65,6 @@ export const administrationQueryKeys = {
     [...administrationQueryKeys.all(scope), "catalog"] as const,
   policy: (scope: AdministrationQueryScope) =>
     [...administrationQueryKeys.all(scope), "policy"] as const,
-  policyHistory: (scope: AdministrationQueryScope) =>
-    [...administrationQueryKeys.policy(scope), "revisions"] as const,
-  assistantRules: (scope: AdministrationQueryScope) =>
-    [...administrationQueryKeys.all(scope), "assistant-rules"] as const,
-  assistantRulesHistory: (scope: AdministrationQueryScope) =>
-    [...administrationQueryKeys.assistantRules(scope), "revisions"] as const,
   usage: (scope: AdministrationQueryScope) =>
     [...administrationQueryKeys.all(scope), "usage"] as const,
   reports: (scope: AdministrationQueryScope) =>
@@ -104,19 +84,8 @@ function jsonRequest(method: "POST" | "PUT", body: unknown, signal?: AbortSignal
 }
 
 async function payload(response: Response): Promise<unknown> {
-  if (response.status === 401) {
-    reportAuthenticationRequired();
-  }
   try {
-    const body: unknown = await response.json();
-    if (
-      response.status === 403 &&
-      Value.Check(ApiErrorSchema, body) &&
-      body.code === "WORKSPACE_ACCESS_DENIED"
-    ) {
-      reportWorkspaceAccessDenied();
-    }
-    return body;
+    return await response.json();
   } catch {
     throw new Error("The administration response was not valid JSON.");
   }
@@ -270,93 +239,6 @@ export async function updateAdminPolicy(
   return validated(
     await fetch("/api/admin/model-policy", jsonRequest("PUT", input, signal)),
     AdminUpdateModelPolicyResponseSchema,
-  );
-}
-
-export async function fetchAdminPolicyHistory(
-  cursor?: string,
-  signal?: AbortSignal,
-): Promise<AdminModelPolicyHistoryResponse> {
-  return validated(
-    await fetch(pageEndpoint("/api/admin/model-policy/revisions", cursor), readRequest(signal)),
-    AdminModelPolicyHistoryResponseSchema,
-  );
-}
-
-export async function revertAdminPolicy(
-  revision: number,
-  input: AdminRevertModelPolicyRequest,
-  signal?: AbortSignal,
-): Promise<AdminModelPolicyResponse> {
-  return validated(
-    await fetch(
-      `/api/admin/model-policy/revisions/${encodeURIComponent(String(revision))}/revert`,
-      jsonRequest("POST", input, signal),
-    ),
-    AdminModelPolicyResponseSchema,
-  );
-}
-
-export async function fetchAdminAssistantRules(
-  signal?: AbortSignal,
-): Promise<AdminAssistantRulesResponse> {
-  return validated(
-    await fetch("/api/admin/assistant-rules", readRequest(signal)),
-    AdminAssistantRulesResponseSchema,
-  );
-}
-
-export async function previewAdminAssistantRules(
-  input: PreviewAssistantRulesRequest,
-  signal?: AbortSignal,
-): Promise<PreviewAssistantRulesResponse> {
-  return validated(
-    await fetch("/api/admin/assistant-rules/preview", jsonRequest("POST", input, signal)),
-    PreviewAssistantRulesResponseSchema,
-  );
-}
-
-export async function updateAdminAssistantRules(
-  input: UpdateAssistantRulesRequest,
-  signal?: AbortSignal,
-): Promise<AdminAssistantRulesResponse> {
-  return validated(
-    await fetch("/api/admin/assistant-rules", jsonRequest("PUT", input, signal)),
-    AdminAssistantRulesResponseSchema,
-  );
-}
-
-export async function resetAdminAssistantRules(
-  input: ResetAssistantRulesRequest,
-  signal?: AbortSignal,
-): Promise<AdminAssistantRulesResponse> {
-  return validated(
-    await fetch("/api/admin/assistant-rules/reset", jsonRequest("POST", input, signal)),
-    AdminAssistantRulesResponseSchema,
-  );
-}
-
-export async function fetchAdminAssistantRulesHistory(
-  cursor?: string,
-  signal?: AbortSignal,
-): Promise<AssistantRulesHistoryResponse> {
-  return validated(
-    await fetch(pageEndpoint("/api/admin/assistant-rules/revisions", cursor), readRequest(signal)),
-    AssistantRulesHistoryResponseSchema,
-  );
-}
-
-export async function revertAdminAssistantRules(
-  revision: number,
-  input: RevertAssistantRulesRequest,
-  signal?: AbortSignal,
-): Promise<AdminAssistantRulesResponse> {
-  return validated(
-    await fetch(
-      `/api/admin/assistant-rules/revisions/${encodeURIComponent(String(revision))}/revert`,
-      jsonRequest("POST", input, signal),
-    ),
-    AdminAssistantRulesResponseSchema,
   );
 }
 

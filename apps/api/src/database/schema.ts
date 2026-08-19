@@ -1,5 +1,4 @@
 export * from "./answer-report-schema.js";
-export * from "./assistant-rules-schema.js";
 export * from "./auth-schema.generated.js";
 export * from "./compaction-schema.js";
 export * from "./conversation-schema.js";
