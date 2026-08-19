@@ -434,7 +434,7 @@ select:focus-visible,
 }
 
 .compact-button {
-  min-height: 2.5rem;
+  min-height: 2.75rem;
   padding: var(--capstone-space-2) var(--capstone-space-4);
   font-size: var(--capstone-type-small);
 }
@@ -856,7 +856,7 @@ select:focus-visible,
 
 .account-menu-panel a,
 .account-menu-panel button {
-  min-height: 2.5rem;
+  min-height: 2.75rem;
   display: flex;
   align-items: center;
   gap: var(--capstone-space-2);
@@ -1565,6 +1565,23 @@ select:focus-visible,
   border: 0;
 }
 
+/* The 44px floor applies to the per-message actions inside `.message-actions`.
+   `.message-action` is also worn by the code-block copy button, which sits in a
+   compact header outside that fieldset, so the rule is scoped to the fieldset to
+   avoid inflating every code block by the difference. */
+.message-actions .message-action {
+  min-block-size: 2.75rem;
+  display: inline-flex;
+  align-items: center;
+}
+
+/* The alternative arrows render a single glyph, so a height floor alone still
+   leaves a ~20px-wide target. Both axes need the floor. */
+.message-actions .message-alternative-controls .message-action {
+  min-inline-size: 2.75rem;
+  justify-content: center;
+}
+
 .message-action:disabled {
   cursor: not-allowed;
   opacity: 0.58;
@@ -1626,14 +1643,21 @@ select:focus-visible,
 .search-match {
   outline: 2px solid var(--app-accent);
   outline-offset: var(--capstone-space-2);
+  /* Gold alone is 2.08:1 on white, so the teal leading stripe carries the
+     accessible signal and the gold wash stays decorative reinforcement. The
+     stripe is inset, so the padding keeps it from painting under the text. */
+  padding-inline-start: var(--capstone-space-3);
+  box-shadow: inset 3px 0 0 var(--app-action);
   background: rgb(226 171 51 / 18%);
   transition:
     background-color 520ms var(--capstone-ease-standard),
+    box-shadow 520ms var(--capstone-ease-standard),
     outline-color 520ms var(--capstone-ease-standard);
 }
 
 .search-match-fade {
   outline-color: transparent;
+  box-shadow: inset 3px 0 0 transparent;
   background: transparent;
 }
 
@@ -1754,10 +1778,6 @@ select:focus-visible,
 
 .action-dialog p {
   line-height: 1.55;
-}
-
-.action-dialog .compact-button {
-  min-height: 2.75rem;
 }
 
 .dialog-actions {
@@ -2687,7 +2707,10 @@ select:focus-visible,
 
 .message-action[data-report-state="reported"] {
   cursor: default;
-  opacity: 0.72;
+  /* .text-button paints this label in --app-action (#007265, 5.84:1 on white).
+     At 0.72 opacity it composites to #479990 -- 3.37:1, under the 4.5:1 floor.
+     The muted token reaches the same de-emphasis at 5.53:1. */
+  color: var(--app-text-muted);
 }
 
 /* Phase 10 — administrator report inbox */
