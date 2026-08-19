@@ -340,3 +340,46 @@ test("@critical-accessibility scans the responsive authenticated shell", async (
   await expect(drawer).not.toBeVisible();
   await expect(opener).toBeFocused();
 });
+
+// The account panel opens upward from a trigger pinned to the sidebar bottom, so on a
+// short viewport its email and role rows can be clipped above the top edge with no way
+// to scroll them back. `expectViewportContained` in chat-shell.spec.ts only measures the
+// horizontal axis, so no existing test could observe this.
+test("@critical-accessibility keeps the account menu inside a short viewport", async ({ page }) => {
+  await installMobileChatFixture(page);
+  // 300px is below the height at which the unbounded panel first clears the top edge on
+  // its own, so this height fails without the ceiling and passes with it. A taller
+  // viewport would pass either way and prove nothing.
+  await page.setViewportSize({ width: 844, height: 300 });
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: copy.conversations.newChat.title })).toBeVisible();
+
+  const opener = page.getByRole("button", { name: copy.conversations.navigation.open });
+  await opener.click();
+  const drawer = page.getByRole("dialog", { name: copy.conversations.navigation.label });
+  await expect(drawer).toBeVisible();
+
+  await drawer.getByLabel(copy.conversations.navigation.account).click();
+  const panel = page.locator(".account-menu-panel");
+  await expect(panel).toBeVisible();
+
+  const geometry = await panel.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    return {
+      scrollable: element.scrollHeight > element.clientHeight + 1,
+      top: box.top,
+      viewportHeight: document.documentElement.clientHeight,
+    };
+  });
+
+  // A negative top is unreachable content: the rows above the edge cannot be scrolled
+  // back into view because the panel itself is what overflows.
+  expect(
+    geometry.top,
+    "the account panel must not be clipped above the viewport",
+  ).toBeGreaterThanOrEqual(0);
+  // The sign-out control is the last row, so it proves the whole panel stayed reachable.
+  await expect(
+    panel.getByRole("button", { name: copy.conversations.navigation.signOut }),
+  ).toBeInViewport();
+});

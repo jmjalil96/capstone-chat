@@ -29,7 +29,7 @@ html {
 
 body {
   min-width: 20rem;
-  min-height: 100vh;
+  min-height: 100svh;
   margin: 0;
   background: var(--app-page);
   color: var(--app-text);
@@ -64,7 +64,7 @@ select:focus-visible,
 }
 
 #root {
-  min-height: 100vh;
+  min-height: 100svh;
 }
 
 .root-failure {
@@ -845,9 +845,27 @@ select:focus-visible,
   z-index: 5;
   inset-inline: 0;
   bottom: calc(100% + var(--capstone-space-2));
+  /* The panel opens upward from a trigger pinned to the sidebar bottom, so the
+     space above it is the viewport minus everything below its own top edge, not
+     a symmetric margin. Subtracting the trigger (3rem), the panel offset
+     (space-2), the footer rule (space-3) and the sidebar padding (space-5)
+     leaves space-4 of breathing room at the top. */
+  max-block-size: min(
+    20rem,
+    calc(
+      100dvh -
+      3rem -
+      var(--capstone-space-2) -
+      var(--capstone-space-3) -
+      var(--capstone-space-5) -
+      var(--capstone-space-4)
+    )
+  );
   display: grid;
   gap: var(--capstone-space-2);
   padding: var(--capstone-space-3);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   background: var(--app-panel);
   border: 1px solid var(--app-border);
   border-radius: var(--capstone-radius-sm);
@@ -2712,17 +2730,31 @@ select:focus-visible,
   gap: var(--capstone-space-2);
 }
 
+/* A flex child defaults to min-width:auto, so a long reporter address sets a
+   min-content floor wider than its column and widens the whole card. */
+.admin-report-item header > div {
+  min-inline-size: 0;
+}
+
+.admin-report-item header strong,
+.admin-report-item header p {
+  overflow-wrap: anywhere;
+}
+
 .admin-report-item p {
   margin: 0;
 }
 
 .admin-report-note {
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .admin-report-dialog {
   width: min(calc(100% - 2 * var(--capstone-gutter-small)), 44rem);
-  max-block-size: min(85vh, 48rem);
+  /* svh keeps the dialog inside the small viewport while mobile toolbars are
+     expanded, matching the shell the rest of the app is measured against. */
+  max-block-size: min(85svh, 48rem);
   overflow: auto;
 }
 
