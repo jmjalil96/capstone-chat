@@ -1,0 +1,153 @@
+name: Deploy App Platform source
+description: Fast-forward one protected source pointer, deploy it, and verify contract and readiness
+inputs:
+  access-token:
+    description: Environment-scoped DigitalOcean deployment token
+    required: true
+  app-id:
+    description: Fixed DigitalOcean App ID
+    required: true
+  environment:
+    description: staging or production
+    required: true
+  origin:
+    description: Fixed public origin
+    required: true
+  release-branch:
+    description: Protected App Platform source branch
+    required: true
+  revision:
+    description: Exact green main commit
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Verify exact doctl version
+      shell: bash
+      run: test "$(doctl version | sed -n '1p')" = "doctl version 1.166.0-release"
+
+    - name: Validate current authority and fast-forward source pointer
+      shell: bash
+      env:
+        CAPSTONE_APP_ID: ${{ inputs.app-id }}
+        CAPSTONE_ENVIRONMENT: ${{ inputs.environment }}
+        CAPSTONE_RELEASE_BRANCH: ${{ inputs.release-branch }}
+        CAPSTONE_REVISION: ${{ inputs.revision }}
+        DIGITALOCEAN_ACCESS_TOKEN: ${{ inputs.access-token }}
+      run: |
+        set -euo pipefail
+        umask 077
+
+        case "$CAPSTONE_ENVIRONMENT" in staging|production) ;; *) exit 1 ;; esac
+        test "${#CAPSTONE_REVISION}" -eq 40
+        case "$CAPSTONE_REVISION" in *[!0-9a-f]*) exit 1 ;; esac
+        test "${#CAPSTONE_APP_ID}" -ge 20
+        case "$CAPSTONE_APP_ID" in *[!0-9a-f-]*) exit 1 ;; esac
+
+        app_file="$(mktemp "$RUNNER_TEMP/capstone-app-before.XXXXXX.json")"
+        trap 'rm -f -- "$app_file"' EXIT
+        doctl apps get "$CAPSTONE_APP_ID" --output json > "$app_file"
+        active_revision="$(jq -er '
+          (if type == "array" then
+            if length == 1 then .[0] else error("expected one app") end
+          else . end)
+          | .active_deployment.services
+          | if length == 1 then .[0].source_commit_hash else error("expected one service") end
+          | select(test("^[0-9a-f]{40}$"))
+        ' "$app_file")"
+        node deploy/app-platform/live-contract.mjs validate \
+          --environment "$CAPSTONE_ENVIRONMENT" \
+          --live-file "$app_file" \
+          --app-id "$CAPSTONE_APP_ID" \
+          --revision "$active_revision" > /dev/null
+        git merge-base --is-ancestor "$active_revision" "$CAPSTONE_REVISION"
+
+        pointer_ref="refs/heads/$CAPSTONE_RELEASE_BRANCH"
+        pointer_lines="$(git ls-remote --heads origin "$pointer_ref")"
+        test "$(printf '%s\n' "$pointer_lines" | sed '/^$/d' | wc -l | tr -d ' ')" -eq 1
+        current_revision="$(printf '%s\n' "$pointer_lines" | awk 'NF == 2 {print $1}')"
+        git fetch --no-tags origin "$pointer_ref:refs/remotes/origin/$CAPSTONE_RELEASE_BRANCH"
+        git merge-base --is-ancestor "$current_revision" "$CAPSTONE_REVISION"
+        git push origin "$CAPSTONE_REVISION:$pointer_ref"
+        test "$(git ls-remote --heads origin "$pointer_ref" | awk '{print $1}')" = "$CAPSTONE_REVISION"
+
+    - name: Build, migrate, and activate source
+      id: deploy
+      shell: bash
+      env:
+        CAPSTONE_APP_ID: ${{ inputs.app-id }}
+        CAPSTONE_REVISION: ${{ inputs.revision }}
+        DIGITALOCEAN_ACCESS_TOKEN: ${{ inputs.access-token }}
+      run: |
+        set -euo pipefail
+        deployment_id="$(doctl apps create-deployment "$CAPSTONE_APP_ID" \
+          --force-rebuild --format ID --no-header | tail -n 1 | tr -d '[:space:]')"
+        test "${#deployment_id}" -ge 20
+        case "$deployment_id" in *[!0-9a-f-]*) exit 1 ;; esac
+        printf 'deployment_id=%s\n' "$deployment_id" >> "$GITHUB_OUTPUT"
+
+        phase=""
+        for _attempt in $(seq 1 360); do
+          state="$(doctl apps get-deployment "$CAPSTONE_APP_ID" "$deployment_id" \
+            --format ID,Phase --no-header 2>/dev/null || true)"
+          observed_id="$(printf '%s\n' "$state" | awk 'NF >= 2 {print $1}')"
+          phase="$(printf '%s\n' "$state" | awk 'NF >= 2 {print $2}')"
+          test -z "$observed_id" || test "$observed_id" = "$deployment_id"
+          case "$phase" in
+            ACTIVE) break ;;
+            ERROR|CANCELED|SUPERSEDED)
+              printf 'Deployment %s stopped in %s; the prior active deployment remains authoritative.\n' \
+                "$deployment_id" "$phase" >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+              ;;
+          esac
+          sleep 10
+        done
+        test "$phase" = "ACTIVE"
+
+    - name: Verify contract, component SHAs, and readiness revision
+      shell: bash
+      env:
+        CAPSTONE_APP_ID: ${{ inputs.app-id }}
+        CAPSTONE_DEPLOYMENT_ID: ${{ steps.deploy.outputs.deployment_id }}
+        CAPSTONE_ENVIRONMENT: ${{ inputs.environment }}
+        CAPSTONE_ORIGIN: ${{ inputs.origin }}
+        CAPSTONE_REVISION: ${{ inputs.revision }}
+        DIGITALOCEAN_ACCESS_TOKEN: ${{ inputs.access-token }}
+      run: |
+        set -euo pipefail
+        umask 077
+        app_file="$(mktemp "$RUNNER_TEMP/capstone-app-after.XXXXXX.json")"
+        validation_file="$(mktemp "$RUNNER_TEMP/capstone-validation.XXXXXX.json")"
+        trap 'rm -f -- "$app_file" "$validation_file"' EXIT
+        doctl apps get "$CAPSTONE_APP_ID" --output json > "$app_file"
+        node deploy/app-platform/live-contract.mjs validate \
+          --environment "$CAPSTONE_ENVIRONMENT" \
+          --live-file "$app_file" \
+          --app-id "$CAPSTONE_APP_ID" \
+          --revision "$CAPSTONE_REVISION" > "$validation_file"
+        jq -e --arg deployment_id "$CAPSTONE_DEPLOYMENT_ID" \
+          '.deploymentId == $deployment_id' "$validation_file" > /dev/null
+
+        ready=false
+        for _attempt in $(seq 1 36); do
+          headers="$RUNNER_TEMP/capstone-readiness-headers"
+          body="$RUNNER_TEMP/capstone-readiness-body"
+          status="$(curl --dump-header "$headers" --max-time 10 --output "$body" \
+            --silent --show-error --write-out '%{http_code}' \
+            "$CAPSTONE_ORIGIN/api/health/ready" || true)"
+          header_revision="$(awk -F ': *' '
+            tolower($1) == "x-capstone-revision" { gsub("\r", "", $2); print $2 }
+          ' "$headers" | tail -n 1)"
+          if test "$status" = 200 \
+            && test "$header_revision" = "$CAPSTONE_REVISION" \
+            && jq -e '.status == "ready"' "$body" > /dev/null 2>&1; then
+            ready=true
+            break
+          fi
+          sleep 5
+        done
+        test "$ready" = true
+        printf '%s deployment %s is ready at %s.\n' \
+          "$CAPSTONE_ENVIRONMENT" "$CAPSTONE_DEPLOYMENT_ID" "$CAPSTONE_REVISION" \
+          >> "$GITHUB_STEP_SUMMARY"

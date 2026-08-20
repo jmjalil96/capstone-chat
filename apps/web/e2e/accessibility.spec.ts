@@ -30,6 +30,17 @@ const adminSession = {
 } as const;
 
 const catalogId = "11111111-1111-4111-8111-111111111111";
+const capability = {
+  temperatureSupported: true,
+  reasoning: {
+    kind: "optional",
+    effortSupport: { kind: "all" },
+    maxTokensAccepted: true,
+    defaultEffort: null,
+    defaultEnabled: null,
+    traceSafety: "provider_excluded",
+  },
+} as const;
 const catalog = {
   catalogId,
   modelId: "capstone/approved-model",
@@ -37,6 +48,7 @@ const catalog = {
   available: true,
   contextLength: 131_072,
   maximumOutputTokens: 16_384,
+  capability,
   validatedAt: now,
 } as const;
 
@@ -82,6 +94,10 @@ async function installAdminFixture(page: Page): Promise<void> {
           currency: "USD",
           defaultTier: "balanced",
           monthlyBudgetUsd: "100.000000000000000000",
+          actor: { kind: "system", label: "Sistema" },
+          changeKind: "bootstrap",
+          revertedFromRevision: null,
+          updatedAt: now,
           tiers: (
             [
               ["fast", 4_096],
@@ -94,15 +110,77 @@ async function installAdminFixture(page: Page): Promise<void> {
             enabled: true,
             available: true,
             maximumOutputTokens,
+            reasoningEffort: tier === "pro" ? "high" : "off",
+            reasoningBudgetTokens: tier === "pro" ? 8_192 : 0,
+            temperaturePreset: tier === "fast" ? "precise" : "balanced",
+            temperatureStatus: { kind: "exact", reason: "supported" },
+            effortStatus:
+              tier === "pro"
+                ? { kind: "translated", reason: "max_tokens_precision_unverified" }
+                : { kind: "exact", reason: "reasoning_disabled" },
+            budgetStatus:
+              tier === "pro"
+                ? { kind: "translated", reason: "max_tokens_precision_unverified" }
+                : { kind: "exact", reason: "reasoning_disabled" },
             catalog: {
               modelId: catalog.modelId,
               displayName: catalog.displayName,
               available: catalog.available,
               contextLength: catalog.contextLength,
               maximumOutputTokens: catalog.maximumOutputTokens,
+              capability,
               validatedAt: catalog.validatedAt,
             },
           })),
+        },
+      });
+      return;
+    }
+    if (path === "/api/admin/model-policy/revisions") {
+      await route.fulfill({ json: { items: [], nextCursor: null } });
+      return;
+    }
+    if (path === "/api/admin/assistant-rules") {
+      await route.fulfill({
+        json: {
+          revision: 1,
+          baseVersion: "capstone-chat-base-v2",
+          baseText: "REGLAS BASE OBLIGATORIAS",
+          workspaceText: "Usa USD para los ejemplos.",
+          effectivePrompt:
+            "CONTEXTO Y REGLAS DEL ESPACIO DE TRABAJO — EDITABLES\n\nUsa USD para los ejemplos.\n\nREGLAS BASE OBLIGATORIAS",
+          actor: { kind: "system", label: "Sistema" },
+          changeKind: "bootstrap",
+          revertedFromRevision: null,
+          updatedAt: now,
+          limits: { maximumCodePoints: 3_200, maximumUtf8Bytes: 12_800 },
+          disclosure: {
+            visibleToActiveMembers: true,
+            sentToConfiguredZdrProvider: true,
+            retainedInImmutableHistory: true,
+          },
+          estimate: {
+            counts: { codePoints: 26, utf8Bytes: 26, approximateInputTokens: 7 },
+            balancedMaximumResponseCostPercent: "0.1",
+          },
+        },
+      });
+      return;
+    }
+    if (path === "/api/admin/assistant-rules/revisions") {
+      await route.fulfill({ json: { items: [], nextCursor: null } });
+      return;
+    }
+    if (path === "/api/admin/assistant-rules/preview") {
+      await route.fulfill({
+        json: {
+          normalizedWorkspaceText: "Usa USD para los ejemplos.",
+          effectivePrompt:
+            "CONTEXTO Y REGLAS DEL ESPACIO DE TRABAJO — EDITABLES\n\nUsa USD para los ejemplos.\n\nREGLAS BASE OBLIGATORIAS",
+          estimate: {
+            counts: { codePoints: 26, utf8Bytes: 26, approximateInputTokens: 7 },
+            balancedMaximumResponseCostPercent: "0.1",
+          },
         },
       });
       return;
@@ -169,7 +247,10 @@ async function installAdminFixture(page: Page): Promise<void> {
   });
 }
 
-async function installMobileChatFixture(page: Page): Promise<void> {
+async function installMobileChatFixture(
+  page: Page,
+  role: "admin" | "member" = "member",
+): Promise<void> {
   await page.route(/^http:\/\/127\.0\.0\.1:4173\/api\//u, async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -181,8 +262,8 @@ async function installMobileChatFixture(page: Page): Promise<void> {
       await route.fulfill({
         json: {
           ...adminSession,
-          employee: { ...adminSession.employee, id: "member-accessibility" },
-          workspace: { ...adminSession.workspace, role: "member" },
+          employee: { ...adminSession.employee, id: `${role}-accessibility` },
+          workspace: { ...adminSession.workspace, role },
         },
       });
       return;
@@ -199,6 +280,19 @@ async function installMobileChatFixture(page: Page): Promise<void> {
     }
     if (url.pathname === "/api/model-tiers") {
       await route.fulfill({ json: availableModelTierPolicy });
+      return;
+    }
+    if (url.pathname === "/api/assistant-rules") {
+      await route.fulfill({
+        json: {
+          baseVersion: "capstone-chat-base-v2",
+          baseText: "REGLAS BASE OBLIGATORIAS",
+          workspaceText: "Usa USD para los ejemplos.",
+          effectivePrompt:
+            "CONTEXTO Y REGLAS DEL ESPACIO DE TRABAJO — EDITABLES\n\nUsa USD para los ejemplos.\n\nREGLAS BASE OBLIGATORIAS",
+          updatedAt: now,
+        },
+      });
       return;
     }
     if (url.pathname === "/api/client-errors") {
@@ -282,6 +376,15 @@ test("@critical-accessibility reviews all administration pages and their confirm
     await expectReviewedWcagState(page, testInfo, `administration-confirmation-${viewport.name}`);
     await page.getByRole("button", { name: copy.administration.common.cancel }).click();
 
+    await page.goto("/admin/assistant");
+    await expect(
+      page.getByRole("heading", { name: copy.administration.assistant.title }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("textbox", { name: copy.administration.assistant.label }),
+    ).toHaveValue("Usa USD para los ejemplos.");
+    await expectReviewedWcagState(page, testInfo, `administration-assistant-${viewport.name}`);
+
     await page.goto("/admin/models");
     await expect(
       page.getByRole("heading", { name: copy.administration.models.title }),
@@ -320,6 +423,12 @@ test("@critical-accessibility scans the responsive authenticated shell", async (
 }, testInfo) => {
   await installMobileChatFixture(page);
   await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/account/assistant-rules");
+  await expect(
+    page.getByRole("heading", { name: copy.identity.assistantRules.title }),
+  ).toBeVisible();
+  await expectReviewedWcagState(page, testInfo, "member-assistant-rules-mobile");
+
   await page.goto("/");
   await expect(page.getByRole("heading", { name: copy.conversations.newChat.title })).toBeVisible();
   const tierTrigger = page.getByRole("button", {
@@ -339,4 +448,25 @@ test("@critical-accessibility scans the responsive authenticated shell", async (
   await page.keyboard.press("Escape");
   await expect(drawer).not.toBeVisible();
   await expect(opener).toBeFocused();
+});
+
+test("@critical-accessibility keeps the account menu inside a short viewport", async ({ page }) => {
+  await installMobileChatFixture(page, "admin");
+  await page.setViewportSize({ width: 844, height: 300 });
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: copy.conversations.newChat.title })).toBeVisible();
+
+  const sidebar = page.locator(".desktop-sidebar");
+  await sidebar.getByLabel(copy.conversations.navigation.account).click();
+  const panel = sidebar.locator(".account-menu-panel");
+  await expect(panel).toBeVisible();
+
+  const panelTop = await panel.evaluate((element) => element.getBoundingClientRect().top);
+  expect(
+    panelTop,
+    "the account panel must not be clipped above the viewport",
+  ).toBeGreaterThanOrEqual(0);
+  await expect(
+    panel.getByRole("button", { name: copy.conversations.navigation.signOut }),
+  ).toBeInViewport();
 });

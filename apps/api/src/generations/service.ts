@@ -31,7 +31,7 @@ import {
   EmployeeGenerationLimitError,
   WorkspaceBudgetExceededError,
 } from "../model-policy/budget-service.js";
-import { unitPricePerMillion } from "../model-policy/money.js";
+import { resolveEffectiveModelParameters } from "../model-policy/effective-parameters.js";
 import {
   createModelPolicyService,
   type ModelPolicyMode,
@@ -61,7 +61,7 @@ import type {
   GatewayUsage,
   GenerationRequest,
 } from "./model-gateway.js";
-import { continueMessage, systemPrompt } from "./prompt.js";
+import { continueMessage } from "./prompt.js";
 import { generationTuning } from "./settings.js";
 import { createTitleService, type NamingHandoff, type TitleService } from "./title-service.js";
 
@@ -613,7 +613,7 @@ export function createGenerationService(
           throw new ApplicationError(413, "MESSAGE_TOO_LARGE", generationCopy.messageTooLarge);
         }
 
-        const { admission, policies } =
+        const { admission, policies, promptSnapshot } =
           pendingDraftAdmission?.resolve() ??
           (await modelPolicy.resolveGenerationAdmission(
             transaction,
@@ -625,6 +625,27 @@ export function createGenerationService(
           ));
         const resolvedTier = policies.chat;
         const fastTier = policies.fast;
+        const chatParameters = resolveEffectiveModelParameters({
+          capability: resolvedTier.capability,
+          maximumOutputTokens: resolvedTier.maximumOutputTokens,
+          purpose: "chat",
+          reasoningBudgetTokens: resolvedTier.reasoningBudgetTokens,
+          reasoningEffort: resolvedTier.reasoningEffort,
+          temperaturePreset: resolvedTier.temperaturePreset,
+          tier: resolvedTier.tier,
+        });
+        const fastCompactionParameters =
+          fastTier === null
+            ? null
+            : resolveEffectiveModelParameters({
+                capability: fastTier.capability,
+                maximumOutputTokens: fastTier.maximumOutputTokens,
+                purpose: "compaction",
+                reasoningBudgetTokens: fastTier.reasoningBudgetTokens,
+                reasoningEffort: fastTier.reasoningEffort,
+                temperaturePreset: fastTier.temperaturePreset,
+                tier: fastTier.tier,
+              });
         const maximumSourceBytes = Math.min(
           generationTuning.maximumContextBytes,
           fastTier?.contextLength ?? resolvedTier.contextLength,
@@ -644,11 +665,14 @@ export function createGenerationService(
         let contextPlan: ContextPlan;
         try {
           contextPlan = planContext({
+            chatParameters,
             chatRoute: resolvedTier,
+            fastCompactionParameters,
             fastRoute: fastTier,
             latestMessage: messageText,
             modelTier: input.modelTier,
             previousCompaction: window.previousCompaction,
+            promptSnapshot,
             recentTurns: window.recentTurns,
             sourceOverflow: window.sourceOverflow,
             sourceTurns: window.sourceTurns,
@@ -671,40 +695,7 @@ export function createGenerationService(
           { enforceEmployeeLimit: true, purpose: "chat" },
         );
 
-        const contextParameters =
-          contextPlan.mode === "pending"
-            ? {
-                mode: "pending",
-                promptVersion: contextPlan.compaction.request.systemPrompt.version,
-                strategy: contextPlan.strategy,
-                throughMessageId: contextPlan.compaction.throughMessageId,
-              }
-            : contextPlan.mode === "compacted"
-              ? { compactionId: contextPlan.compactionId, mode: "compacted" }
-              : contextPlan.mode === "fallback"
-                ? { mode: "fallback", reason: contextPlan.reason }
-                : { mode: "full" };
-        const effectiveParameters = {
-          context: contextParameters,
-          ...(mode === "openrouter"
-            ? {
-                maximumOutputTokens: resolvedTier.maximumOutputTokens,
-                priceCeiling: {
-                  completionUsdPerMillion: unitPricePerMillion(
-                    resolvedTier.completionPriceCeilingPerToken,
-                  ),
-                  promptUsdPerMillion: unitPricePerMillion(resolvedTier.promptPriceCeilingPerToken),
-                  requestUsd: resolvedTier.requestPriceCeilingUsd,
-                },
-                provider: {
-                  dataCollection: "deny",
-                  requireParameters: true,
-                  zeroDataRetention: true,
-                },
-                reasoning: { exclude: true },
-              }
-            : {}),
-        };
+        const effectiveParameters: Record<string, unknown> = { ...chatParameters };
         const generationStatus = contextPlan.mode === "pending" ? "preparing" : "active";
         const realReservation = mode === "openrouter" ? reservation : null;
 
@@ -721,7 +712,7 @@ export function createGenerationService(
           // consumption as one guarded statement while the workspace budget lock is held.
           const inserted = await executePrepared<InsertedResponseWorkflowRow>(
             transaction,
-            "generation-response-workflow-v1",
+            "generation-response-workflow-v2",
             sql`
             WITH user_message AS (
               INSERT INTO messages (conversation_id, parent_message_id, role, content)
@@ -755,6 +746,9 @@ export function createGenerationService(
                 requested_model,
                 resolved_model,
                 system_prompt_version,
+                behavior_contract_version,
+                model_policy_revision,
+                workspace_prompt_revision,
                 effective_parameters,
                 status,
                 accounting_status,
@@ -782,7 +776,10 @@ export function createGenerationService(
                 'chat',
                 ${mode === "openrouter" ? resolvedTier.resolvedModel : null},
                 ${mode === "openrouter" ? resolvedTier.resolvedModel : null},
-                ${systemPrompt.version},
+                ${promptSnapshot.baseVersion},
+                2,
+                ${resolvedTier.policyRevision},
+                ${promptSnapshot.workspaceRevision},
                 ${JSON.stringify(effectiveParameters)}::jsonb,
                 ${generationStatus},
                 ${realReservation?.accountingStatus ?? null},
@@ -860,6 +857,7 @@ export function createGenerationService(
               .insert(generations)
               .values({
                 assistantMessageId,
+                behaviorContractVersion: 2,
                 conversationId,
                 createdAt: startedAt,
                 effectiveParameters,
@@ -884,11 +882,13 @@ export function createGenerationService(
                       reservedCostUsd: realReservation.reservedCostUsd,
                       resolvedModel: resolvedTier.resolvedModel,
                     }),
+                modelPolicyRevision: resolvedTier.policyRevision,
                 startedAt,
                 status: generationStatus,
-                systemPromptVersion: systemPrompt.version,
+                systemPromptVersion: promptSnapshot.baseVersion,
                 userId: actor.employee.id,
                 updatedAt: startedAt,
+                workspacePromptRevision: promptSnapshot.workspaceRevision,
                 workspaceId: actor.workspace.id,
               })
               .returning({ id: generations.id });
@@ -961,7 +961,6 @@ export function createGenerationService(
                   },
                 }
               : {}),
-            systemPrompt,
           },
           revision: updatedRevision,
           startedAt,

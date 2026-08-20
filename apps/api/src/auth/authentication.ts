@@ -60,9 +60,7 @@ export interface WorkCancellation {
 }
 
 export function createAuthentication(input: {
-  config: Pick<ApiConfig, "authSecret" | "nodeEnv" | "publicOrigin"> & {
-    readonly deploymentProfile?: ApiConfig["deploymentProfile"];
-  };
+  config: Pick<ApiConfig, "applicationEnvironment" | "authSecret" | "publicOrigin">;
   database: AppDatabase;
   emailSender: EmailSender;
   events: AuthenticationEvents;
@@ -70,8 +68,7 @@ export function createAuthentication(input: {
   workCancellation?: WorkCancellation | undefined;
 }) {
   const { config, database, emailSender, events, identity, workCancellation } = input;
-  const secureCookies =
-    config.nodeEnv === "production" || config.deploymentProfile === "managed-rehearsal";
+  const secureCookies = config.applicationEnvironment !== "development";
   const auth = betterAuth({
     advanced: {
       crossSubDomainCookies: { enabled: false },

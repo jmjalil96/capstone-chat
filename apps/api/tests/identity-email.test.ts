@@ -151,6 +151,46 @@ describe("disabled email delivery", () => {
 });
 
 describe("ResendEmailSender", () => {
+  it("rejects every disallowed staging identity path before a provider request", async () => {
+    const transport = vi.fn<typeof fetch>(async () => successResponse());
+    const sender = new ResendEmailSender({
+      allowedRecipients: ["allowed@capstone.com.ec"],
+      apiKey: "re_staging_test_only",
+      fetch: transport,
+      from: "Capstone Chat Staging <no-reply@staging.mail.capstone.com.ec>",
+    });
+    const blockedAddress = "blocked@capstone.com.ec";
+    const messages = [
+      createInvitationEmail(blockedAddress, `${publicOrigin}/sign-up`),
+      createVerificationEmail(blockedAddress, publicOrigin, "private-verification-token"),
+      createPasswordResetEmail(blockedAddress, publicOrigin, "private-reset-token"),
+    ];
+
+    for (const identityEmail of messages) {
+      const failure = await sender.send(identityEmail).catch((error: unknown) => error);
+      expect(failure).toMatchObject({
+        message: "Transactional email delivery is not permitted",
+        name: "EmailRecipientNotAllowedError",
+      });
+      expect(JSON.stringify(failure)).not.toContain(blockedAddress);
+      expect(String(failure)).not.toContain("private-");
+    }
+    expect(transport).not.toHaveBeenCalled();
+  });
+
+  it("permits an exact normalized staging recipient", async () => {
+    const transport = vi.fn<typeof fetch>(async () => successResponse());
+    const sender = new ResendEmailSender({
+      allowedRecipients: ["allowed@capstone.com.ec"],
+      apiKey: "re_staging_test_only",
+      fetch: transport,
+      from: "Capstone Chat Staging <no-reply@staging.mail.capstone.com.ec>",
+      idempotencyKey: () => firstIdempotencyKey,
+    });
+    await sender.send(createInvitationEmail("allowed@capstone.com.ec", `${publicOrigin}/sign-up`));
+    expect(transport).toHaveBeenCalledOnce();
+  });
+
   it("sends the exact bounded native-fetch contract and reports safe metadata", async () => {
     const reports: EmailDeliveryReport[] = [];
     const transport = vi.fn<typeof fetch>(async () => successResponse());

@@ -97,9 +97,9 @@ binding recovery objective; that exception does not weaken any controlled recove
 - V1 does not build a custom backup service.
 - Database restoration is an operational disaster-recovery procedure, not an employee or administrator conversation-restore feature.
 - A documented restore procedure must be successfully exercised before production acceptance and
-  the first employee invitation. The owner-authorized August 13, 2026 direct-production path may
-  provision the closed production infrastructure while the backup history ages; that state is not
-  an accepted launch and receives no real employee data.
+  the first employee invitation. Persistent staging is the normal pre-production application
+  environment, but it never substitutes for isolated recovery validation of the authoritative
+  production database. An unaccepted production stack receives no real employee data.
 - Conversation deletion is immediate and irreversible in the active application. Deleted content
   may remain inaccessible in encrypted database backups until the approved 84-hour retention
   window expires; that operating window does not assert an undocumented physical-media schedule.
@@ -174,7 +174,12 @@ Shared executable TypeScript is limited to transport contracts. The brand packag
 - Application code receives a frozen typed configuration object and does not read `process.env` directly.
 - Missing or invalid production configuration prevents the API from becoming ready.
 - Environment variables hold infrastructure configuration: database connection, public origin, Better Auth secrets, OpenRouter key, email credentials, OTLP destination, ports, and deployment metadata.
-- Workspace behavior such as budgets, enabled tiers, output limits, model mappings, and defaults lives in PostgreSQL.
+- Workspace behavior such as the normalized editable assistant-rules layer, budgets, enabled tiers,
+  output limits, bounded reasoning/temperature intent, model mappings, and defaults lives in
+  PostgreSQL.
+- The mandatory assistant base, composition delimiters and precedence, temperature values,
+  reasoning ratios, and allowed presets remain in version-controlled backend code. Prompt text from
+  PostgreSQL is limited to the normalized workspace layer and is read and composed only by Fastify.
 - Secrets are not returned through APIs or written to logs.
 - Startup may log a redacted summary of non-secret configuration.
 - Fake providers are prohibited in production mode.
@@ -208,6 +213,11 @@ Shared executable TypeScript is limited to transport contracts. The brand packag
 - An API deployment remains compatible with the immediately preceding web build.
 - Database changes follow an expand/contract sequence: add compatible schema, deploy compatible code, and remove obsolete schema only in a later deployment.
 - A destructive migration is not combined with the application release that stops using the old schema.
+
+Phase 11 follows this expand/contract rule. Migration `0009` is additive, preserves the
+authoritative Phase 10 database, and keeps predecessor version-1 generation inserts valid while
+the replacement runs. Phase 11 code writes behavior contract version 2 explicitly. A later `0010`
+contract release may remove predecessor-compatible defaults only after production acceptance.
 
 ## Browser responsibilities
 
@@ -331,6 +341,37 @@ route -> service -> explicit queries
 Queries stay near their feature. The codebase does not introduce generic base repositories.
 
 Long-lived streams never hold a PostgreSQL transaction or pooled connection open. Turn creation uses one short transaction to verify branch state, enforce generation concurrency, create the user message and assistant placeholder, create the generation, reserve budget, and consume the saved draft. It commits before contacting OpenRouter. Checkpoints use short independent updates, and completion uses one short transaction for final content, lifecycle state, usage, cost, and reservation settlement. Provider and browser network waits never occur inside a database transaction.
+
+Phase 11 adds immutable, workspace-scoped prompt and model-policy revision ledgers. Every successful
+save, reset, update, or revert appends a complete snapshot with a point-in-time actor and timestamp
+and advances the corresponding live head in the same short transaction. Revert creates a newly
+validated head; it never moves a pointer backward or deletes history. Prompt and policy revisions
+are retained indefinitely while the workspace exists. There is no per-revision deletion operation
+or workspace-deletion API in Phase 11.
+
+Generation admission captures immutable prompt and effective-model-parameter snapshots under the
+existing workspace-first lock order. Every generation records a non-null model-policy revision.
+Visible chat also records its workspace-prompt revision; title and compaction record their own
+internal prompt versions and no workspace-prompt revision. Prompt text is not copied into
+generation rows or effective-parameter diagnostics. Context planning receives the captured prompt
+before persistence and reservation, and no database connection remains held during compaction or
+provider work.
+
+Migration `0009` upgrades every valid Phase 10 database in place. It creates both immutable
+ledgers, seeds each existing workspace prompt at revision 1 with the approved default and explicit
+`migration` attribution, and snapshots the current model policy at its existing revision without
+inventing missing history. It preserves current mappings, enabled states, output ceilings, budget,
+default tier, concurrency, approvals, privacy attestation, initialization authority, conversations,
+generations, accounting, sessions, and reports. Existing OpenRouter capabilities become
+conservatively unverified and unavailable until the ordinary runtime catalog refresh supplies
+consistent current metadata; simulated initialization has deterministic capabilities.
+
+Generation rows gain nullable prompt/policy references and an internal behavior contract version.
+Existing rows and predecessor-service inserts default to version 1 without falsified references.
+Every Phase 11 chat, compaction, and title insert writes version 2 and its policy revision; chat also
+writes its prompt revision. Checks and foreign keys enforce both contracts. The production
+initialization latch and canonical document remain schema 1; fresh initialization extends the
+existing transactions to create prompt and policy heads and ledgers.
 
 ## Workspace boundary
 

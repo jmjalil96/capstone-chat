@@ -1,6 +1,5 @@
 import { Readable } from "node:stream";
 import { describe, expect, it } from "vitest";
-import { parseManagedRehearsalInitializationDocument } from "../src/load/managed-rehearsal.js";
 import { parseProductionInitializationDocument } from "../src/operator/initialization-document.js";
 import { readBoundedStdinDocument } from "../src/operator/stdin-document.js";
 
@@ -46,17 +45,6 @@ describe("production initialization document", () => {
     expect(compact.documentSha256).toMatch(/^[a-f0-9]{64}$/u);
     expect(formatted.documentSha256).toBe(compact.documentSha256);
     expect(JSON.stringify(compact)).not.toContain("broadcastEnabled");
-  });
-
-  it("locks the managed rehearsal to its synthetic administrator", () => {
-    expect(() => parseManagedRehearsalInitializationDocument(document())).toThrow(
-      "fixed synthetic administrator",
-    );
-    expect(
-      parseManagedRehearsalInitializationDocument(
-        document({ administrator: { email: "administrator@rehearsal.test" } }),
-      ).administratorEmail,
-    ).toBe("administrator@rehearsal.test");
   });
 
   it.each([

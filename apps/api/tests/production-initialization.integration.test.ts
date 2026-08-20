@@ -4,6 +4,10 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testconta
 import { eq } from "drizzle-orm";
 import { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  workspaceAssistantPromptRevisions,
+  workspaceAssistantPrompts,
+} from "../src/database/assistant-rules-schema.js";
 import { createDatabase } from "../src/database/database.js";
 import { employeeApprovals, workspaces } from "../src/database/identity-schema.js";
 import { productionInitialization } from "../src/database/initialization-schema.js";
@@ -11,6 +15,8 @@ import { migrateDatabase } from "../src/database/migrate.js";
 import {
   workspaceCostPolicies,
   workspaceModelPolicies,
+  workspaceModelPolicyRevisions,
+  workspaceModelPolicyRevisionTiers,
 } from "../src/database/model-policy-schema.js";
 import { createIdentityService } from "../src/identity/service.js";
 import {
@@ -25,10 +31,7 @@ import {
   ProductionInitializationConflictError,
 } from "../src/operator/initialization-latch.js";
 import type { ProductionInitializationCheckpoint } from "../src/operator/production-initialization.js";
-import {
-  initializeManagedRehearsal,
-  initializeProduction,
-} from "../src/operator/production-initialization.js";
+import { initializeProduction } from "../src/operator/production-initialization.js";
 
 const apiRoot = fileURLToPath(new URL("..", import.meta.url));
 const operatorExecutable = fileURLToPath(new URL("../node_modules/.bin/tsx", import.meta.url));
@@ -69,6 +72,19 @@ function catalog(
         Object.freeze({
           available: true,
           canonicalSlug: initialTierModels[tier],
+          capability: Object.freeze({
+            reasoning: Object.freeze({
+              contractSource: "fixture",
+              defaultEffort: null,
+              defaultEnabled: null,
+              effortSupport: Object.freeze({ kind: "all" as const }),
+              exclusionVerifiedAt: new Date(),
+              kind: "optional" as const,
+              maxTokensAccepted: true,
+              traceSafety: "provider_excluded" as const,
+            }),
+            temperatureSupported: true,
+          }),
           completionPricePerToken,
           contextLength: 128_000,
           displayName: `Model ${tier}`,
@@ -79,7 +95,12 @@ function catalog(
           outputModalities: Object.freeze(["text"]),
           promptPricePerToken: "0.000001",
           requestPriceUsd: "0",
-          supportedParameters: Object.freeze(["max_tokens", "reasoning"]),
+          supportedParameters: Object.freeze([
+            "max_tokens",
+            "reasoning",
+            "reasoning_effort",
+            "temperature",
+          ]),
           validatedAt: new Date(),
         }),
       ]),
@@ -208,6 +229,18 @@ describe.sequential("production initialization", () => {
         { employeeActiveGenerationLimit: 2, monthlyBudgetUsd: "100.000000000000000000" },
       ]);
       await expect(database.select().from(workspaceModelPolicies)).resolves.toHaveLength(3);
+      await expect(database.select().from(workspaceAssistantPrompts)).resolves.toMatchObject([
+        { revision: 1 },
+      ]);
+      await expect(
+        database.select().from(workspaceAssistantPromptRevisions),
+      ).resolves.toMatchObject([{ actorKind: "system", changeKind: "bootstrap", revision: 1 }]);
+      await expect(database.select().from(workspaceModelPolicyRevisions)).resolves.toMatchObject([
+        { actorKind: "system", changeKind: "bootstrap", revision: 1 },
+      ]);
+      await expect(database.select().from(workspaceModelPolicyRevisionTiers)).resolves.toHaveLength(
+        3,
+      );
       await expect(
         createIdentityService(database).initialInvitationTarget({
           adminEmail: initializationDocument.administratorEmail,
@@ -237,54 +270,6 @@ describe.sequential("production initialization", () => {
       ),
     ).resolves.toEqual({ outcome: "already-complete", phase: "complete" });
     expect(loadCatalog).not.toHaveBeenCalled();
-  }, 120_000);
-
-  it("initializes and retries the managed rehearsal without provider access", async () => {
-    const initializationDocument = document("administrator@rehearsal.test");
-    let interrupted = false;
-    await expect(
-      initializeManagedRehearsal(
-        {
-          applicationDatabaseUrl: databaseUrl,
-          document: initializationDocument,
-          migrationDatabaseUrl: databaseUrl,
-        },
-        {
-          afterCheckpoint(checkpoint) {
-            if (!interrupted && checkpoint === "catalog-loaded") {
-              interrupted = true;
-              throw new Error("synthetic managed interruption");
-            }
-          },
-        },
-      ),
-    ).rejects.toThrow("synthetic managed interruption");
-
-    await expect(
-      initializeManagedRehearsal({
-        applicationDatabaseUrl: databaseUrl,
-        document: initializationDocument,
-        migrationDatabaseUrl: databaseUrl,
-      }),
-    ).resolves.toEqual({ outcome: "completed", phase: "complete" });
-    await expect(
-      initializeManagedRehearsal({
-        applicationDatabaseUrl: databaseUrl,
-        document: initializationDocument,
-        migrationDatabaseUrl: databaseUrl,
-      }),
-    ).resolves.toEqual({ outcome: "already-complete", phase: "complete" });
-
-    const pool = new Pool({ connectionString: databaseUrl });
-    const database = createDatabase(pool);
-    try {
-      await expect(database.select().from(workspaceModelPolicies)).resolves.toHaveLength(3);
-      await expect(database.select().from(productionInitialization)).resolves.toMatchObject([
-        { documentSha256: initializationDocument.documentSha256, phase: "complete" },
-      ]);
-    } finally {
-      await pool.end();
-    }
   }, 120_000);
 
   it("sends the initial invitation only for the completed canonical authority without mutation", async () => {

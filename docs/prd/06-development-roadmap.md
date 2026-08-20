@@ -73,6 +73,30 @@ releases: release A adds protocol and web acceptance of the `title` usage purpos
 `conversation.naming` event; release B adds migration `0008`, the `finalizing` lifecycle,
 automatic titles, durable reattachment, and answer reports.
 
+Phase 11 (workspace behavior controls, approved and implementation-authorized 2026-08-17) is a
+post-roadmap amendment that adds one administrator-owned workspace-rules layer, immutable prompt
+and policy history, and bounded per-tier reasoning and temperature controls. It does not reopen the
+eight milestones or introduce personal instructions, reasoning traces, queues, services, caches, or
+new infrastructure.
+
+Implementation remains dependency ordered:
+
+1. one narrow storage/protocol foundation establishes schema `0009`, both immutable ledgers,
+   generation references, and coherent initialization before either feature has an available write;
+2. workspace rules ship end to end through backend, context planning, administrator/member web
+   surfaces, and automated plus user acceptance;
+3. only after that prompt checkpoint may catalog capability behavior, complete policy controls,
+   resolver/gateway shaping, and Models history activate; and
+4. the complete protocol, API, web, migration, and operations changes release together in one
+   synchronized prelaunch product release.
+
+The foundation may not expose tier behavior early. Phase 11 uses the ordinary migration-only
+`PRE_DEPLOY` job and the locked expand/contract sequence: additive `0009`, predecessor-compatible
+replacement, and no destructive contract migration in the release candidate. A later `0010` is
+reserved until production acceptance. The corrected release boundary and failed prior attempt are
+recorded in the
+[implementation plan](../implementation/11-workspace-behavior-controls-plan.md).
+
 ## Production launch baseline
 
 **Locked for Milestone 8**
@@ -83,15 +107,16 @@ automatic titles, durable reattachment, and answer reports.
   is built from the same verified Git source commit and Dockerfile as the service. Launch has no
   autoscaling, scale-to-zero, second service, worker,
   application high availability, database high availability, read replica, or automatic failover.
-  On August 13, 2026, the owner explicitly replaced the two disposable managed rehearsal passes
-  with direct staged validation on the closed production stack and accepted the selected sizes'
-  current DigitalOcean feature-preview status. This explicitly waives the two managed
-  20-employee/40-stream passes and accepts the two clean one-CPU/one-GiB container repetitions as
-  capacity evidence; the test-only fake load server remains prohibited on the production origin
-  and in production mode. Before any invitation or real employee data, the empty production stack
-  must still pass bounded real-path source-identity, egress, database, edge-streaming, TLS,
-  migration, readiness, secret-isolation, telemetry, cancellation, Ecuador
-  latency/device/accessibility, authorization, failure-preservation, and forward-revert checks.
+  Persistent staging is the normal pre-production path. It uses one 512 MiB service and one
+  512 MiB migration job in `ric`, a separate PS-5 ARM Single Node database in `us-east-1`,
+  synthetic data, dedicated provider credentials, and no Dedicated Egress. It runs the normal
+  production-mode server at `https://staging.chat.capstone.com.ec`; the deterministic load server
+  remains local/container-only. Two clean one-CPU/512-MiB built-container repetitions are the
+  capacity gate. Before any invitation or real employee data, staging and the empty production
+  stack must pass bounded source-identity, database, edge-streaming, TLS, migration, readiness,
+  secret-isolation, telemetry, cancellation, Ecuador latency/device/accessibility, authorization,
+  failure-preservation, and forward-revert checks. Production additionally proves Dedicated
+  Egress and its database IP restrictions.
   The initial owner invitation is the final controlled email gate. No second employee is invited
   until invitation, verification, and password-reset delivery pass and final acceptance is
   recorded.

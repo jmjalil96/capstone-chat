@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { IdentityEmail } from "./email.js";
 import { LifecycleEmailSender } from "./email-lifecycle.js";
+import { normalizeEmail } from "./email-normalization.js";
 
 const resendEndpoint = "https://api.resend.com/emails";
 const resendUserAgent = "Capstone-Chat/1.0";
@@ -54,6 +55,7 @@ interface ProviderFailure {
 }
 
 export interface ResendEmailSenderOptions {
+  readonly allowedRecipients?: readonly string[];
   readonly apiKey: string;
   readonly fetch?: typeof fetch;
   readonly from: string;
@@ -61,6 +63,13 @@ export interface ResendEmailSenderOptions {
   readonly now?: () => number;
   readonly onDeliveryReport?: (report: EmailDeliveryReport) => void;
   readonly timeoutMilliseconds?: number;
+}
+
+export class EmailRecipientNotAllowedError extends Error {
+  constructor() {
+    super("Transactional email delivery is not permitted");
+    this.name = "EmailRecipientNotAllowedError";
+  }
 }
 
 function boundedDuration(startedAt: number, now: () => number): number {
@@ -209,6 +218,7 @@ export class ResendEmailSender extends LifecycleEmailSender {
   readonly kind = "resend" as const;
 
   readonly #apiKey: string;
+  readonly #allowedRecipients: ReadonlySet<string> | undefined;
   readonly #fetch: typeof fetch;
   readonly #from: string;
   readonly #idempotencyKey: () => string;
@@ -223,6 +233,10 @@ export class ResendEmailSender extends LifecycleEmailSender {
     }
 
     this.#apiKey = options.apiKey;
+    this.#allowedRecipients =
+      options.allowedRecipients === undefined
+        ? undefined
+        : new Set(options.allowedRecipients.map((recipient) => normalizeEmail(recipient)));
     this.#fetch = options.fetch ?? fetch;
     this.#from = options.from;
     this.#idempotencyKey = options.idempotencyKey ?? randomUUID;
@@ -235,6 +249,12 @@ export class ResendEmailSender extends LifecycleEmailSender {
   }
 
   protected async deliver(message: IdentityEmail, lifecycleSignal: AbortSignal): Promise<void> {
+    if (
+      this.#allowedRecipients !== undefined &&
+      !this.#allowedRecipients.has(normalizeEmail(message.to))
+    ) {
+      throw new EmailRecipientNotAllowedError();
+    }
     const startedAt = this.#now();
     const timeout = new AbortController();
     const timeoutHandle = setTimeout(() => timeout.abort(), this.#timeoutMilliseconds);

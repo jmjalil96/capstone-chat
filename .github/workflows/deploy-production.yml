@@ -3,16 +3,8 @@ name: Deploy production
 on:
   workflow_dispatch:
     inputs:
-      operation:
-        description: Prepare the protected source pointer or deploy an existing App
-        required: true
-        default: deploy
-        type: choice
-        options:
-          - deploy
-          - prepare-source
       release_revision:
-        description: Exact green main commit to release
+        description: Exact green main commit already accepted by staging
         required: true
         type: string
 
@@ -26,7 +18,7 @@ concurrency:
 
 jobs:
   release:
-    name: Release green source to App Platform
+    name: Promote accepted staging revision
     if: ${{ github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     timeout-minutes: 80
@@ -34,259 +26,68 @@ jobs:
       name: production
       url: https://chat.capstone.com.ec
     env:
-      CAPSTONE_RELEASE_BRANCH: app-platform-production
-      CAPSTONE_RELEASE_OPERATION: ${{ inputs.operation }}
       CAPSTONE_RELEASE_REVISION: ${{ inputs.release_revision }}
-      DIGITALOCEAN_APP_ID: ${{ vars.DIGITALOCEAN_APP_ID }}
-      PRODUCTION_ORIGIN: https://chat.capstone.com.ec
     steps:
-      - name: Check out the authorized main revision
+      - name: Check out main history
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
-          ref: ${{ github.sha }}
+          ref: main
 
-      - name: Validate exact main revision and successful CI
+      - name: Validate fixed target, ancestry, and successful staging CI
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-
           test "${#CAPSTONE_RELEASE_REVISION}" -eq 40
-          case "$CAPSTONE_RELEASE_REVISION" in
-            *[!0-9a-f]*) exit 1 ;;
-          esac
-          test "$CAPSTONE_RELEASE_REVISION" = "$GITHUB_SHA"
-          test "$(git rev-parse HEAD)" = "$CAPSTONE_RELEASE_REVISION"
+          case "$CAPSTONE_RELEASE_REVISION" in *[!0-9a-f]*) exit 1 ;; esac
           test "$(git cat-file -t "$CAPSTONE_RELEASE_REVISION")" = commit
 
-          main_revision="$(git ls-remote --heads origin refs/heads/main | awk '{print $1}')"
-          test "$main_revision" = "$CAPSTONE_RELEASE_REVISION"
+          git fetch --no-tags origin \
+            refs/heads/main:refs/remotes/origin/main \
+            refs/heads/app-platform-production:refs/remotes/origin/app-platform-production
+          git merge-base --is-ancestor "$CAPSTONE_RELEASE_REVISION" refs/remotes/origin/main
+          production_revision="$(git rev-parse refs/remotes/origin/app-platform-production)"
+          test "$production_revision" != "$CAPSTONE_RELEASE_REVISION"
+          git merge-base --is-ancestor "$production_revision" "$CAPSTONE_RELEASE_REVISION"
 
-          ci_runs="$(gh api --method GET \
+          ci_result="$(gh api --method GET \
             "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
             -f head_sha="$CAPSTONE_RELEASE_REVISION" \
             -f branch=main \
             -f event=push \
             -f status=completed \
-            -f per_page=20)"
-          ci_result="$(printf '%s' "$ci_runs" | jq -er '
-            .workflow_runs
-            | max_by(.run_number)
-            | [.head_sha, .head_branch, .event, .conclusion]
-            | @tsv
-          ')"
+            -f per_page=20 \
+            --jq '.workflow_runs | max_by(.run_number) | [.head_sha,.head_branch,.event,.conclusion] | @tsv')"
           test "$ci_result" = "$CAPSTONE_RELEASE_REVISION"$'\tmain\tpush\tsuccess'
-        env:
-          GH_TOKEN: ${{ github.token }}
 
       - name: Install pnpm
-        if: ${{ inputs.operation == 'deploy' }}
         uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
         with:
           version: 11.20.0
           run_install: false
 
       - name: Set up Node.js
-        if: ${{ inputs.operation == 'deploy' }}
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 24.13.0
           cache: pnpm
 
       - name: Install locked validator dependency
-        if: ${{ inputs.operation == 'deploy' }}
         run: pnpm install --frozen-lockfile --ignore-scripts --filter capstone-chat
 
       - name: Install doctl
-        if: ${{ inputs.operation == 'deploy' }}
         uses: digitalocean/action-doctl@3cb3953159719656269e044e0e24ca16dd2a690f # v2.5.2
         with:
           no_auth: true
           version: 1.166.0
 
-      - name: Verify exact doctl version
-        if: ${{ inputs.operation == 'deploy' }}
-        run: |-
-          doctl_version="$(doctl version)"
-          test "$(printf '%s\n' "$doctl_version" | sed -n '1p')" = "doctl version 1.166.0-release"
-
-      - name: Validate App Platform source authority
-        if: ${{ inputs.operation == 'deploy' }}
-        env:
-          DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_DEPLOY_TOKEN }}
-        run: |
-          set -euo pipefail
-          umask 077
-
-          test "${#DIGITALOCEAN_APP_ID}" -ge 20
-          case "$DIGITALOCEAN_APP_ID" in
-            *[!0-9a-f-]*) exit 1 ;;
-          esac
-
-          app_file="$(mktemp "$RUNNER_TEMP/capstone-app-before-release.XXXXXX.json")"
-          trap 'rm -f -- "$app_file"' EXIT
-          doctl apps get "$DIGITALOCEAN_APP_ID" --output json > "$app_file"
-          unset DIGITALOCEAN_ACCESS_TOKEN
-          active_revision="$(jq -er '
-            def only:
-              if type == "array" then
-                if length == 1 then .[0] else error("expected one app") end
-              else . end;
-            only.active_deployment.services
-            | if length == 1 then .[0].source_commit_hash
-              else error("expected one active service") end
-            | select(test("^[0-9a-f]{40}$"))
-          ' "$app_file")"
-          node deploy/app-platform/live-contract.mjs validate \
-            --mode live \
-            --live-file "$app_file" \
-            --app-id "$DIGITALOCEAN_APP_ID" \
-            --revision "$active_revision" > /dev/null
-          git merge-base --is-ancestor "$active_revision" "$CAPSTONE_RELEASE_REVISION"
-
-      - name: Fast-forward the protected App Platform source pointer
-        run: |
-          set -euo pipefail
-
-          pointer_ref="refs/heads/$CAPSTONE_RELEASE_BRANCH"
-          pointer_lines="$(git ls-remote --heads origin "$pointer_ref")"
-          test "$(printf '%s\n' "$pointer_lines" | sed '/^$/d' | wc -l | tr -d ' ')" -le 1
-          current_revision="$(printf '%s\n' "$pointer_lines" | awk 'NF == 2 {print $1}')"
-
-          if test "$CAPSTONE_RELEASE_OPERATION" = "prepare-source"; then
-            if test -n "$current_revision"; then
-              test "$current_revision" = "$CAPSTONE_RELEASE_REVISION"
-              exit 0
-            fi
-          else
-            test "$CAPSTONE_RELEASE_OPERATION" = "deploy"
-            test -n "$current_revision"
-            git fetch --no-tags origin "$pointer_ref:refs/remotes/origin/$CAPSTONE_RELEASE_BRANCH"
-            git merge-base --is-ancestor "$current_revision" "$CAPSTONE_RELEASE_REVISION"
-          fi
-
-          main_revision="$(git ls-remote --heads origin refs/heads/main | awk '{print $1}')"
-          test "$main_revision" = "$CAPSTONE_RELEASE_REVISION"
-
-          git push origin "$CAPSTONE_RELEASE_REVISION:$pointer_ref"
-          deployed_pointer="$(git ls-remote --heads origin "$pointer_ref" | awk '{print $1}')"
-          test "$deployed_pointer" = "$CAPSTONE_RELEASE_REVISION"
-
-      - name: Record prepared source pointer
-        if: ${{ inputs.operation == 'prepare-source' }}
-        run: |
-          printf 'Prepared `%s` at `%s`; no App was contacted.\n' \
-            "$CAPSTONE_RELEASE_BRANCH" \
-            "$CAPSTONE_RELEASE_REVISION" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Build and deploy the source pointer
-        if: ${{ inputs.operation == 'deploy' }}
-        id: deployment
-        env:
-          DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_DEPLOY_TOKEN }}
-        run: |
-          set -euo pipefail
-
-          deployment_id="$(doctl apps create-deployment "$DIGITALOCEAN_APP_ID" \
-            --force-rebuild \
-            --format ID \
-            --no-header \
-            | tail -n 1 \
-            | tr -d '[:space:]')"
-          test "${#deployment_id}" -ge 20
-          case "$deployment_id" in
-            *[!0-9a-f-]*) exit 1 ;;
-          esac
-          printf 'deployment_id=%s\n' "$deployment_id" >> "$GITHUB_OUTPUT"
-          printf 'Requested deployment `%s` for `%s`.\n' \
-            "$deployment_id" \
-            "$CAPSTONE_RELEASE_REVISION" >> "$GITHUB_STEP_SUMMARY"
-
-          phase=""
-          for _attempt in $(seq 1 360); do
-            state="$(doctl apps get-deployment \
-              "$DIGITALOCEAN_APP_ID" \
-              "$deployment_id" \
-              --format ID,Phase \
-              --no-header 2>/dev/null || true)"
-            observed_id="$(printf '%s\n' "$state" | awk 'NF >= 2 {print $1}')"
-            phase="$(printf '%s\n' "$state" | awk 'NF >= 2 {print $2}')"
-            if test -n "$observed_id"; then
-              test "$observed_id" = "$deployment_id"
-            fi
-            case "$phase" in
-              ACTIVE) break ;;
-              ERROR|CANCELED|SUPERSEDED) exit 1 ;;
-            esac
-            sleep 10
-          done
-          test "$phase" = "ACTIVE"
-
-      - name: Verify deployed component revisions
-        if: ${{ inputs.operation == 'deploy' }}
-        env:
-          CAPSTONE_DEPLOYMENT_ID: ${{ steps.deployment.outputs.deployment_id }}
-          DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_DEPLOY_TOKEN }}
-        run: |
-          set -euo pipefail
-          umask 077
-
-          app_file="$(mktemp "$RUNNER_TEMP/capstone-app.XXXXXX.json")"
-          validation_file="$(mktemp "$RUNNER_TEMP/capstone-validation.XXXXXX.json")"
-          trap 'rm -f -- "$app_file" "$validation_file"' EXIT
-          doctl apps get "$DIGITALOCEAN_APP_ID" --output json > "$app_file"
-          unset DIGITALOCEAN_ACCESS_TOKEN
-
-          node deploy/app-platform/live-contract.mjs validate \
-            --mode live \
-            --live-file "$app_file" \
-            --app-id "$DIGITALOCEAN_APP_ID" \
-            --revision "$CAPSTONE_RELEASE_REVISION" > "$validation_file"
-          jq -e \
-            --arg deployment_id "$CAPSTONE_DEPLOYMENT_ID" \
-            '.deploymentId == $deployment_id' \
-            "$validation_file" > /dev/null
-
-          printf 'Deployment `%s` built `%s` for: %s.\n' \
-            "$CAPSTONE_DEPLOYMENT_ID" \
-            "$CAPSTONE_RELEASE_REVISION" \
-            "capstone-chat, capstone-migrate" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Verify public readiness revision
-        if: ${{ inputs.operation == 'deploy' }}
-        run: |
-          set -euo pipefail
-
-          headers="$RUNNER_TEMP/capstone-readiness-headers"
-          body="$RUNNER_TEMP/capstone-readiness-body"
-          ready=false
-
-          for _attempt in $(seq 1 36); do
-            : > "$headers"
-            : > "$body"
-            status="$(curl \
-              --dump-header "$headers" \
-              --max-time 10 \
-              --output "$body" \
-              --silent \
-              --show-error \
-              --write-out '%{http_code}' \
-              "$PRODUCTION_ORIGIN/api/health/ready" || true)"
-            header_revision="$(awk -F ': *' '
-              tolower($1) == "x-capstone-revision" {
-                gsub("\\r", "", $2);
-                print $2
-              }
-            ' "$headers" | tail -n 1)"
-
-            if test "$status" = 200 \
-              && test "$header_revision" = "$CAPSTONE_RELEASE_REVISION" \
-              && jq -e '.status == "ready"' "$body" > /dev/null 2>&1; then
-              ready=true
-              break
-            fi
-            sleep 5
-          done
-
-          test "$ready" = true
-          printf 'Public readiness reports revision `%s`.\n' \
-            "$CAPSTONE_RELEASE_REVISION" >> "$GITHUB_STEP_SUMMARY"
+      - name: Deploy production source
+        uses: ./.github/actions/deploy-app-platform
+        with:
+          access-token: ${{ secrets.DIGITALOCEAN_DEPLOY_TOKEN }}
+          app-id: ${{ vars.DIGITALOCEAN_APP_ID }}
+          environment: production
+          origin: https://chat.capstone.com.ec
+          release-branch: app-platform-production
+          revision: ${{ inputs.release_revision }}

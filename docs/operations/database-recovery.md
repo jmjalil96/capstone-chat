@@ -34,9 +34,10 @@ pnpm verify:recovery -- "replace-with-safe-evidence.json"
    maximum cost/lifetime, and cleanup authorization. Required RPO is at most 15 minutes.
 2. Restore to a new isolated PlanetScale branch. Recreate extensions/settings/roles/IP rules,
    backups/storage policy, and `verify-full` URLs; restore does not imply them.
-3. Use an authorized isolated recovery App or bounded environment. If using an App, start
-   health-only to obtain a new egress pair, allowlist both `/32`s, then deliver temporary recovery
-   credentials. Never open a general range.
+3. Use an authorized isolated recovery App or bounded environment. If using an App, temporarily
+   run the minimal `health-bootstrap` command to obtain a new egress pair, allowlist both `/32`s,
+   then deliver temporary recovery credentials. Never open a general range or treat the bootstrap
+   as an application release.
 4. Verify PostgreSQL version, migration ledger, search objects, constraints/indexes, `unaccent`,
    timeouts, connections, application DDL/admin denial, and forced reconnect after restriction.
 5. Verify the initialization latch and existing workspace/admin/model authority. Never provide the
@@ -61,8 +62,8 @@ pnpm verify:recovery -- "replace-with-safe-evidence.json"
 
 ## Cold App recreation
 
-1. Recover the exact commit from protected Git or the tested offline bundle. Create a health-only
-   replacement App and allocate its new Dedicated Egress pair.
+1. Recover the exact commit from protected Git or the tested offline bundle. Create the replacement
+   App with only the temporary `health-bootstrap` command and allocate its new Dedicated Egress pair.
 2. Recreate/rotate steady database roles, allowlist both new `/32`s, force new connections, and
    verify the initialized database before installing steady values.
 3. Deploy service/job from the exact commit. Verify the completed latch and existing authority

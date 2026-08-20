@@ -17,6 +17,7 @@ import type { GenerationService } from "../src/generations/service.js";
 import { generationTuning } from "../src/generations/settings.js";
 import { createApplicationTelemetry } from "../src/observability/telemetry.js";
 import { OpenRouterGateway } from "../src/openrouter/openrouter-gateway.js";
+import { testEffectiveParameters } from "./support/generation.js";
 
 describe("Phase 4 generation configuration", () => {
   it("locks the approved operational values and versioned backend copy", () => {
@@ -36,14 +37,19 @@ describe("Phase 4 generation configuration", () => {
     });
     expect(systemPrompt).toEqual({
       text: [
-        "You are Capstone Chat, an AI assistant for Capstone employees.",
-        "Be helpful, accurate, and direct.",
-        "Follow the employee's requested format and use Markdown when useful.",
-        "Clearly distinguish known facts from uncertainty.",
-        "Respond in the language of the employee's latest request unless they request another language.",
-        "Use only the conversation content provided. Do not claim access to company systems, documents, or current information you have not received, and do not invent company knowledge.",
+        "REGLAS BASE DE CAPSTONE CHAT — OBLIGATORIAS Y PREVALECEN ANTE CUALQUIER CONFLICTO",
+        "",
+        "- Eres Capstone Chat, el asistente de IA para empleados de Capstone.",
+        "- Responde en Markdown compatible con Capstone Chat. No emitas HTML sin procesar.",
+        "- Sé útil, preciso y directo, y respeta el formato solicitado.",
+        "- No afirmes que realizaste acciones ni que accediste a sistemas, cuentas, archivos, sitios,",
+        "  herramientas o información fuera de lo incluido explícitamente en esta conversación.",
+        "- No inventes fuentes, citas, cifras ni hechos. Distingue con claridad lo conocido, lo inferido y",
+        "  lo incierto; cuando no puedas verificar algo, dilo.",
+        "- Responde en el idioma de la solicitud más reciente, salvo que la persona pida explícitamente",
+        "  otro idioma.",
       ].join("\n"),
-      version: "capstone-chat-v1",
+      version: "capstone-chat-base-v2",
     });
     expect(continueMessage).toEqual({
       text: "Continúa desde donde te detuviste, manteniendo el idioma y el formato de la respuesta anterior.",
@@ -51,42 +57,55 @@ describe("Phase 4 generation configuration", () => {
     });
   });
 
-  it("selects OpenRouter and prohibits an injected local fake gateway in production", async () => {
-    const production = Object.freeze({
-      ...loadConfig({
-        BETTER_AUTH_SECRET: "production-auth-secret-longer-than-thirty-two-characters",
-        CAPSTONE_SECRET_SOURCE: "platform-environment",
-        CLIENT_ADDRESS_SOURCE: "digitalocean-app-platform",
-        DATABASE_URL:
-          "postgresql://capstone:capstone@example.invalid:5432/capstone?sslmode=verify-full",
-        DEPLOYMENT_REVISION: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        DEPLOYMENT_TARGET: "digitalocean-app-platform",
-        EMAIL_DELIVERY: "resend",
-        EMAIL_FROM: "Capstone Chat <no-reply@mail.capstone.com.ec>",
-        HOST: "0.0.0.0",
-        MODEL_GATEWAY: "openrouter",
-        NODE_ENV: "production",
-        OPENROUTER_API_KEY: "test-openrouter-key-never-sent",
-        OTEL_EXPORTER_OTLP_ENDPOINT: "https://otlp.nr-data.net",
-        OTEL_EXPORTER_OTLP_HEADERS: "api-key=test-license-key-never-sent",
-        PUBLIC_ORIGIN: "https://chat.capstone.com.ec",
-        RESEND_API_KEY: "test-resend-key-never-sent",
-      }),
-      webAssetsDirectory: null,
-    });
-    const telemetry = createApplicationTelemetry({
-      endpoint: null,
-      environment: "test",
-      headers: {},
-      release: "test",
-    });
-    const application = createApplication(production, { telemetry });
-    expect(application.modelGateway).toBeInstanceOf(OpenRouterGateway);
-    await application.shutdown();
-    expect(() =>
-      createApplication(production, { modelGateway: new FakeModelGateway(), telemetry }),
-    ).toThrow("FakeModelGateway is prohibited");
-  });
+  it.each(["staging", "production"] as const)(
+    "selects OpenRouter and prohibits an injected local fake gateway in %s",
+    async (applicationEnvironment) => {
+      const hosted = Object.freeze({
+        ...loadConfig({
+          BETTER_AUTH_SECRET: "hosted-auth-secret-longer-than-thirty-two-characters",
+          CAPSTONE_ENVIRONMENT: applicationEnvironment,
+          CAPSTONE_SECRET_SOURCE: "platform-environment",
+          ...(applicationEnvironment === "staging"
+            ? { CAPSTONE_STAGING_EMAIL_RECIPIENTS: "qa@capstone.com.ec" }
+            : {}),
+          CLIENT_ADDRESS_SOURCE: "digitalocean-app-platform",
+          DATABASE_URL:
+            "postgresql://capstone:capstone@example.invalid:5432/capstone?sslmode=verify-full",
+          DEPLOYMENT_REVISION: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          DEPLOYMENT_TARGET: "digitalocean-app-platform",
+          EMAIL_DELIVERY: "resend",
+          EMAIL_FROM:
+            applicationEnvironment === "staging"
+              ? "Capstone Chat Staging <no-reply@staging.mail.capstone.com.ec>"
+              : "Capstone Chat <no-reply@mail.capstone.com.ec>",
+          HOST: "0.0.0.0",
+          MODEL_GATEWAY: "openrouter",
+          NODE_ENV: "production",
+          OPENROUTER_API_KEY: "test-openrouter-key-never-sent",
+          OTEL_EXPORTER_OTLP_ENDPOINT: "https://otlp.nr-data.net",
+          OTEL_EXPORTER_OTLP_HEADERS: "api-key=test-license-key-never-sent",
+          PUBLIC_ORIGIN:
+            applicationEnvironment === "staging"
+              ? "https://staging.chat.capstone.com.ec"
+              : "https://chat.capstone.com.ec",
+          RESEND_API_KEY: "test-resend-key-never-sent",
+        }),
+        webAssetsDirectory: null,
+      });
+      const telemetry = createApplicationTelemetry({
+        endpoint: null,
+        environment: "development",
+        headers: {},
+        release: "test",
+      });
+      const application = createApplication(hosted, { telemetry });
+      expect(application.modelGateway).toBeInstanceOf(OpenRouterGateway);
+      await application.shutdown();
+      expect(() =>
+        createApplication(hosted, { modelGateway: new FakeModelGateway(), telemetry }),
+      ).toThrow("FakeModelGateway is prohibited");
+    },
+  );
 });
 
 describe("NDJSON delta framing", () => {
@@ -363,6 +382,7 @@ describe("CheckpointScheduler", () => {
 
 describe("FakeModelGateway", () => {
   const request = {
+    effectiveParameters: testEffectiveParameters(),
     history: [],
     message: { role: "user" as const, text: "Mensaje sintético" },
     modelTier: "balanced" as const,
@@ -424,6 +444,7 @@ describe("FakeModelGateway", () => {
     const compactionEvents = [];
     for await (const event of gateway.stream(
       {
+        effectiveParameters: testEffectiveParameters("compaction", "fast"),
         history: [],
         message: { role: "user", text: "{}" },
         modelTier: "fast",

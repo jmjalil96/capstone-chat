@@ -40,7 +40,7 @@ function createPool(): DatabasePool {
 }
 
 describe("production static application", () => {
-  it("requires simulated policy authority for the managed rehearsal build", async () => {
+  it("does not require hosted policy authority for a local production asset build", async () => {
     const root = await createWebFixture();
     const config = Object.freeze({
       ...loadConfig({ NODE_ENV: "test" }),
@@ -56,15 +56,10 @@ describe("production static application", () => {
     });
 
     await expect(application.lifecycle.initialize()).resolves.toEqual({
-      database: "unknown",
-      status: "unavailable",
-    });
-    await expect(application.lifecycle.initialize()).resolves.toEqual({
       database: "up",
       status: "ready",
     });
-    expect(assertRuntimeMode).toHaveBeenNthCalledWith(1, "simulated");
-    expect(assertRuntimeMode).toHaveBeenNthCalledWith(2, "simulated");
+    expect(assertRuntimeMode).not.toHaveBeenCalled();
 
     await application.shutdown();
   });

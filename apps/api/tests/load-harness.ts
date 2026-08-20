@@ -11,11 +11,13 @@ import {
   StreamEventSchema,
 } from "@capstone/protocol";
 import Value from "typebox/value";
+import { bootstrapAssistantRulesInTransaction } from "../src/assistant-rules/service.js";
 import { session as authenticationSessions, user } from "../src/database/auth-schema.generated.js";
 import { createDatabase } from "../src/database/database.js";
 import { createDatabasePool } from "../src/database/pool.js";
 import { responseUpdatesTuning } from "../src/generations/response-updates.js";
 import { createIdentityService } from "../src/identity/service.js";
+import { createLoadFixtureCatalog } from "../src/load/fixture-catalog.js";
 import {
   BoundedNdjsonDecoder,
   diagnosticsAuthorization,
@@ -25,10 +27,6 @@ import {
   parseLoadOptions,
   StreamLifecycleGuard,
 } from "../src/load/harness-safety.js";
-import {
-  createLoadRehearsalCatalog,
-  managedRehearsalAdministratorEmail,
-} from "../src/load/managed-rehearsal.js";
 import { createBudgetService } from "../src/model-policy/budget-service.js";
 import { modelTiers, verifyPrivacyAttestation } from "../src/model-policy/catalog.js";
 import { createModelPolicyService } from "../src/model-policy/service.js";
@@ -168,10 +166,7 @@ class LoadMeasurementError extends Error {
 }
 
 function requiredEnvironment(
-  name:
-    | "CAPSTONE_LOAD_AUTH_SECRET"
-    | "CAPSTONE_LOAD_DATABASE_URL"
-    | "CAPSTONE_LOAD_DIAGNOSTICS_SECRET",
+  name: "CAPSTONE_LOAD_AUTH_SECRET" | "CAPSTONE_LOAD_DATABASE_URL",
 ): string {
   const value = process.env[name]?.trim();
   if (!value) {
@@ -292,49 +287,6 @@ async function assertEmptyLoadDatabase(databaseUrl: string): Promise<void> {
   }
 }
 
-async function assertManagedRehearsalBaseline(databaseUrl: string): Promise<Date> {
-  const pool = createDatabasePool(databaseUrl);
-  try {
-    const result = await pool.query<{
-      readonly approval_count: string;
-      readonly catalog_count: string;
-      readonly initialized: boolean;
-      readonly privacy_verified_at: Date;
-      readonly user_count: string;
-      readonly workspace_count: string;
-    }>(`
-      SELECT
-        (SELECT count(*) FROM "employee_approvals")::text AS approval_count,
-        (SELECT count(*) FROM "model_catalog" WHERE "metadata_source" = 'openrouter')::text AS catalog_count,
-        EXISTS (
-          SELECT 1 FROM "production_initialization"
-          WHERE "singleton_id" = 1 AND "phase" = 'complete'
-        ) AS initialized,
-        (SELECT "verified_at" FROM "openrouter_privacy_attestations" LIMIT 1) AS privacy_verified_at,
-        (SELECT count(*) FROM "user")::text AS user_count,
-        (SELECT count(*) FROM "workspaces")::text AS workspace_count
-    `);
-    const row = result.rows[0];
-    if (
-      row === undefined ||
-      row.initialized !== true ||
-      row.workspace_count !== "1" ||
-      row.approval_count !== "1" ||
-      row.catalog_count !== "3" ||
-      row.user_count !== "0" ||
-      !(row.privacy_verified_at instanceof Date) ||
-      !Number.isFinite(row.privacy_verified_at.getTime())
-    ) {
-      throw new Error(
-        "The managed rehearsal database did not match its initialized clean baseline",
-      );
-    }
-    return row.privacy_verified_at;
-  } finally {
-    await pool.end();
-  }
-}
-
 async function verifyTargetDatabase(
   target: URL,
   databaseUrl: string,
@@ -390,7 +342,6 @@ async function bootstrapEmployees(
   databaseUrl: string,
   authSecret: string,
   employeeCount: number,
-  managedRehearsal: boolean,
   validatedAt = new Date(),
 ): Promise<readonly LoadEmployee[]> {
   const pool = createDatabasePool(databaseUrl);
@@ -399,13 +350,16 @@ async function bootstrapEmployees(
     const identity = createIdentityService(database);
     const modelPolicy = createModelPolicyService(database);
     const bootstrap = await identity.bootstrap({
-      adminEmail: managedRehearsal ? managedRehearsalAdministratorEmail : "load-00@example.test",
-      displayName: managedRehearsal ? "Capstone" : "Capstone Load Rehearsal",
-      workspaceIdentity: managedRehearsal ? "capstone" : "capstone-load",
+      adminEmail: "load-00@example.test",
+      displayName: "Capstone Local Load",
+      workspaceIdentity: "capstone-load",
     });
+    await database.transaction((transaction) =>
+      bootstrapAssistantRulesInTransaction(transaction, bootstrap.workspaceId, new Date()),
+    );
     const output = { balanced: 8_192, fast: 4_096, pro: 16_384 } as const;
     await modelPolicy.bootstrap({
-      catalog: createLoadRehearsalCatalog(validatedAt),
+      catalog: createLoadFixtureCatalog(validatedAt),
       employeeActiveGenerationLimit: 2,
       maximumOutputTokens: output,
       mode: "openrouter",
@@ -418,20 +372,17 @@ async function bootstrapEmployees(
         verifiedAt: validatedAt,
       }),
       reservationMarginBasisPoints: 2_000,
-      workspaceIdentity: managedRehearsal ? "capstone" : "capstone-load",
+      workspaceIdentity: "capstone-load",
     });
 
     const employees: LoadEmployee[] = [];
     for (let index = 0; index < employeeCount; index += 1) {
-      const email =
-        managedRehearsal && index === 0
-          ? managedRehearsalAdministratorEmail
-          : `load-${index.toString().padStart(2, "0")}@example.test`;
+      const email = `load-${index.toString().padStart(2, "0")}@example.test`;
       if (index > 0) {
         await identity.approve({
           email,
           role: "member",
-          workspaceIdentity: managedRehearsal ? "capstone" : "capstone-load",
+          workspaceIdentity: "capstone-load",
         });
       }
       const userId = randomUUID();
@@ -1631,25 +1582,11 @@ async function main(): Promise<void> {
   if (authSecret.length < 32) {
     throw new Error("CAPSTONE_LOAD_AUTH_SECRET must contain at least 32 characters");
   }
-  const diagnosticsSecret = options.managedRehearsal
-    ? requiredEnvironment("CAPSTONE_LOAD_DIAGNOSTICS_SECRET")
-    : authSecret;
-  const diagnosticsHeaders = diagnosticsAuthorization(options, diagnosticsSecret);
+  const diagnosticsHeaders = diagnosticsAuthorization(authSecret);
   await diagnosticsRequest(options.target, "read", diagnosticsHeaders);
-  const managedValidatedAt = options.managedRehearsal
-    ? await assertManagedRehearsalBaseline(databaseUrl)
-    : undefined;
-  if (!options.managedRehearsal) {
-    await assertEmptyLoadDatabase(databaseUrl);
-  }
+  await assertEmptyLoadDatabase(databaseUrl);
   await verifyTargetDatabase(options.target, databaseUrl, diagnosticsHeaders);
-  const employees = await bootstrapEmployees(
-    databaseUrl,
-    authSecret,
-    options.employees,
-    options.managedRehearsal,
-    managedValidatedAt,
-  );
+  const employees = await bootstrapEmployees(databaseUrl, authSecret, options.employees);
   const runId = randomUUID();
   const compactionEmployee = employees[3];
   const warmEmployee = employees[0];

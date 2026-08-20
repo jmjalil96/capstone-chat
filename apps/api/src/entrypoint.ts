@@ -2,12 +2,10 @@ import { loadEntrypoint } from "./entrypoint-loader.js";
 import { loadEnvironmentFile } from "./environment.js";
 
 const targets = Object.freeze({
-  "egress-bootstrap": () => import("./egress-bootstrap.js"),
+  "health-bootstrap": () => import("./health-bootstrap.js"),
   initialize: () => import("./operator/production-initialization-command.js"),
-  "initialize-rehearsal": () => import("./operator/managed-rehearsal-initialization-command.js"),
   "invite-initial": () => import("./operator/initial-invitation-command.js"),
   identity: () => import("./operator/identity-command.js"),
-  "load-server": () => import("./load/load-server.js"),
   migrate: () => import("./database/migrate-command.js"),
   model: () => import("./operator/model-policy-command.js"),
   "recovery-marker": () => import("./operator/recovery-marker-command.js"),

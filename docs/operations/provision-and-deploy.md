@@ -1,137 +1,93 @@
 # Provision and deploy
 
-This is the active DigitalOcean App Platform source-build and PlanetScale procedure. It is not
-authorization to create accounts/resources, spend, install credentials, mutate DNS, send email,
-run inference, restore data, or deploy. Each external batch needs an immediate grant naming target,
-region, maximum/prorated cost, data/credential boundary, lifetime, rollback, and cleanup.
+This runbook separates one-time provisioning from routine releases. It does not authorize an
+external mutation. Obtain a target-specific grant before creating an App, database, role, key,
+domain, pointer, or paid request.
 
-## Prerequisites
+## Fixed environments
 
-- The exact protected `main` commit is reviewed and all CI checks pass, including the local
-  production Docker build/smoke. Follow the one-time GitHub environment, token, branch-rule, and
-  `prepare-source` setup in [Deploy and rollback](./deploy-and-rollback.md).
-  `app-platform-production` accepts only non-force workflow updates. App Platform autodeploy and
-  preview Apps are off.
-- DigitalOcean's GitHub integration is limited to `jmjalil96/capstone-chat`. Record that the
-  repository is already public and obtain explicit production acceptance of that state; public
-  access is not a license grant.
-- The owner replaced the two disposable managed rehearsals with direct staged production
-  provisioning on August 13, 2026 and explicitly waived the two managed
-  20-employee/40-stream passes. The two clean one-CPU/one-GiB container repetitions are the
-  accepted capacity evidence; never run the fake load server or expose its diagnostics on the
-  production origin. Keep the production App closed and free of real employee data until its
-  source, egress, database, TLS, migration, readiness, deployment-failure/forward-revert,
-  secret-isolation, telemetry, real-path streaming/cancellation, Ecuador/browser/accessibility,
-  aged PITR, and controlled cold-recreation checks pass. Do not send the first invitation before
-  then.
-- Current provider sizes/regions/terms/costs are recorded. The owner accepted the current
-  feature-preview status of the selected production sizes on August 13, 2026.
-- The App Platform/Cloudflare privacy boundary, domain-deletion exception, company ownership/MFA,
-  Bitwarden recovery, and revoked planning OpenRouter key are all current.
+| Boundary | Staging | Production |
+|---|---|---|
+| App origin | `https://staging.chat.capstone.com.ec` | `https://chat.capstone.com.ec` |
+| Source pointer | `app-platform-staging` | `app-platform-production` |
+| Service | one `apps-s-1vcpu-0.5gb` | one `apps-s-1vcpu-1gb-fixed` |
+| Migration job | one `apps-s-1vcpu-0.5gb` | one `apps-s-1vcpu-0.5gb` |
+| Database | independent PS-5, synthetic data | existing authoritative PS-5 |
+| Database network | public, strict TLS, least privilege | exactly two Dedicated Egress `/32`s |
+| Model/email | dedicated low-limit key and allowlisted sender | existing production providers |
 
-## First provisioning
+Both Apps are in managed region `ric`; both databases are PS-5 ARM Single Node in AWS
+`us-east-1`, start at 10 GB, and have a hard 15 GB ceiling. Staging has no Dedicated Egress.
+Neither environment has autoscaling, scale-to-zero, a worker, second service, replica, or HA.
 
-Proceed in order. App Platform configuration changes can rebuild source, so keep the intended
-release pointer fixed and verify the resulting component source commit after every stage.
+## Complete steady secret matrix
 
-1. **Freeze source.** Record protected `main` and green CI. For production, run the workflow's
-   bounded `prepare-source` operation before the first App exists. For a separately authorized
-   synthetic rehearsal, create or non-force fast-forward `app-platform-rehearsal` to that exact
-   green commit, verify the remote value immediately, and never move it backward. Confirm the
-   Dockerfile builds without a revision argument and CI proved non-root UID 1000, required files,
-   migrations, health, and runtime revision injection.
-2. **Confirm topology/cost.** Region `ric`; one 1-GiB service; one 512-MiB pre-deploy job; paid
-   Dedicated Egress; PlanetScale PS-5 ARM Single Node in `us-east-1`; 10/15 GB; no HA, replica,
-   autoscaling, scale-to-zero, second service, or worker.
-3. **Create the health-only App.** Connect the appropriate release pointer and
-   `apps/api/Dockerfile`, disable autodeploy, and use the bootstrap contract. The entrypoint is
-   `egress-bootstrap`; no database, auth, email, model, telemetry, or runtime secret is present.
-   Custom-domain-only edge settings remain absent. Validate the captured App read-only.
-4. **Enable Dedicated Egress.** Wait for exactly two distinct stable assigned IPv4 addresses and
-   record them safely. Prove they survive a harmless source redeployment.
-5. **Create PlanetScale/roles.** Create `capstone_chat` with the approved backup/storage policy.
-   Create distinct application, migration, recovery, initialization application/migration, and
-   temporary load roles as required. Allowlist both egress addresses as separate `/32`s before
-   delivering any URL. Use direct 5432 and `sslmode=verify-full`; never `0.0.0.0/0`.
-6. **Attach the domain.** Follow [Domain and TLS](./domain-and-tls.md). Attach the exact primary
-   hostname while the health-only service still returns 404 for product routes. Introduce edge
-   cache/email-obfuscation/threat settings only with the custom domain.
-7. **Run one-time initialization.** Temporarily add one source-built `PRE_DEPLOY` initialization
-   job. Give it only distinct bootstrap database URLs, the short-lived catalog key where needed,
-   and the schema-versioned initialization document (maximum 32 KiB). It receives no final role,
-   Better Auth, Resend, or New Relic credential. Production uses
-   `node apps/api/dist/entrypoint.js initialize`, `NODE_ENV=production`,
-   `MODEL_GATEWAY=openrouter`, `CAPSTONE_INITIALIZATION_SCHEMA_VERSION=1`, and secrets
-   `CAPSTONE_BOOTSTRAP_MIGRATION_DATABASE_URL`, `CAPSTONE_BOOTSTRAP_DATABASE_URL`,
-   `OPENROUTER_API_KEY`, and `CAPSTONE_INITIALIZATION_DOCUMENT`. Rehearsal uses
-   `node apps/api/dist/entrypoint.js initialize-rehearsal`, `NODE_ENV=test`, the managed-rehearsal
-   profile, and the same two database/document secrets without an OpenRouter key. Both jobs use
-   the appropriate release pointer, Dockerfile, 512-MiB size, runtime commit binding, deployment
-   target, and platform secret source.
-8. **Verify and remove initialization.** Require the ordered durable document-hash latch,
-   idempotent exact repeat, conflict rejection before provider work, one workspace/admin approval,
-   and no email. Remove the job/variables and revoke both roles/key before continuing. Prove replay
-   cannot mutate authority.
-9. **Stage the exact final contract once.** Under the separately authorized first-provisioning
-   grant, use the App Platform dashboard to replace the bootstrap service configuration with
-   `app.contract.yaml` (or `rehearsal.contract.yaml`) exactly: steady service command and health,
-   liveness, termination, alerts, ingress, edge and environment declarations; exactly one
-   `PRE_DEPLOY` migration job; and no other component. Service secrets use the application role,
-   Better Auth, OpenRouter, Resend, and New Relic. The migration job receives only its separate
-   `DATABASE_URL`; the recovery role is absent. All secrets are encrypted component-scoped
-   `RUN_TIME` values, never build arguments. Keep the release pointer fixed. This dashboard save
-   creates a provisional deployment because the protected workflow intentionally cannot mutate App
-   configuration.
-10. **Validate the provisional active deployment.** Observe its migration and readiness, capture
-    the App response in an owner-only temporary file, and run the complete read-only `live` (or
-    `rehearsal`) validator against the frozen source commit. It must prove both the desired App spec
-    and `active_deployment.spec`, the active service/job source hashes, exact final topology,
-    encrypted variable scope, domain/edge/egress, and no in-progress deployment. A desired/active
-    mismatch fails closed. The provisional production deployment is not an accepted release and
-    must not receive employee traffic or trigger the first invitation.
-11. **Establish the protected production release.** Only after step 10 passes, run the protected
-    production workflow. It validates the already-final App before moving the source pointer,
-    requests a fresh deployment of the exact green commit, and revalidates the active contract and
-    readiness. Require the same source commit for service/job, successful migration, exact
-    domain/redirect/edge policy, unchanged egress, and health/drain/grace settings. This one-time
-    dashboard transition is not a steady release path; every later code release uses the workflow.
-12. **Complete pre-invitation launch gates.** Verify App Platform/PlanetScale/New
-    Relic/Uptime signals and Resend domain/key readiness,
-    source identity, TLS/cookies/client address, application flows, long NDJSON/Stop/recovery,
-    Ecuador/device/accessibility, privacy sampling, accepted container capacity evidence, paid
-    inference authorization, aged PITR, controlled cold recreation, offline Git recovery, and final
-    pre-invitation review.
-13. **Complete the controlled email gate.** Only after step 12 passes, use the bounded
-    application-role command for the existing owner approval. It cannot create/change authority
-    and records no email or action URL. Prove invitation, verification, and password-reset delivery,
-    links, Spanish HTML/plain text, expiry, and current desktop/mobile rendering without retaining
-    recipients or action URLs. Record final acceptance before inviting a second employee.
+The service receives encrypted component-scoped `RUN_TIME` secrets only:
 
-## Managed rehearsal
+| Secret | Staging | Production |
+|---|---|---|
+| `BETTER_AUTH_SECRET` | dedicated | existing production |
+| `DATABASE_URL` | staging application role | production application role |
+| `OPENROUTER_API_KEY` | dedicated low-limit | existing production |
+| `OTEL_EXPORTER_OTLP_HEADERS` | dedicated environment/account authority | existing production |
+| `RESEND_API_KEY` | send-only, staging-domain-restricted | existing send-only production key |
+| `CAPSTONE_STAGING_EMAIL_RECIPIENTS` | 1–10 unique normalized addresses | absent |
 
-This is retained as a future qualification procedure, not the active launch path after the
-owner's August 13, 2026 direct-production decision.
+The migration job receives only its separate migration `DATABASE_URL`. Its remaining values are
+non-secret deployment metadata: `CAPSTONE_ENVIRONMENT`, `CAPSTONE_SECRET_SOURCE`,
+`DEPLOYMENT_REVISION`, `DEPLOYMENT_TARGET`, and `NODE_ENV`. Recovery and initialization authority
+is absent from steady components. Staging and production keys, roles, GitHub environments, Apps,
+and provider resources are never reused across environments.
 
-A rehearsal requires a separate grant for one temporary `ric` App, Dedicated Egress, isolated
-PlanetScale branch/database, temporary hostname, fake model, disabled/fake email, synthetic `.test`
-identities, content-free telemetry, maximum spend/lifetime, and mandatory cleanup. Use
-`app-platform-rehearsal`, never production source/credentials/data.
+## One-time provisioning
 
-The rehearsal pointer is synthetic-only and is not advanced by the production workflow. Under the
-rehearsal grant, the operator may create or non-force fast-forward it to the recorded green `main`
-commit, must verify `git ls-remote` immediately, and must not bypass force-push/deletion rules. The
-live validator still requires every rehearsal component to report that exact commit.
+1. Record one exact green `main` commit. Under separate Git authorization, create each protected
+   release pointer once at that commit. Block deletion and force pushes, require linear history,
+   disable App Platform autodeploy, and connect only the matching pointer. Routine workflows cannot
+   create an absent pointer.
+2. Create the fixed App and database topology. Production obtains exactly two stable Dedicated
+   Egress IPv4 addresses before any database URL is installed; allowlist each as a separate `/32`.
+   Staging uses public connectivity with direct port 5432, `sslmode=verify-full`, distinct
+   application/migration/recovery roles, and no claim of an IP-allowlist boundary.
+3. If domain, egress, or recovery sequencing requires an App with no product authority, temporarily
+   run `node apps/api/dist/entrypoint.js health-bootstrap`. It exposes only fixed health routes and
+   a revision header. Remove it before applying the hosted contract; it is not a release stage,
+   maintenance mode, or accepted application deployment.
+4. Attach the fixed domain and edge settings through [Domain and TLS](./domain-and-tls.md). Create
+   dedicated Resend/OpenRouter/telemetry resources. Staging's sender is exactly
+   `Capstone Chat Staging <no-reply@staging.mail.capstone.com.ec>` and its Resend key is send-only
+   and restricted to that domain.
+5. For an empty database only, temporarily add one source-built initialization job using
+   `node apps/api/dist/entrypoint.js initialize`, `NODE_ENV=production`, the environment's exact
+   `CAPSTONE_ENVIRONMENT`, and `CAPSTONE_INITIALIZATION_SCHEMA_VERSION=1`. Give it only the two
+   distinct bootstrap database URLs, the canonical initialization document, and the environment's
+   short-lived catalog key. It receives no steady application role, Better Auth, Resend, or New
+   Relic secret.
+6. Require ordered migrations, the schema-1 document-hash latch, an idempotent exact repeat,
+   conflict rejection before provider work, one workspace/pending administrator, and no invitation.
+   Remove the initialization job and variables and revoke both bootstrap roles and the temporary
+   key. Initialization is never repeated during deployment or recovery.
+7. Apply `common.contract.yaml` plus the matching environment overlay. Require the normal server,
+   one migration-only `PRE_DEPLOY` job, exact source/Dockerfile/branch, health and termination,
+   encrypted component variables, fixed domain/edge, and no extra component or in-progress
+   deployment. Production alone has Dedicated Egress.
+8. Capture the desired and active provider state in an owner-only temporary file and run the
+   focused `staging` or `production` validator. Require both service and job to report the frozen
+   commit and public readiness to return the same `x-capstone-revision`.
+9. Seed staging with synthetic identities and conversations only. Exercise invitation,
+   verification, and password-reset delivery solely to allowlisted recipients. A rejected address
+   must cause no Resend call and expose no address.
+10. Configure GitHub environments and the shared release action as described in
+    [Deploy and rollback](./deploy-and-rollback.md). Thereafter all releases use the short steady
+    path; configuration/provisioning changes remain separately reviewed.
 
-The external load generator receives only a temporary rehearsal auth secret and a dedicated
-PlanetScale load role with provider-enforced 24-hour TTL and its one source IPv4 `/32`. Its URL
-never enters an App variable. After testing, close its pool, revoke/delete the role immediately,
-remove the `/32`, rotate/remove the auth secret, prove denial, and delete temporary resources under
-cleanup authorization.
+Production is not accepted for employee data until staging, bounded production smokes, TLS,
+database authority, telemetry, failure preservation, forward revert, Ecuador/browser/accessibility,
+aged isolated PITR, controlled cold recreation, and the first controlled email gate pass.
 
-## Recovery is not initialization
+## Recovery is separate
 
-Cold recreation against initialized data never receives the original initialization document,
-job, roles, key, or invitation. It verifies the completed latch and existing authority, obtains a
-new egress pair through a health-only App, restricts PlanetScale, and installs only steady values.
-If any step fails, preserve the last known-good App/database authority. Do not silently resize,
-remove egress, open PlanetScale, lower gates, add a service, or use native rollback.
+Staging is not a backup or restored-data validation environment. PITR and cold-recreation exercises
+remain isolated, preserve the authoritative source database, and use
+[Database recovery](./database-recovery.md). They never receive the initialization document,
+initialization roles, or first-invitation authority.

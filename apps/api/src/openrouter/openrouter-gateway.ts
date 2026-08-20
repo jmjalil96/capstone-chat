@@ -242,6 +242,21 @@ function requestBody(request: GenerationRequest, route: RequestRoute): Record<st
   ) {
     throw localFailure();
   }
+  const reasoning =
+    request.effectiveParameters.reasoning === null
+      ? null
+      : {
+          ...(request.effectiveParameters.reasoning.enabled === undefined
+            ? {}
+            : { enabled: request.effectiveParameters.reasoning.enabled }),
+          ...(request.effectiveParameters.reasoning.effort === undefined
+            ? {}
+            : { effort: request.effectiveParameters.reasoning.effort }),
+          exclude: true,
+          ...(request.effectiveParameters.reasoning.maxTokens === undefined
+            ? {}
+            : { max_tokens: request.effectiveParameters.reasoning.maxTokens }),
+        };
   return {
     max_tokens: route.maximumOutputTokens,
     messages,
@@ -256,10 +271,11 @@ function requestBody(request: GenerationRequest, route: RequestRoute): Record<st
       require_parameters: true,
       zdr: true,
     },
-    // Titles disable hidden reasoning entirely: with a 32-token cap, reasoning models otherwise spend
-    // the whole budget before emitting any visible title text and finish with `length`.
-    reasoning: request.purpose === "title" ? { enabled: false, exclude: true } : { exclude: true },
+    ...(reasoning === null ? {} : { reasoning }),
     stream: true,
+    ...(request.effectiveParameters.temperature === null
+      ? {}
+      : { temperature: request.effectiveParameters.temperature }),
   };
 }
 

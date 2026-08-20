@@ -29,7 +29,7 @@ html {
 
 body {
   min-width: 20rem;
-  min-height: 100vh;
+  min-height: 100svh;
   margin: 0;
   background: var(--app-page);
   color: var(--app-text);
@@ -64,7 +64,7 @@ select:focus-visible,
 }
 
 #root {
-  min-height: 100vh;
+  min-height: 100svh;
 }
 
 .root-failure {
@@ -434,7 +434,7 @@ select:focus-visible,
 }
 
 .compact-button {
-  min-height: 2.5rem;
+  min-height: 2.75rem;
   padding: var(--capstone-space-2) var(--capstone-space-4);
   font-size: var(--capstone-type-small);
 }
@@ -845,9 +845,22 @@ select:focus-visible,
   z-index: 5;
   inset-inline: 0;
   bottom: calc(100% + var(--capstone-space-2));
+  max-block-size: min(
+    20rem,
+    calc(
+      100dvh -
+      3rem -
+      var(--capstone-space-2) -
+      var(--capstone-space-3) -
+      var(--capstone-space-5) -
+      var(--capstone-space-4)
+    )
+  );
   display: grid;
   gap: var(--capstone-space-2);
   padding: var(--capstone-space-3);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   background: var(--app-panel);
   border: 1px solid var(--app-border);
   border-radius: var(--capstone-radius-sm);
@@ -856,7 +869,7 @@ select:focus-visible,
 
 .account-menu-panel a,
 .account-menu-panel button {
-  min-height: 2.5rem;
+  min-height: 2.75rem;
   display: flex;
   align-items: center;
   gap: var(--capstone-space-2);
@@ -1565,6 +1578,17 @@ select:focus-visible,
   border: 0;
 }
 
+.message-actions .message-action {
+  min-block-size: 2.75rem;
+  display: inline-flex;
+  align-items: center;
+}
+
+.message-actions .message-alternative-controls .message-action {
+  min-inline-size: 2.75rem;
+  justify-content: center;
+}
+
 .message-action:disabled {
   cursor: not-allowed;
   opacity: 0.58;
@@ -1626,14 +1650,18 @@ select:focus-visible,
 .search-match {
   outline: 2px solid var(--app-accent);
   outline-offset: var(--capstone-space-2);
+  padding-inline-start: var(--capstone-space-3);
+  box-shadow: inset 3px 0 0 var(--app-action);
   background: rgb(226 171 51 / 18%);
   transition:
     background-color 520ms var(--capstone-ease-standard),
+    box-shadow 520ms var(--capstone-ease-standard),
     outline-color 520ms var(--capstone-ease-standard);
 }
 
 .search-match-fade {
   outline-color: transparent;
+  box-shadow: inset 3px 0 0 transparent;
   background: transparent;
 }
 
@@ -1754,10 +1782,6 @@ select:focus-visible,
 
 .action-dialog p {
   line-height: 1.55;
-}
-
-.action-dialog .compact-button {
-  min-height: 2.75rem;
 }
 
 .dialog-actions {
@@ -2499,6 +2523,19 @@ select:focus-visible,
     padding-block: var(--capstone-space-3);
   }
 
+  .account-menu-panel {
+    bottom: 0;
+    max-block-size: min(20rem, calc(100dvh - 2 * var(--capstone-space-3)));
+    gap: var(--capstone-space-1);
+    padding: var(--capstone-space-2);
+  }
+
+  .account-email,
+  .account-role,
+  .account-error {
+    padding-block: var(--capstone-space-1);
+  }
+
   .conversation-logo {
     max-height: 2rem;
   }
@@ -2687,7 +2724,7 @@ select:focus-visible,
 
 .message-action[data-report-state="reported"] {
   cursor: default;
-  opacity: 0.72;
+  color: var(--app-text-muted);
 }
 
 /* Phase 10 — administrator report inbox */
@@ -2716,13 +2753,23 @@ select:focus-visible,
   margin: 0;
 }
 
+.admin-report-item header > div {
+  min-inline-size: 0;
+}
+
+.admin-report-item header strong,
+.admin-report-item header p {
+  overflow-wrap: anywhere;
+}
+
 .admin-report-note {
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .admin-report-dialog {
   width: min(calc(100% - 2 * var(--capstone-gutter-small)), 44rem);
-  max-block-size: min(85vh, 48rem);
+  max-block-size: min(85svh, 48rem);
   overflow: auto;
 }
 
@@ -2751,4 +2798,293 @@ select:focus-visible,
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   font-family: inherit;
+}
+
+/* Phase 11 — workspace behavior controls */
+.account-rules-status,
+.account-rules {
+  margin-block-start: var(--capstone-space-6);
+}
+
+.account-rules {
+  display: grid;
+  gap: var(--capstone-space-5);
+}
+
+.account-rules-readonly,
+.assistant-disclosure {
+  margin: 0;
+  padding: var(--capstone-space-4);
+  background: color-mix(in srgb, var(--app-accent) 8%, var(--app-panel));
+  border-inline-start: 3px solid var(--app-accent);
+  border-radius: var(--capstone-radius-xs);
+  line-height: 1.55;
+}
+
+.account-rules-updated,
+.admin-revision-meta,
+.admin-card-description,
+.admin-revision header p {
+  margin: 0;
+  color: var(--app-text-muted);
+  font-size: var(--capstone-type-small);
+  line-height: 1.5;
+}
+
+.account-rules section,
+.assistant-preview {
+  display: grid;
+  gap: var(--capstone-space-2);
+}
+
+.account-rules h2,
+.assistant-rules-form h3,
+.admin-revision h3 {
+  margin: 0;
+  font-family: var(--capstone-font-body);
+  font-size: var(--capstone-type-body);
+  line-height: 1.4;
+}
+
+.account-rules pre,
+.assistant-preview pre,
+.admin-revision pre,
+.assistant-reset-target {
+  max-width: 100%;
+  margin: 0;
+  padding: var(--capstone-space-4);
+  overflow: auto;
+  background: var(--app-panel-soft);
+  border: 1px solid var(--app-border);
+  border-radius: var(--capstone-radius-sm);
+  color: var(--app-text);
+  font-family: inherit;
+  font-size: var(--capstone-type-small);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.assistant-rules-form {
+  display: grid;
+  gap: var(--capstone-space-5);
+  margin-block-start: var(--capstone-space-5);
+}
+
+.assistant-rules-form textarea {
+  width: 100%;
+  min-height: 14rem;
+  resize: vertical;
+  padding: var(--capstone-space-4);
+  background: var(--app-panel);
+  border: 1px solid var(--app-control-border);
+  border-radius: var(--capstone-radius-sm);
+  color: var(--app-text);
+  line-height: 1.55;
+}
+
+.assistant-rules-form textarea[aria-invalid="true"] {
+  border-color: var(--app-danger);
+}
+
+.assistant-count-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--capstone-space-4);
+}
+
+.assistant-count-grid section {
+  padding: var(--capstone-space-4);
+  background: var(--app-panel-soft);
+  border-radius: var(--capstone-radius-sm);
+}
+
+.assistant-count-grid p,
+.assistant-preview-status {
+  margin: var(--capstone-space-2) 0 0;
+  font-family: var(--capstone-font-data);
+  font-size: var(--capstone-type-small);
+  line-height: 1.45;
+}
+
+.assistant-preview-status {
+  min-height: 1.45em;
+  margin: 0;
+  color: var(--app-text-muted);
+}
+
+.assistant-disclosure h3 {
+  margin-block-end: var(--capstone-space-2);
+}
+
+.assistant-disclosure ul {
+  display: grid;
+  gap: var(--capstone-space-2);
+  margin: 0;
+  padding-inline-start: var(--capstone-space-5);
+}
+
+.assistant-form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--capstone-space-3);
+}
+
+.admin-card-description {
+  margin-block-start: var(--capstone-space-2);
+}
+
+.admin-revision-list {
+  display: grid;
+  gap: var(--capstone-space-4);
+  margin: var(--capstone-space-5) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.admin-revision {
+  display: grid;
+  gap: var(--capstone-space-4);
+  padding: var(--capstone-space-4);
+  background: var(--app-panel-soft);
+  border: 1px solid var(--app-border);
+  border-radius: var(--capstone-radius-sm);
+}
+
+.admin-revision > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--capstone-space-4);
+}
+
+.admin-revision header > div {
+  display: grid;
+  gap: var(--capstone-space-1);
+}
+
+.admin-current-badge,
+.admin-parameter-status {
+  width: fit-content;
+  padding: var(--capstone-space-1) var(--capstone-space-2);
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  color: var(--app-action);
+  font-family: var(--capstone-font-data);
+  font-size: var(--capstone-type-label);
+  font-weight: var(--capstone-weight-semibold);
+  line-height: 1.3;
+}
+
+.admin-parameter-status[data-kind="unsupported"] {
+  color: var(--app-text-muted);
+}
+
+.admin-parameter-status[data-kind="translated"],
+.admin-parameter-status[data-kind="mandatory"] {
+  color: var(--app-action);
+}
+
+.admin-parameter-status-detail {
+  display: grid;
+  gap: var(--capstone-space-1);
+}
+
+.admin-parameter-status-detail small {
+  color: var(--app-text-muted);
+  font-size: var(--capstone-type-label);
+  line-height: 1.4;
+}
+
+.assistant-reset-target {
+  max-height: 14rem;
+}
+
+.admin-catalog-details {
+  min-width: 0;
+  display: grid;
+  gap: var(--capstone-space-4);
+}
+
+.admin-catalog-list .admin-capability-list {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  padding-block-start: var(--capstone-space-3);
+  border-block-start: 1px solid var(--app-border);
+}
+
+.admin-policy-form .admin-table {
+  min-width: 90rem;
+}
+
+.admin-policy-form .admin-table select {
+  min-width: 10rem;
+}
+
+.admin-policy-form .admin-table td:first-of-type select {
+  min-width: 18rem;
+}
+
+.admin-tier-statuses {
+  min-width: 12rem;
+  display: grid;
+  gap: var(--capstone-space-2);
+}
+
+.admin-tier-statuses > span {
+  display: grid;
+  gap: var(--capstone-space-1);
+  color: var(--app-text-muted);
+  font-size: var(--capstone-type-label);
+  line-height: 1.4;
+}
+
+.admin-policy-revision-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--capstone-space-4);
+  margin: 0;
+}
+
+.admin-policy-revision-summary div {
+  min-width: 10rem;
+}
+
+.admin-policy-revision-summary dt {
+  color: var(--app-text-muted);
+  font-size: var(--capstone-type-label);
+}
+
+.admin-policy-revision-summary dd {
+  margin: var(--capstone-space-1) 0 0;
+  font-family: var(--capstone-font-data);
+  font-weight: var(--capstone-weight-semibold);
+}
+
+.admin-policy-history-table {
+  min-width: 78rem;
+}
+
+.admin-policy-history-table code {
+  display: block;
+  margin-block-start: var(--capstone-space-1);
+  color: var(--app-text-muted);
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 48rem) {
+  .assistant-count-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-revision > header {
+    flex-direction: column;
+  }
+
+  .assistant-form-actions > * {
+    width: 100%;
+  }
+
+  .admin-catalog-list .admin-capability-list {
+    grid-template-columns: 1fr;
+  }
 }

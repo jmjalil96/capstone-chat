@@ -19,6 +19,7 @@ import {
   responseGalleryAssistantMarkdown,
 } from "./conversation-e2e-fixtures.js";
 import { bootstrapSimulatedModelPolicy } from "./model-policy.js";
+import { bootstrapTestAssistantRules } from "./workspace-behavior.js";
 
 const apiPort = 3011;
 const publicOrigin = "http://127.0.0.1:4173";
@@ -68,14 +69,17 @@ async function seedTerminalResponse(
     errorCode: outcome.status === "incomplete" ? outcome.errorCode : null,
     firstTokenAt: timestamp,
     idempotencyKey: randomUUID(),
+    behaviorContractVersion: 2,
+    modelPolicyRevision: 1,
     requestedTier: "balanced",
     startedAt: timestamp,
     status: outcome.status,
-    systemPromptVersion: "capstone-chat-v1",
+    systemPromptVersion: "capstone-chat-base-v2",
     terminalReason: outcome.reason,
     updatedAt: timestamp,
     userId: actor.employee.id,
     workspaceId: actor.workspace.id,
+    workspacePromptRevision: 1,
   });
 }
 
@@ -326,11 +330,12 @@ async function main(): Promise<void> {
   if (primaryAdministrator === undefined) {
     throw new Error("The browser identity fixture has no administrator");
   }
-  await application.identity.bootstrap({
+  const bootstrap = await application.identity.bootstrap({
     adminEmail: primaryAdministrator.email,
     displayName: "Capstone Ecuador",
     workspaceIdentity: "capstone-ecuador",
   });
+  await bootstrapTestAssistantRules(application.database, bootstrap.workspaceId);
   for (const administrator of identityBrowserAdministrators.slice(1)) {
     await application.identity.approve({
       email: administrator.email,

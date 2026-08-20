@@ -24,6 +24,7 @@ import type { ModelGateway } from "../src/generations/model-gateway.js";
 import { type EmailSender, FakeEmailSender } from "../src/identity/email.js";
 import { ResendEmailSender } from "../src/identity/resend-email.js";
 import { createIdentityService, type IdentityService } from "../src/identity/service.js";
+import { seedTestBehaviorRevisions } from "./support/workspace-behavior.js";
 
 const publicOrigin = "http://localhost:5173";
 const adminEmail = "admin.identity@example.test";
@@ -139,6 +140,7 @@ describe.sequential("identity integration", () => {
       url: `/api/auth${path}`,
       headers: {
         "content-type": "application/json",
+        "do-connecting-ip": "203.0.113.10",
         origin: publicOrigin,
         ...(cookie === undefined ? {} : { cookie }),
         ...extraHeaders,
@@ -236,6 +238,7 @@ describe.sequential("identity integration", () => {
     if (admin === undefined || workspace === undefined) {
       throw new Error("The sign-out fixture is missing its administrator or workspace");
     }
+    await seedTestBehaviorRevisions(app.database, workspace.id, new Date());
     const conversationRows = await app.database
       .insert(conversations)
       .values({ title: "Trabajo en curso", userId: admin.id, workspaceId: workspace.id })
@@ -266,12 +269,15 @@ describe.sequential("identity integration", () => {
         conversationId,
         effectiveParameters: { context: { mode: "full" } },
         idempotencyKey: "0f5cbe0d-8f4c-4a3f-a5c6-6a3a3a1c9b01",
+        behaviorContractVersion: 2,
+        modelPolicyRevision: 1,
         purpose: "chat",
         requestedTier: "balanced",
         status: "active",
-        systemPromptVersion: "capstone-chat-v1",
+        systemPromptVersion: "capstone-chat-base-v2",
         userId: admin.id,
         workspaceId: workspace.id,
+        workspacePromptRevision: 1,
       })
       .returning({ id: generations.id });
     const generationId = activeRows[0]?.id ?? "";
@@ -287,6 +293,7 @@ describe.sequential("identity integration", () => {
       userId: admin.id,
       workspaceId: secondWorkspaceId,
     });
+    await seedTestBehaviorRevisions(app.database, secondWorkspaceId, new Date());
     const secondConversationRows = await app.database
       .insert(conversations)
       .values({ title: "Segundo trabajo", userId: admin.id, workspaceId: secondWorkspaceId })
@@ -317,12 +324,15 @@ describe.sequential("identity integration", () => {
         conversationId: secondConversationId,
         effectiveParameters: { context: { mode: "full" } },
         idempotencyKey: "89628ebc-e67e-4ace-9f5c-bb7290763b2e",
+        behaviorContractVersion: 2,
+        modelPolicyRevision: 1,
         purpose: "chat",
         requestedTier: "balanced",
         status: "active",
-        systemPromptVersion: "capstone-chat-v1",
+        systemPromptVersion: "capstone-chat-base-v2",
         userId: admin.id,
         workspaceId: secondWorkspaceId,
+        workspacePromptRevision: 1,
       })
       .returning({ id: generations.id });
     const secondGenerationId = secondGenerationRows[0]?.id ?? "";
@@ -401,6 +411,7 @@ describe.sequential("identity integration", () => {
     if (admin === undefined || workspace === undefined) {
       throw new Error("The sign-out rollback fixture is incomplete");
     }
+    await seedTestBehaviorRevisions(app.database, workspace.id, new Date());
     const conversationRows = await app.database
       .insert(conversations)
       .values({ title: "Trabajo protegido", userId: admin.id, workspaceId: workspace.id })
@@ -431,12 +442,15 @@ describe.sequential("identity integration", () => {
         conversationId,
         effectiveParameters: { context: { mode: "full" } },
         idempotencyKey: "7b61cf18-9d83-42be-89f4-59d4a57b7071",
+        behaviorContractVersion: 2,
+        modelPolicyRevision: 1,
         purpose: "chat",
         requestedTier: "balanced",
         status: "active",
-        systemPromptVersion: "capstone-chat-v1",
+        systemPromptVersion: "capstone-chat-base-v2",
         userId: admin.id,
         workspaceId: workspace.id,
+        workspacePromptRevision: 1,
       })
       .returning({ id: generations.id });
     const generationId = generationRows[0]?.id ?? "";
@@ -1155,20 +1169,28 @@ describe.sequential("identity integration", () => {
       {
         ...loadConfig({
           BETTER_AUTH_SECRET: "capstone-chat-test-secret-with-more-than-thirty-two-characters",
-          DATABASE_URL: databaseUrl,
+          CAPSTONE_ENVIRONMENT: "production",
+          CAPSTONE_SECRET_SOURCE: "platform-environment",
+          CLIENT_ADDRESS_SOURCE: "digitalocean-app-platform",
+          DATABASE_URL:
+            "postgresql://app:password@database.example:5432/capstone?sslmode=verify-full",
           DEPLOYMENT_REVISION: "0123456789abcdef0123456789abcdef01234567",
+          DEPLOYMENT_TARGET: "digitalocean-app-platform",
           EMAIL_DELIVERY: "resend",
           EMAIL_FROM: "Capstone Chat <no-reply@mail.capstone.com.ec>",
+          HOST: "0.0.0.0",
           LOG_LEVEL: "silent",
           MODEL_GATEWAY: "openrouter",
-          NODE_ENV: "test",
+          NODE_ENV: "production",
           OPENROUTER_API_KEY: "test-openrouter-key-never-sent",
           OTEL_EXPORTER_OTLP_ENDPOINT: "https://otlp.nr-data.net",
           OTEL_EXPORTER_OTLP_HEADERS: "api-key=test-license-key",
+          PORT: "3000",
           PUBLIC_ORIGIN: productionOrigin,
           RESEND_API_KEY: "re_test_only",
+          WEB_ASSETS: "production-build",
         }),
-        nodeEnv: "production",
+        databaseUrl,
         publicOrigin: productionOrigin,
         webAssetsDirectory: null,
       },
@@ -1180,11 +1202,14 @@ describe.sequential("identity integration", () => {
       url: "/api/auth/sign-in/email",
       headers: {
         "content-type": "application/json",
+        "do-connecting-ip": "203.0.113.10",
+        host: "chat.capstone.com.ec",
         origin: productionOrigin,
+        "x-forwarded-proto": "https",
       },
       payload: { email: adminEmail, password: originalPassword },
     });
-    expect(productionSignIn.statusCode).toBe(200);
+    expect(productionSignIn.statusCode, productionSignIn.body).toBe(200);
     const productionCookies = setCookies(productionSignIn);
     expect(productionCookies).not.toEqual([]);
     expect(productionCookies.every((cookie) => /;\s*Secure/iu.test(cookie))).toBe(true);
@@ -1192,41 +1217,54 @@ describe.sequential("identity integration", () => {
 
     await app.shutdown();
     application = undefined;
-    const rehearsalOrigin = "https://rehearsal.chat.capstone.com.ec";
+    const stagingOrigin = "https://staging.chat.capstone.com.ec";
+    const stagingEmailSender = new ResendEmailSender({
+      apiKey: "re_test_only",
+      fetch: async () =>
+        new Response(JSON.stringify({ id: "49a3999c-0ce1-4ea6-ab68-afcd6dc2e794" }), {
+          headers: { "content-type": "application/json" },
+          status: 200,
+        }),
+      from: "Capstone Chat Staging <no-reply@staging.mail.capstone.com.ec>",
+    });
     app = createApplication(
       {
         ...loadConfig({
           BETTER_AUTH_SECRET: "capstone-chat-test-secret-with-more-than-thirty-two-characters",
           DATABASE_URL: databaseUrl,
-          EMAIL_DELIVERY: "disabled",
+          EMAIL_DELIVERY: "fake",
           LOG_LEVEL: "silent",
           MODEL_GATEWAY: "openrouter",
           NODE_ENV: "test",
           OPENROUTER_API_KEY: "test-key-not-used-by-the-injected-gateway",
-          PUBLIC_ORIGIN: rehearsalOrigin,
+          PUBLIC_ORIGIN: publicOrigin,
         }),
-        deploymentProfile: "managed-rehearsal",
-        openRouterApiKey: null,
-        publicOrigin: rehearsalOrigin,
+        applicationEnvironment: "staging",
+        publicOrigin: stagingOrigin,
       },
       {
-        emailSender: new FakeEmailSender(),
+        emailSender: stagingEmailSender,
         logMirror: null,
         modelGateway: inertProductionGateway,
       },
     );
     application = app;
-    const rehearsalSignIn = await app.server.inject({
-      headers: { "content-type": "application/json", origin: rehearsalOrigin },
+    const stagingSignIn = await app.server.inject({
+      headers: {
+        "content-type": "application/json",
+        host: "staging.chat.capstone.com.ec",
+        origin: stagingOrigin,
+        "x-forwarded-proto": "https",
+      },
       method: "POST",
       payload: { email: adminEmail, password: originalPassword },
       url: "/api/auth/sign-in/email",
     });
-    expect(rehearsalSignIn.statusCode).toBe(200);
-    expect(rehearsalSignIn.headers["strict-transport-security"]).toBe("max-age=31536000");
-    const rehearsalCookies = setCookies(rehearsalSignIn);
-    expect(rehearsalCookies).not.toEqual([]);
-    expect(rehearsalCookies.every((cookie) => /;\s*Secure/iu.test(cookie))).toBe(true);
+    expect(stagingSignIn.statusCode).toBe(200);
+    expect(stagingSignIn.headers["strict-transport-security"]).toBe("max-age=31536000");
+    const stagingCookies = setCookies(stagingSignIn);
+    expect(stagingCookies).not.toEqual([]);
+    expect(stagingCookies.every((cookie) => /;\s*Secure/iu.test(cookie))).toBe(true);
   });
 
   it("slides remembered database sessions and forwards the refreshed cookie", async () => {

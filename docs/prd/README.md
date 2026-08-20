@@ -1,7 +1,7 @@
 # Capstone Chat v1 PRD
 
 Status: locked decision baseline  
-Last updated: 2026-08-15
+Last updated: 2026-08-20
 
 This directory records only the Capstone Chat decisions explicitly approved during product discovery. It is the baseline for continued design and implementation.
 
@@ -63,6 +63,26 @@ Fourth, reports disappear with their source content. The exact contracts, guardr
 rollout boundary, pre-launch no-user exception, and verification plan are recorded in
 [the Phase 10 resilient responses and feedback plan](../implementation/10-resilient-responses-and-feedback-plan.md).
 
+The August 17, 2026 workspace-behavior-controls decision (Phase 11) amends the locked prompt,
+model-policy, administration, persistence, generation-snapshot, and one-time deployment contracts.
+A mandatory code-owned base prompt remains locked while one normalized, immutable-revisioned
+workspace layer supplies administrator-owned company context and rules. Administrators also gain
+bounded per-tier temperature, reasoning-effort, and reasoning-budget settings, with complete
+actor-attributed policy history and append-only revert. Active members may read the current
+workspace and locked rules but cannot edit them. The total output allowance continues to include
+visible output and hidden reasoning; the reasoning budget is a non-additive sub-cap. Provider
+capability resolution is conservative, every reasoning request excludes traces, and raw reasoning
+content remains outside persistence, logs, telemetry, reports, and the browser.
+
+Phase 11 preserves the authoritative Phase 10 database and follows the ordinary expand/contract
+deployment rule. Additive migration `0009` backfills truthful `migration` snapshots while retaining
+schema-1 initialization and predecessor version-1 writes; Phase 11 application code explicitly
+writes version 2. It does not quiesce the application, replace the database, expose initialization
+credentials to deployment components, or add a custom workflow operation. A later `0010` contract
+migration remains reserved until production acceptance. The exact product decisions, limits,
+initial values, corrected release choreography, prior failed attempt, and verification gates are recorded in
+[the Phase 11 workspace behavior controls plan](../implementation/11-workspace-behavior-controls-plan.md).
+
 The production-hosting decisions approved on 2026-08-11 replace the active raw-Droplet path with
 one DigitalOcean App Platform dynamic service in managed region `ric`, Dedicated Egress, and the
 already selected PlanetScale Postgres PS-5 Single Node cluster in AWS `us-east-1`. They amend the
@@ -78,6 +98,23 @@ gate, protected release-pointer branches remove the source-fetch race, runtime/p
 identity replaces digest identity, and rollback is a reviewed forward `git revert`. The same
 amendment records the explicitly accepted loss of byte-identical artifact recovery and the retained
 staged provisioning, egress, database, secret, privacy, and recovery gates.
+
+The August 20, 2026 staging decision supersedes managed load rehearsal and routine validation on
+the closed production stack. Every accepted `main` commit now advances a protected staging source
+pointer without force and is built, migrated, activated, contract-validated, and readiness-checked
+on a persistent staging App before it may be selected for production. Staging uses
+`NODE_ENV=production`, `CAPSTONE_ENVIRONMENT=staging`, the fixed
+`https://staging.chat.capstone.com.ec` origin, a dedicated low-limit OpenRouter key, a dedicated
+Resend sender with an application-enforced recipient allowlist, synthetic data, a separate PS-5
+database, one 512 MiB service, and one 512 MiB migration job without Dedicated Egress. Production
+retains its existing origin, sizes, credentials, Dedicated Egress, edge policy, and authoritative
+database. Both environments use the same Dockerfile, normal server command, migration-only
+`PRE_DEPLOY` job, and focused read-only contract validator. This does not restore image/digest
+publication, byte-identical rebuild claims, hosted fake-model load infrastructure, or a routine
+source-preparation operation. Provider-native health bootstrap remains a first-provisioning or
+controlled-recovery tool only. Isolated PITR and cold-recreation exercises remain distinct
+recovery rehearsals. The implementation boundary is recorded in the
+[staging and deployment simplification plan](../implementation/staging-deployment-simplification-plan.md).
 
 The earlier
 [DigitalOcean Droplet and PlanetScale amendment](../implementation/08-digitalocean-planetscale-amendment-plan.md),
