@@ -174,6 +174,22 @@ test("validates exact desired and active staging and production contracts", () =
   }
 });
 
+test("accepts provider omission of disabled enhanced threat control", () => {
+  const value = app("staging");
+  delete value.spec.enhanced_threat_control_enabled;
+  delete value.active_deployment.spec.enhanced_threat_control_enabled;
+
+  assert.equal(
+    validateApp({
+      app: value,
+      appId: "app-staging",
+      contract: contract("staging"),
+      expectedRevision: revision,
+    }).environment,
+    "staging",
+  );
+});
+
 test("locks overlays to fixed branches, sizes, domains, email, and egress", () => {
   const staging = contract("staging");
   const production = contract("production");

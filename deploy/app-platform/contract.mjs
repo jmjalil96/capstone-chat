@@ -491,7 +491,6 @@ function validateSpec(value, app, contract, label) {
     "disable_edge_cache",
     "disable_email_obfuscation",
     "domains",
-    "enhanced_threat_control_enabled",
     "features",
     "ingress",
     "jobs",
@@ -500,6 +499,9 @@ function validateSpec(value, app, contract, label) {
     "region",
     "services",
   ];
+  if (spec.enhanced_threat_control_enabled !== undefined) {
+    keys.push("enhanced_threat_control_enabled");
+  }
   if (contract.dedicatedEgress) {
     keys.push("egress");
   }
