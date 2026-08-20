@@ -302,6 +302,17 @@ function validateRunbooks() {
       );
     }
   }
+  const releaseRunbooks = ["deploy-and-rollback.md", "provision-and-deploy.md"]
+    .map((file) => readFileSync(path.join(operationsDirectory, file), "utf8"))
+    .join("\n");
+  assert(
+    !/require linear history/iu.test(releaseRunbooks),
+    "release pointers reject merge commits",
+  );
+  assert(
+    releaseRunbooks.match(/allow merge commits/giu)?.length === 2,
+    "release pointer merge-commit guidance drifted",
+  );
 }
 
 function utc(value, label) {
