@@ -188,11 +188,11 @@ describe("bounded New Relic log mirror", () => {
     await mirror.shutdown();
   });
 
-  it("labels managed rehearsal records without weakening the regional destination", async () => {
+  it("labels staging records without weakening the regional destination", async () => {
     const fetch = successfulFetch();
     const mirror = createNewRelicLogMirror({
       apiKey: "new-relic-license-key",
-      environment: "managed-rehearsal",
+      environment: "staging",
       fetch,
       otlpEndpoint: "https://otlp.eu01.nr-data.net",
       release,
@@ -204,7 +204,7 @@ describe("bounded New Relic log mirror", () => {
 
     expect(fetch.mock.calls[0]?.[0]).toBe("https://log-api.eu.newrelic.com/log/v1");
     expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body))).toMatchObject([
-      { "deployment.environment": "managed-rehearsal" },
+      { "deployment.environment": "staging" },
     ]);
     await mirror.shutdown();
   });

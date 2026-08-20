@@ -31,10 +31,7 @@ import {
   ProductionInitializationConflictError,
 } from "../src/operator/initialization-latch.js";
 import type { ProductionInitializationCheckpoint } from "../src/operator/production-initialization.js";
-import {
-  initializeManagedRehearsal,
-  initializeProduction,
-} from "../src/operator/production-initialization.js";
+import { initializeProduction } from "../src/operator/production-initialization.js";
 
 const apiRoot = fileURLToPath(new URL("..", import.meta.url));
 const operatorExecutable = fileURLToPath(new URL("../node_modules/.bin/tsx", import.meta.url));
@@ -273,54 +270,6 @@ describe.sequential("production initialization", () => {
       ),
     ).resolves.toEqual({ outcome: "already-complete", phase: "complete" });
     expect(loadCatalog).not.toHaveBeenCalled();
-  }, 120_000);
-
-  it("initializes and retries the managed rehearsal without provider access", async () => {
-    const initializationDocument = document("administrator@rehearsal.test");
-    let interrupted = false;
-    await expect(
-      initializeManagedRehearsal(
-        {
-          applicationDatabaseUrl: databaseUrl,
-          document: initializationDocument,
-          migrationDatabaseUrl: databaseUrl,
-        },
-        {
-          afterCheckpoint(checkpoint) {
-            if (!interrupted && checkpoint === "catalog-loaded") {
-              interrupted = true;
-              throw new Error("synthetic managed interruption");
-            }
-          },
-        },
-      ),
-    ).rejects.toThrow("synthetic managed interruption");
-
-    await expect(
-      initializeManagedRehearsal({
-        applicationDatabaseUrl: databaseUrl,
-        document: initializationDocument,
-        migrationDatabaseUrl: databaseUrl,
-      }),
-    ).resolves.toEqual({ outcome: "completed", phase: "complete" });
-    await expect(
-      initializeManagedRehearsal({
-        applicationDatabaseUrl: databaseUrl,
-        document: initializationDocument,
-        migrationDatabaseUrl: databaseUrl,
-      }),
-    ).resolves.toEqual({ outcome: "already-complete", phase: "complete" });
-
-    const pool = new Pool({ connectionString: databaseUrl });
-    const database = createDatabase(pool);
-    try {
-      await expect(database.select().from(workspaceModelPolicies)).resolves.toHaveLength(3);
-      await expect(database.select().from(productionInitialization)).resolves.toMatchObject([
-        { documentSha256: initializationDocument.documentSha256, phase: "complete" },
-      ]);
-    } finally {
-      await pool.end();
-    }
   }, 120_000);
 
   it("sends the initial invitation only for the completed canonical authority without mutation", async () => {

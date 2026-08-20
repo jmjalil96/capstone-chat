@@ -12,7 +12,7 @@ import { initialTierModels } from "../model-policy/catalog.js";
 const loadMessage =
   /^CAPSTONE_LOAD_V1:([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}):(\d):(\d{1,2}):(\d):(normal|cancel|failure|large|reattach|seed|slow)$/u;
 
-const loadProvider = "capstone-load-rehearsal";
+const loadProvider = "capstone-local-load";
 const measuredActiveWindowMilliseconds = 15_000;
 const loadProviderGeneration =
   /^load-(?:compaction|title|[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}-\d-\d{1,2}-\d)-[a-z0-9]+$/u;
@@ -61,7 +61,7 @@ function completedAfter(
   return { ...completed(inputTokens, outputTokens, metadata), delayMilliseconds };
 }
 
-export function loadRehearsalSteps(
+export function loadFixtureSteps(
   request: GenerationRequest,
   providerAttempt = "fixture",
 ): readonly FakeGatewayStep[] {
@@ -200,7 +200,7 @@ export class LoadModelGateway implements ModelGateway, GenerationAccountingGatew
   constructor() {
     let providerAttempt = 0;
     this.#gateway = new FakeModelGateway({
-      resolve: (request) => loadRehearsalSteps(request, (providerAttempt++).toString(36)),
+      resolve: (request) => loadFixtureSteps(request, (providerAttempt++).toString(36)),
     });
   }
 

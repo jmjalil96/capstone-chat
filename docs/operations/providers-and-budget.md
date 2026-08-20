@@ -39,8 +39,11 @@
 
 ## Resend failure
 
-1. Check verified domain, exact sender, send-only/domain restriction, disabled tracking, stable
+1. Check the environment's verified domain, exact sender, dedicated send-only/domain restriction,
+   disabled tracking, stable
    provider category, and timing. Never log recipient, body, action URL, or provider response.
+   In staging, first confirm the normalized recipient allowlist; a rejected address must make zero
+   network requests and the public/operator error must not contain an address.
 2. After correction use deliberate invitation resend or the public recovery flow. There is no
    background retry or queue; an ambiguous timeout followed by deliberate retry can deliver a
    duplicate message without duplicating approval authority.
@@ -95,6 +98,11 @@ way as a reserved per-App quota. Recheck the Uptime allowance and overage before
 | **Infrastructure base** | **USD 40–41** |
 | One Bitwarden Teams owner | USD 4 |
 | **Operational base** | **USD 44–45** |
+
+Staging adds one 512 MiB App service, short-lived 512 MiB migration executions, and one independent
+PS-5 database, without Dedicated Egress. Its exact current provider estimate and maximum spend must
+be approved before provisioning; it is not included in the production base above. Staging
+OpenRouter is separately low-limited and staging email remains allowlisted.
 
 At the approved 15 GB database ceiling, the prior estimate is approximately USD 44.63–45.63.
 Migration and one-time initialization jobs are billed only while running and require recorded live

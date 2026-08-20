@@ -62,28 +62,68 @@ function createTelemetry(input: { readonly events: string[]; readonly poolSnapsh
 }
 
 describe("application observability composition", () => {
-  it("runs managed readiness and deterministic generation without a provider client", async () => {
+  it.each(["staging", "production"] as const)(
+    "requires the same OpenRouter readiness authority in %s",
+    async (applicationEnvironment) => {
+      const origin =
+        applicationEnvironment === "staging"
+          ? "https://staging.chat.capstone.com.ec"
+          : "https://chat.capstone.com.ec";
+      const config = {
+        ...loadConfig({
+          BETTER_AUTH_SECRET: "hosted-readiness-secret-with-at-least-thirty-two-characters",
+          CAPSTONE_ENVIRONMENT: applicationEnvironment,
+          CAPSTONE_SECRET_SOURCE: "platform-environment",
+          ...(applicationEnvironment === "staging"
+            ? { CAPSTONE_STAGING_EMAIL_RECIPIENTS: "qa@capstone.com.ec" }
+            : {}),
+          CLIENT_ADDRESS_SOURCE: "digitalocean-app-platform",
+          DATABASE_URL:
+            "postgresql://app:secret@database.internal:5432/capstone?sslmode=verify-full",
+          DEPLOYMENT_REVISION: "a".repeat(40),
+          DEPLOYMENT_TARGET: "digitalocean-app-platform",
+          EMAIL_DELIVERY: "resend",
+          EMAIL_FROM:
+            applicationEnvironment === "staging"
+              ? "Capstone Chat Staging <no-reply@staging.mail.capstone.com.ec>"
+              : "Capstone Chat <no-reply@mail.capstone.com.ec>",
+          HOST: "0.0.0.0",
+          MODEL_GATEWAY: "openrouter",
+          NODE_ENV: "production",
+          OPENROUTER_API_KEY: "test-openrouter-key-never-sent",
+          OTEL_EXPORTER_OTLP_ENDPOINT: "https://otlp.nr-data.net",
+          OTEL_EXPORTER_OTLP_HEADERS: "api-key=test-license-key-never-sent",
+          PUBLIC_ORIGIN: origin,
+          RESEND_API_KEY: "test-resend-key-never-sent",
+        }),
+        webAssetsDirectory: null,
+      };
+      const assertRuntimeMode = vi.fn(async () => undefined);
+      const pool = {
+        end: vi.fn(async () => undefined),
+        query: vi.fn(async () => ({ rows: [{ result: 1 }] })),
+      } satisfies DatabasePool;
+      const application = createApplication(config, {
+        database: createDatabase(),
+        loggerStream: { write() {} },
+        logMirror: null,
+        modelPolicy: { assertRuntimeMode } as unknown as ModelPolicyService,
+        pool,
+        telemetry: createTelemetry({ events: [], poolSnapshots: [] }).telemetry,
+      });
+
+      await expect(application.lifecycle.initialize()).resolves.toEqual({
+        database: "up",
+        status: "ready",
+      });
+      expect(assertRuntimeMode).toHaveBeenCalledWith("openrouter");
+      await application.shutdown();
+    },
+  );
+
+  it("runs local readiness and deterministic generation without a provider client", async () => {
     const config = {
-      ...loadConfig({
-        BETTER_AUTH_SECRET: "managed-rehearsal-auth-secret-with-at-least-32-characters",
-        CAPSTONE_DEPLOYMENT_PROFILE: "managed-rehearsal",
-        CAPSTONE_LOAD_DIAGNOSTICS_SECRET: "managed-diagnostics-secret-with-at-least-32-characters",
-        CAPSTONE_SECRET_SOURCE: "platform-environment",
-        CLIENT_ADDRESS_SOURCE: "digitalocean-app-platform",
-        DATABASE_URL: "postgresql://app:secret@database.internal:5432/capstone?sslmode=verify-full",
-        DEPLOYMENT_REVISION: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        DEPLOYMENT_TARGET: "digitalocean-app-platform",
-        EMAIL_DELIVERY: "disabled",
-        HOST: "0.0.0.0",
-        LOG_LEVEL: "info",
-        MODEL_GATEWAY: "openrouter",
-        NODE_ENV: "test",
-        OTEL_EXPORTER_OTLP_ENDPOINT: "https://otlp.eu01.nr-data.net",
-        OTEL_EXPORTER_OTLP_HEADERS: "api-key=test-license-key-never-sent",
-        PORT: "3000",
-        PUBLIC_ORIGIN: "https://rehearsal.chat.capstone.com.ec",
-        WEB_ASSETS: "production-build",
-      }),
+      ...loadConfig({ NODE_ENV: "test" }),
       webAssetsDirectory: null,
     };
     const pool = {
@@ -101,16 +141,13 @@ describe("application observability composition", () => {
       telemetry,
     };
 
-    expect(() => createApplication(config, dependencies)).toThrow(
-      "injected deterministic model gateway",
-    );
     const gateway = new LoadModelGateway();
     const application = createApplication(config, { ...dependencies, modelGateway: gateway });
     await expect(application.lifecycle.initialize()).resolves.toEqual({
       database: "up",
       status: "ready",
     });
-    expect(assertRuntimeMode).toHaveBeenCalledWith("openrouter");
+    expect(assertRuntimeMode).not.toHaveBeenCalled();
 
     const gatewayEvents = [];
     for await (const event of gateway.stream(

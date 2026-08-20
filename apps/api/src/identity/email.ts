@@ -73,6 +73,7 @@ export class DisabledEmailSender extends LifecycleEmailSender {
 }
 
 export interface EmailSenderFactoryOptions {
+  readonly allowedRecipients?: readonly string[];
   readonly emailFrom?: string | null;
   readonly fetch?: typeof fetch;
   readonly onDeliveryReport?: (report: EmailDeliveryReport) => void;
@@ -100,6 +101,9 @@ export function createEmailSender(
   const resendOptions: ResendEmailSenderOptions = {
     apiKey: options.resendApiKey,
     from: options.emailFrom,
+    ...(options.allowedRecipients === undefined
+      ? {}
+      : { allowedRecipients: options.allowedRecipients }),
     ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
     ...(options.onDeliveryReport === undefined
       ? {}

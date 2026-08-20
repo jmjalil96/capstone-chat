@@ -27,6 +27,9 @@ async function run(): Promise<void> {
   }
 
   const emailSender = createEmailSender(config.emailDelivery, {
+    ...(config.applicationEnvironment === "staging"
+      ? { allowedRecipients: config.stagingEmailRecipients }
+      : {}),
     emailFrom: config.emailFrom,
     resendApiKey: config.resendApiKey,
   });

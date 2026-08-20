@@ -5,24 +5,19 @@ import { parseDocument } from "yaml";
 export const REVISION_PATTERN = /^[0-9a-f]{40}$/u;
 export const ENCRYPTED_VALUE_PATTERN = /^EV\[[^\r\n]{8,2048}\]$/u;
 
-const IPV4_PATTERN = /^(?:0|[1-9]\d{0,2})(?:\.(?:0|[1-9]\d{0,2})){3}$/u;
-const MODES = new Set(["bootstrap", "live", "rehearsal-bootstrap", "rehearsal"]);
-const OTEL_ENDPOINTS = new Set(["https://otlp.nr-data.net", "https://otlp.eu01.nr-data.net"]);
-const DEPLOYMENT_REVISION_BINDING = ["$", "{_self.COMMIT_HASH}"].join("");
-const STARTER_DOMAIN_BINDING = ["$", "{STARTER_DOMAIN}"].join("");
-const EDGE_FIELDS = [
+const environments = new Set(["staging", "production"]);
+const otlpEndpoints = new Set(["https://otlp.nr-data.net", "https://otlp.eu01.nr-data.net"]);
+const revisionBinding = ["$", "{_self.COMMIT_HASH}"].join("");
+const starterDomainBinding = ["$", "{STARTER_DOMAIN}"].join("");
+const edgeFields = [
   "disable_edge_cache",
   "disable_email_obfuscation",
   "enhanced_threat_control_enabled",
 ];
 
-function fail(message) {
-  throw new Error(message);
-}
-
 function assert(condition, message) {
   if (!condition) {
-    fail(message);
+    throw new Error(message);
   }
 }
 
@@ -34,189 +29,198 @@ function record(value, label) {
   return value;
 }
 
-function exactKeys(value, expected, label) {
-  const actual = Object.keys(record(value, label)).sort();
-  assert(isDeepStrictEqual(actual, [...expected].sort()), `${label} keys changed`);
-}
-
 function equal(actual, expected, label) {
   assert(isDeepStrictEqual(actual, expected), `${label} changed`);
 }
 
-function rehearsalMode(mode) {
-  return mode.startsWith("rehearsal");
+function exactKeys(value, expected, label) {
+  equal(Object.keys(record(value, label)).sort(), [...expected].sort(), `${label} keys`);
 }
 
-function finalMode(mode) {
-  return mode === "live" || mode === "rehearsal";
-}
-
-function expectedSource(mode) {
+function expectedCommon() {
   return {
-    dockerfile_path: "apps/api/Dockerfile",
-    github: {
-      branch: rehearsalMode(mode) ? "app-platform-rehearsal" : "app-platform-production",
-      deploy_on_push: false,
-      repo: "jmjalil96/capstone-chat",
+    alerts: {
+      app: ["DEPLOYMENT_FAILED", "DEPLOYMENT_LIVE", "DOMAIN_FAILED"],
+      service: {
+        cpu_percent: 85,
+        memory_percent: 85,
+        request_duration_p95_ms: 750,
+        restart_count: 1,
+      },
     },
-    source_dir: "/",
-  };
-}
-
-function expectedService(mode) {
-  const general = {
-    CAPSTONE_SECRET_SOURCE: "platform-environment",
-    CLIENT_ADDRESS_SOURCE: "digitalocean-app-platform",
-    DEPLOYMENT_REVISION: DEPLOYMENT_REVISION_BINDING,
-    DEPLOYMENT_TARGET: "digitalocean-app-platform",
-    HOST: "0.0.0.0",
-    NODE_ENV: finalMode(mode) && rehearsalMode(mode) ? "test" : "production",
-    PORT: "3000",
-  };
-  if (mode === "live") {
-    Object.assign(general, {
-      EMAIL_DELIVERY: "resend",
-      EMAIL_FROM: "Capstone Chat <no-reply@mail.capstone.com.ec>",
-      LOG_LEVEL: "info",
-      MODEL_GATEWAY: "openrouter",
-      PUBLIC_ORIGIN: "https://chat.capstone.com.ec",
-      WEB_ASSETS: "production-build",
-    });
-  }
-  if (mode === "rehearsal") {
-    Object.assign(general, {
-      CAPSTONE_DEPLOYMENT_PROFILE: "managed-rehearsal",
-      EMAIL_DELIVERY: "disabled",
-      LOG_LEVEL: "info",
-      MODEL_GATEWAY: "openrouter",
-      PUBLIC_ORIGIN: "https://rehearsal.chat.capstone.com.ec",
-      WEB_ASSETS: "production-build",
-    });
-  }
-  const environment = {
-    general,
-    secret_keys:
-      mode === "live"
-        ? [
-            "BETTER_AUTH_SECRET",
-            "DATABASE_URL",
-            "OPENROUTER_API_KEY",
-            "OTEL_EXPORTER_OTLP_HEADERS",
-            "RESEND_API_KEY",
-          ]
-        : mode === "rehearsal"
-          ? [
-              "BETTER_AUTH_SECRET",
-              "CAPSTONE_LOAD_DIAGNOSTICS_SECRET",
-              "DATABASE_URL",
-              "OTEL_EXPORTER_OTLP_HEADERS",
-            ]
-          : [],
-  };
-  if (finalMode(mode)) {
-    environment.general_keys = ["OTEL_EXPORTER_OTLP_ENDPOINT"];
-  }
-  return {
-    drain_seconds: 110,
-    environment,
-    grace_period_seconds: 300,
-    http_port: 3000,
-    instance_count: 1,
-    instance_size_slug: "apps-s-1vcpu-1gb-fixed",
-    liveness_path: "/api/health/live",
-    name: "capstone-chat",
-    readiness_path: "/api/health/ready",
-    run_command:
-      mode === "live"
-        ? "node apps/api/dist/entrypoint.js server"
-        : mode === "rehearsal"
-          ? "node --expose-gc apps/api/dist/entrypoint.js load-server --confirm-isolated-load-rehearsal"
-          : "node apps/api/dist/entrypoint.js egress-bootstrap",
-  };
-}
-
-function expectedJob(mode) {
-  const general = {
-    CAPSTONE_SECRET_SOURCE: "platform-environment",
-    DEPLOYMENT_REVISION: DEPLOYMENT_REVISION_BINDING,
-    DEPLOYMENT_TARGET: "digitalocean-app-platform",
-    NODE_ENV: rehearsalMode(mode) ? "test" : "production",
-  };
-  if (rehearsalMode(mode)) {
-    general.CAPSTONE_DEPLOYMENT_PROFILE = "managed-rehearsal";
-  }
-  return {
-    environment: { general, secret_keys: ["DATABASE_URL"] },
-    grace_period_seconds: 300,
-    instance_count: 1,
-    instance_size_slug: "apps-s-1vcpu-0.5gb",
-    kind: "PRE_DEPLOY",
-    name: "capstone-migrate",
-    run_command: "node apps/api/dist/entrypoint.js migrate",
-  };
-}
-
-function expectedAlerts(mode) {
-  if (!finalMode(mode)) {
-    return { app: ["DEPLOYMENT_FAILED"] };
-  }
-  return {
-    app: ["DEPLOYMENT_FAILED", "DEPLOYMENT_LIVE", "DOMAIN_FAILED"],
-    service: {
-      cpu_percent: 85,
-      memory_percent: 85,
-      request_duration_p95_ms: 750,
-      restart_count: 1,
-    },
-  };
-}
-
-function expectedContract(mode) {
-  const value = {
-    alerts: expectedAlerts(mode),
-    features: ["buildpack-stack=ubuntu-22"],
-    mode,
-    name: rehearsalMode(mode) ? "capstone-chat-rehearsal" : "capstone-chat-production",
-    region: "ric",
-    schema: 1,
-    service: expectedService(mode),
-    source: expectedSource(mode),
-  };
-  if (finalMode(mode)) {
-    value.domain = {
-      domain: rehearsalMode(mode) ? "rehearsal.chat.capstone.com.ec" : "chat.capstone.com.ec",
-      minimum_tls_version: "1.2",
-      type: "PRIMARY",
-    };
-    value.edge = {
+    edge: {
       disable_edge_cache: true,
       disable_email_obfuscation: true,
       enhanced_threat_control_enabled: false,
+    },
+    features: ["buildpack-stack=ubuntu-22"],
+    job: {
+      environment: {
+        general: {
+          CAPSTONE_SECRET_SOURCE: "platform-environment",
+          DEPLOYMENT_REVISION: revisionBinding,
+          DEPLOYMENT_TARGET: "digitalocean-app-platform",
+          NODE_ENV: "production",
+        },
+        secret_keys: ["DATABASE_URL"],
+      },
+      grace_period_seconds: 300,
+      instance_count: 1,
+      kind: "PRE_DEPLOY",
+      name: "capstone-migrate",
+      run_command: "node apps/api/dist/entrypoint.js migrate",
+    },
+    region: "ric",
+    schema: 1,
+    service: {
+      drain_seconds: 110,
+      environment: {
+        general: {
+          CAPSTONE_SECRET_SOURCE: "platform-environment",
+          CLIENT_ADDRESS_SOURCE: "digitalocean-app-platform",
+          DEPLOYMENT_REVISION: revisionBinding,
+          DEPLOYMENT_TARGET: "digitalocean-app-platform",
+          EMAIL_DELIVERY: "resend",
+          HOST: "0.0.0.0",
+          LOG_LEVEL: "info",
+          MODEL_GATEWAY: "openrouter",
+          NODE_ENV: "production",
+          PORT: "3000",
+          WEB_ASSETS: "production-build",
+        },
+        general_keys: ["OTEL_EXPORTER_OTLP_ENDPOINT"],
+        secret_keys: [
+          "BETTER_AUTH_SECRET",
+          "DATABASE_URL",
+          "OPENROUTER_API_KEY",
+          "OTEL_EXPORTER_OTLP_HEADERS",
+          "RESEND_API_KEY",
+        ],
+      },
+      grace_period_seconds: 300,
+      http_port: 3000,
+      instance_count: 1,
+      liveness_path: "/api/health/live",
+      name: "capstone-chat",
+      readiness_path: "/api/health/ready",
+      run_command: "node apps/api/dist/entrypoint.js server",
+    },
+    source: {
+      dockerfile_path: "apps/api/Dockerfile",
+      github: { deploy_on_push: false, repo: "jmjalil96/capstone-chat" },
+      source_dir: "/",
+    },
+  };
+}
+
+function expectedOverlay(environment) {
+  if (environment === "staging") {
+    return {
+      branch: "app-platform-staging",
+      dedicated_egress: false,
+      domain: "staging.chat.capstone.com.ec",
+      environment,
+      job_size_slug: "apps-s-1vcpu-0.5gb",
+      name: "capstone-chat-staging",
+      schema: 1,
+      service_environment: {
+        general: {
+          CAPSTONE_ENVIRONMENT: "staging",
+          EMAIL_FROM: "Capstone Chat Staging <no-reply@staging.mail.capstone.com.ec>",
+          PUBLIC_ORIGIN: "https://staging.chat.capstone.com.ec",
+        },
+        secret_keys: ["CAPSTONE_STAGING_EMAIL_RECIPIENTS"],
+      },
+      service_size_slug: "apps-s-1vcpu-0.5gb",
     };
-    value.egress = { type: "DEDICATED_IP" };
-    value.job = expectedJob(mode);
   }
-  return value;
+  return {
+    branch: "app-platform-production",
+    dedicated_egress: true,
+    domain: "chat.capstone.com.ec",
+    environment,
+    job_size_slug: "apps-s-1vcpu-0.5gb",
+    name: "capstone-chat-production",
+    schema: 1,
+    service_environment: {
+      general: {
+        CAPSTONE_ENVIRONMENT: "production",
+        EMAIL_FROM: "Capstone Chat <no-reply@mail.capstone.com.ec>",
+        PUBLIC_ORIGIN: "https://chat.capstone.com.ec",
+      },
+      secret_keys: [],
+    },
+    service_size_slug: "apps-s-1vcpu-1gb-fixed",
+  };
 }
 
-export function validateContract(contract, expectedMode) {
-  record(contract, "App contract");
-  assert(MODES.has(contract.mode), "App contract mode is invalid");
-  if (expectedMode !== undefined) {
-    assert(contract.mode === expectedMode, "App contract mode does not match the request");
-  }
-  equal(contract, expectedContract(contract.mode), "App contract");
-  return contract;
-}
-
-export function readContract(path, expectedMode) {
+function readYaml(path, label) {
   const document = parseDocument(readFileSync(path, "utf8"), {
     prettyErrors: true,
     strict: true,
     uniqueKeys: true,
   });
-  assert(document.errors.length === 0, "App contract YAML is invalid");
-  return validateContract(document.toJS(), expectedMode);
+  assert(document.errors.length === 0, `${label} YAML is invalid`);
+  return document.toJS();
+}
+
+export function validateContract(common, overlay, expectedEnvironment) {
+  assert(environments.has(expectedEnvironment), "Hosted environment is invalid");
+  equal(common, expectedCommon(), "Common hosted contract");
+  equal(overlay, expectedOverlay(expectedEnvironment), `${expectedEnvironment} overlay`);
+  return Object.freeze({
+    alerts: common.alerts,
+    dedicatedEgress: overlay.dedicated_egress,
+    domain: {
+      domain: overlay.domain,
+      minimum_tls_version: "1.2",
+      type: "PRIMARY",
+    },
+    edge: common.edge,
+    environment: expectedEnvironment,
+    features: common.features,
+    job: {
+      ...common.job,
+      environment: {
+        general: {
+          ...common.job.environment.general,
+          CAPSTONE_ENVIRONMENT: expectedEnvironment,
+        },
+        secret_keys: common.job.environment.secret_keys,
+      },
+      instance_size_slug: overlay.job_size_slug,
+    },
+    name: overlay.name,
+    region: common.region,
+    schema: 1,
+    service: {
+      ...common.service,
+      environment: {
+        general: {
+          ...common.service.environment.general,
+          ...overlay.service_environment.general,
+        },
+        general_keys: common.service.environment.general_keys,
+        secret_keys: [
+          ...common.service.environment.secret_keys,
+          ...overlay.service_environment.secret_keys,
+        ],
+      },
+      instance_size_slug: overlay.service_size_slug,
+    },
+    source: {
+      ...common.source,
+      github: { ...common.source.github, branch: overlay.branch },
+    },
+  });
+}
+
+export function readContract(commonPath, overlayPath, expectedEnvironment) {
+  return validateContract(
+    readYaml(commonPath, "Common hosted contract"),
+    readYaml(overlayPath, `${expectedEnvironment} overlay`),
+    expectedEnvironment,
+  );
 }
 
 export function readProtectedJson(path, label = "Protected JSON", maximumBytes = 512 * 1024) {
@@ -227,21 +231,17 @@ export function readProtectedJson(path, label = "Protected JSON", maximumBytes =
   assert(status.size >= 2 && status.size <= maximumBytes, `${label} size is invalid`);
   const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
-    try {
-      const parsed = JSON.parse(readFileSync(descriptor, "utf8"));
-      if (Array.isArray(parsed)) {
-        assert(parsed.length === 1, `${label} must contain exactly one App`);
-        record(parsed[0], label);
-      } else {
-        record(parsed, label);
-      }
-      return parsed;
-    } catch (error) {
-      if (error instanceof SyntaxError) {
-        fail(`${label} is not valid JSON`);
-      }
-      throw error;
+    const parsed = JSON.parse(readFileSync(descriptor, "utf8"));
+    if (Array.isArray(parsed)) {
+      assert(parsed.length === 1, `${label} must contain exactly one App`);
     }
+    record(Array.isArray(parsed) ? parsed[0] : parsed, label);
+    return parsed;
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      throw new Error(`${label} is not valid JSON`);
+    }
+    throw error;
   } finally {
     closeSync(descriptor);
   }
@@ -249,84 +249,19 @@ export function readProtectedJson(path, label = "Protected JSON", maximumBytes =
 
 function unwrapApp(value) {
   if (Array.isArray(value)) {
-    assert(value.length === 1, "DigitalOcean App response must contain exactly one App");
+    assert(value.length === 1, "DigitalOcean response must contain exactly one App");
   }
-  const outer = record(Array.isArray(value) ? value[0] : value, "DigitalOcean App response");
+  const outer = record(Array.isArray(value) ? value[0] : value, "DigitalOcean response");
   return outer.app === undefined ? outer : record(outer.app, "DigitalOcean App");
 }
 
-function validIpv4(value) {
-  return (
-    typeof value === "string" &&
-    IPV4_PATTERN.test(value) &&
-    value.split(".").every((part) => Number(part) <= 255)
-  );
-}
-
-function providerDefaultDomain(app, spec) {
-  const defaults = Array.isArray(spec.domains)
-    ? spec.domains.filter((entry) => entry?.type === "DEFAULT")
-    : [];
-  assert(defaults.length <= 1, "DigitalOcean returned multiple DEFAULT domains");
-  const declared = defaults[0]?.domain;
-  if (declared !== undefined) {
-    assert(
-      typeof declared === "string" && /^[a-z0-9-]+\.ondigitalocean\.app$/u.test(declared),
-      "DigitalOcean DEFAULT domain is invalid",
-    );
-    assert(defaults[0].zone === undefined, "DEFAULT domain cannot declare a managed zone");
-  }
-  let ingress;
-  if (app.default_ingress !== undefined) {
-    let parsed;
-    try {
-      parsed = new URL(app.default_ingress);
-    } catch {
-      fail("DigitalOcean default ingress is invalid");
-    }
-    assert(
-      parsed.protocol === "https:" &&
-        parsed.username === "" &&
-        parsed.password === "" &&
-        parsed.port === "" &&
-        parsed.pathname === "/" &&
-        parsed.search === "" &&
-        parsed.hash === "" &&
-        /^[a-z0-9-]+\.ondigitalocean\.app$/u.test(parsed.hostname),
-      "DigitalOcean default ingress is invalid",
-    );
-    ingress = parsed.hostname;
-  }
-  if (declared !== undefined && ingress !== undefined) {
-    assert(declared === ingress, "DigitalOcean DEFAULT domain disagrees with its ingress URL");
-  }
-  return declared ?? ingress;
-}
-
-function healthCheck(path, liveness = false) {
-  return {
-    failure_threshold: liveness ? 18 : 3,
-    http_path: path,
-    initial_delay_seconds: liveness ? 15 : 5,
-    period_seconds: 10,
-    port: 3000,
-    success_threshold: liveness ? 1 : 2,
-    timeout_seconds: 3,
-  };
-}
-
 function sourceFields(source) {
-  const github = record(source.github, "DigitalOcean GitHub source");
-  exactKeys(
-    github,
-    github.deploy_on_push === undefined ? ["branch", "repo"] : ["branch", "deploy_on_push", "repo"],
-    "DigitalOcean GitHub source",
-  );
+  const github = record(source.github, "GitHub source");
   return {
     dockerfile_path: source.dockerfile_path,
     github: {
       branch: github.branch,
-      deploy_on_push: github.deploy_on_push === undefined ? false : github.deploy_on_push,
+      deploy_on_push: github.deploy_on_push ?? false,
       repo: github.repo,
     },
     source_dir: source.source_dir,
@@ -336,12 +271,8 @@ function sourceFields(source) {
 function componentEnvironment(declaration, actual, componentName) {
   assert(Array.isArray(actual), `${componentName} environment is missing`);
   const entries = new Map();
-  for (const entry of actual) {
-    exactKeys(
-      entry,
-      entry.type === undefined ? ["key", "scope", "value"] : ["key", "scope", "type", "value"],
-      `${componentName} environment entry`,
-    );
+  for (const value of actual) {
+    const entry = record(value, `${componentName} environment entry`);
     assert(
       typeof entry.key === "string" && !entries.has(entry.key),
       `${componentName} environment key is duplicated`,
@@ -357,8 +288,7 @@ function componentEnvironment(declaration, actual, componentName) {
   for (const [key, value] of Object.entries(declaration.general)) {
     const entry = entries.get(key);
     assert(
-      entry?.key === key &&
-        entry.scope === "RUN_TIME" &&
+      entry?.scope === "RUN_TIME" &&
         (entry.type === undefined || entry.type === "GENERAL") &&
         entry.value === value,
       `${componentName}.${key} changed`,
@@ -370,7 +300,7 @@ function componentEnvironment(declaration, actual, componentName) {
       entry?.scope === "RUN_TIME" &&
         (entry.type === undefined || entry.type === "GENERAL") &&
         key === "OTEL_EXPORTER_OTLP_ENDPOINT" &&
-        OTEL_ENDPOINTS.has(entry.value),
+        otlpEndpoints.has(entry.value),
       `${componentName}.${key} is invalid`,
     );
   }
@@ -385,10 +315,19 @@ function componentEnvironment(declaration, actual, componentName) {
   }
 }
 
-function serviceAlerts(contract) {
-  if (!finalMode(contract.mode)) {
-    return undefined;
-  }
+function healthCheck(path, liveness = false) {
+  return {
+    failure_threshold: liveness ? 18 : 3,
+    http_path: path,
+    initial_delay_seconds: liveness ? 15 : 5,
+    period_seconds: 10,
+    port: 3000,
+    success_threshold: liveness ? 1 : 2,
+    timeout_seconds: 3,
+  };
+}
+
+function expectedServiceAlerts(contract) {
   return [
     {
       disabled: false,
@@ -421,31 +360,15 @@ function serviceAlerts(contract) {
   ];
 }
 
-function normalizedServiceAlerts(value) {
-  if (value === undefined) {
-    return undefined;
-  }
-  assert(Array.isArray(value), "DigitalOcean service alerts are invalid");
-  return value.map((entry) => {
-    const alert = record(entry, "DigitalOcean service alert");
-    exactKeys(
-      alert,
-      alert.disabled === undefined
-        ? ["operator", "rule", "value", "window"]
-        : ["disabled", "operator", "rule", "value", "window"],
-      "DigitalOcean service alert",
-    );
-    assert(
-      alert.disabled === undefined || alert.disabled === false,
-      "DigitalOcean service alert cannot be disabled",
-    );
-    return { ...alert, disabled: false };
-  });
+function normalizeAlerts(value) {
+  assert(Array.isArray(value), "Service alerts are missing");
+  return value.map((entry) => ({ ...entry, disabled: entry.disabled ?? false }));
 }
 
 function validateService(service, contract) {
   const declaration = contract.service;
-  const expectedKeys = [
+  const keys = [
+    "alerts",
     "envs",
     "health_check",
     "http_port",
@@ -458,32 +381,21 @@ function validateService(service, contract) {
     ...Object.keys(sourceFields(contract.source)),
   ];
   if (service.protocol !== undefined) {
-    expectedKeys.push("protocol");
+    keys.push("protocol");
   }
-  if (finalMode(contract.mode)) {
-    expectedKeys.push("alerts");
-  }
-  exactKeys(service, expectedKeys, "DigitalOcean service");
-  equal(service.name, declaration.name, "DigitalOcean service name");
-  equal(sourceFields(service), sourceFields(contract.source), "DigitalOcean service source");
-  equal(service.http_port, declaration.http_port, "DigitalOcean service port");
-  equal(
-    service.protocol === undefined ? "HTTP" : service.protocol,
-    "HTTP",
-    "DigitalOcean service protocol",
-  );
-  equal(service.instance_count, declaration.instance_count, "DigitalOcean service count");
-  equal(service.instance_size_slug, declaration.instance_size_slug, "DigitalOcean service size");
-  equal(service.run_command, declaration.run_command, "DigitalOcean service command");
-  equal(
-    service.health_check,
-    healthCheck(declaration.readiness_path),
-    "DigitalOcean readiness check",
-  );
+  exactKeys(service, keys, "Service");
+  equal(service.name, declaration.name, "Service name");
+  equal(sourceFields(service), sourceFields(contract.source), "Service source");
+  equal(service.http_port, declaration.http_port, "Service port");
+  equal(service.protocol ?? "HTTP", "HTTP", "Service protocol");
+  equal(service.instance_count, 1, "Service count");
+  equal(service.instance_size_slug, declaration.instance_size_slug, "Service size");
+  equal(service.run_command, declaration.run_command, "Service command");
+  equal(service.health_check, healthCheck(declaration.readiness_path), "Readiness check");
   equal(
     service.liveness_health_check,
     healthCheck(declaration.liveness_path, true),
-    "DigitalOcean liveness check",
+    "Liveness check",
   );
   equal(
     service.termination,
@@ -491,13 +403,9 @@ function validateService(service, contract) {
       drain_seconds: declaration.drain_seconds,
       grace_period_seconds: declaration.grace_period_seconds,
     },
-    "DigitalOcean service termination",
+    "Service termination",
   );
-  equal(
-    normalizedServiceAlerts(service.alerts),
-    serviceAlerts(contract),
-    "DigitalOcean service alerts",
-  );
+  equal(normalizeAlerts(service.alerts), expectedServiceAlerts(contract), "Service alerts");
   componentEnvironment(declaration.environment, service.envs, declaration.name);
 }
 
@@ -515,97 +423,128 @@ function validateJob(job, contract) {
       "termination",
       ...Object.keys(sourceFields(contract.source)),
     ],
-    "DigitalOcean job",
+    "Migration job",
   );
-  equal(job.name, declaration.name, "DigitalOcean job name");
-  equal(sourceFields(job), sourceFields(contract.source), "DigitalOcean job source");
-  equal(job.kind, declaration.kind, "DigitalOcean job kind");
-  equal(job.instance_count, declaration.instance_count, "DigitalOcean job count");
-  equal(job.instance_size_slug, declaration.instance_size_slug, "DigitalOcean job size");
-  equal(job.run_command, declaration.run_command, "DigitalOcean job command");
-  equal(
-    job.termination,
-    { grace_period_seconds: declaration.grace_period_seconds },
-    "DigitalOcean job termination",
-  );
+  equal(job.name, declaration.name, "Migration job name");
+  equal(sourceFields(job), sourceFields(contract.source), "Migration job source");
+  equal(job.kind, "PRE_DEPLOY", "Migration job kind");
+  equal(job.instance_count, 1, "Migration job count");
+  equal(job.instance_size_slug, declaration.instance_size_slug, "Migration job size");
+  equal(job.run_command, declaration.run_command, "Migration job command");
+  equal(job.termination, { grace_period_seconds: 300 }, "Migration job termination");
   componentEnvironment(declaration.environment, job.envs, declaration.name);
 }
 
-function expectedIngress(contract, defaultDomain) {
-  if (!finalMode(contract.mode)) {
-    return {
-      rules: [
-        {
-          component: { name: contract.service.name, preserve_path_prefix: true },
-          match: { path: { prefix: "/" } },
-        },
-      ],
-    };
+function defaultDomain(app, spec) {
+  const defaults = Array.isArray(spec.domains)
+    ? spec.domains.filter((entry) => entry?.type === "DEFAULT")
+    : [];
+  assert(defaults.length <= 1, "Multiple DEFAULT domains are prohibited");
+  const declared = defaults[0]?.domain;
+  const ingress =
+    typeof app.default_ingress === "string" ? new URL(app.default_ingress).hostname : undefined;
+  if (declared !== undefined) {
+    assert(/^[a-z0-9-]+\.ondigitalocean\.app$/u.test(declared), "DEFAULT domain is invalid");
   }
-  assert(defaultDomain !== undefined, "DigitalOcean DEFAULT domain is required");
-  return {
-    rules: [
-      {
-        match: { authority: { exact: STARTER_DOMAIN_BINDING }, path: { prefix: "/" } },
-        redirect: {
-          authority: contract.domain.domain,
-          redirect_code: 308,
-          scheme: "https",
-        },
-      },
-      {
-        component: { name: contract.service.name, preserve_path_prefix: true },
-        match: { authority: { exact: contract.domain.domain }, path: { prefix: "/" } },
-      },
-    ],
-  };
+  if (ingress !== undefined) {
+    assert(/^[a-z0-9-]+\.ondigitalocean\.app$/u.test(ingress), "Default ingress is invalid");
+  }
+  if (declared !== undefined && ingress !== undefined) {
+    equal(declared, ingress, "Default domain identity");
+  }
+  return declared ?? ingress;
 }
 
-function validateDomains(spec, contract, defaultDomain) {
-  if (!finalMode(contract.mode)) {
-    if (spec.domains === undefined) {
-      return;
-    }
-    assert(
-      defaultDomain !== undefined && spec.domains.length === 1,
-      "Bootstrap App has an unexpected domain",
-    );
-    equal(spec.domains[0], { domain: defaultDomain, type: "DEFAULT" }, "Bootstrap App domain");
-    return;
-  }
-  assert(Array.isArray(spec.domains), "Live App domains changed");
+function validateDomainsAndIngress(spec, app, contract) {
+  assert(Array.isArray(spec.domains), "Hosted domains are missing");
   const primary = spec.domains.filter((entry) => entry?.type === "PRIMARY");
   const defaults = spec.domains.filter((entry) => entry?.type === "DEFAULT");
-  assert(primary.length === 1, "Live App PRIMARY domain changed");
   assert(
-    defaults.length <= 1 && spec.domains.length === primary.length + defaults.length,
-    "Live App domains changed",
+    primary.length === 1 && spec.domains.length === primary.length + defaults.length,
+    "Hosted domains changed",
   );
-  if (defaults.length === 1) {
-    equal(defaults[0], { domain: defaultDomain, type: "DEFAULT" }, "Live App DEFAULT domain");
+  equal(primary[0], contract.domain, "PRIMARY domain");
+  const providerDomain = defaultDomain(app, spec);
+  assert(providerDomain !== undefined, "DEFAULT domain is required");
+  equal(
+    spec.ingress,
+    {
+      rules: [
+        {
+          match: { authority: { exact: starterDomainBinding }, path: { prefix: "/" } },
+          redirect: { authority: contract.domain.domain, redirect_code: 308, scheme: "https" },
+        },
+        {
+          component: { name: contract.service.name, preserve_path_prefix: true },
+          match: { authority: { exact: contract.domain.domain }, path: { prefix: "/" } },
+        },
+      ],
+    },
+    "Hosted ingress",
+  );
+}
+
+function validateSpec(value, app, contract, label) {
+  const spec = record(value, `${label} spec`);
+  const keys = [
+    "alerts",
+    "disable_edge_cache",
+    "disable_email_obfuscation",
+    "domains",
+    "enhanced_threat_control_enabled",
+    "features",
+    "ingress",
+    "jobs",
+    "maintenance",
+    "name",
+    "region",
+    "services",
+  ];
+  if (contract.dedicatedEgress) {
+    keys.push("egress");
   }
-  equal(primary[0], contract.domain, "Live App PRIMARY domain");
+  exactKeys(spec, keys, `${label} spec`);
+  equal(spec.name, contract.name, `${label} name`);
+  equal(spec.region, contract.region, `${label} region`);
+  equal(spec.features, contract.features, `${label} features`);
+  equal(
+    spec.alerts,
+    contract.alerts.app.map((rule) => ({ rule })),
+    `${label} alerts`,
+  );
+  assert(
+    spec.maintenance?.enabled === undefined || spec.maintenance.enabled === false,
+    "Maintenance mode is prohibited",
+  );
+  assert(
+    Array.isArray(spec.services) && spec.services.length === 1,
+    `${label} service topology changed`,
+  );
+  assert(Array.isArray(spec.jobs) && spec.jobs.length === 1, `${label} job topology changed`);
+  validateService(spec.services[0], contract);
+  validateJob(spec.jobs[0], contract);
+  validateDomainsAndIngress(spec, app, contract);
+  for (const field of edgeFields) {
+    equal(spec[field] ?? false, contract.edge[field], `${label} ${field}`);
+  }
+  if (contract.dedicatedEgress) {
+    equal(spec.egress, { type: "DEDICATED_IP" }, `${label} production egress`);
+  }
+  for (const key of ["databases", "envs", "functions", "static_sites", "vpc", "workers"]) {
+    assert(spec[key] === undefined, `${label} contains prohibited ${key}`);
+  }
 }
 
 function validateDeploymentComponents(deployment, contract, revision) {
-  const validateCollection = (value, declarations, label) => {
-    assert(Array.isArray(value), `${label} source identity is missing`);
-    assert(value.length === declarations.length, `${label} source identity changed`);
-    for (const declaration of declarations) {
-      const matches = value.filter((entry) => entry?.name === declaration.name);
-      assert(matches.length === 1, `${label} component identity changed`);
-      assert(
-        matches[0].source_commit_hash === revision,
-        `${label} source commit does not match the expected revision`,
-      );
-    }
+  const check = (components, declaration, label) => {
+    assert(Array.isArray(components) && components.length === 1, `${label} identity changed`);
+    assert(
+      components[0]?.name === declaration.name && components[0]?.source_commit_hash === revision,
+      `${label} source commit does not match the expected revision`,
+    );
   };
-  validateCollection(deployment.services, [contract.service], "Deployment service");
-  validateCollection(
-    deployment.jobs ?? [],
-    contract.job === undefined ? [] : [contract.job],
-    "Deployment job",
-  );
+  check(deployment.services, contract.service, "Deployment service");
+  check(deployment.jobs, contract.job, "Deployment job");
   for (const key of ["databases", "functions", "static_sites", "workers"]) {
     const components = deployment[key];
     assert(
@@ -615,121 +554,43 @@ function validateDeploymentComponents(deployment, contract, revision) {
   }
 }
 
-function validateDedicatedIps(app, final) {
+function validateEgress(app, contract) {
   const dedicated = Array.isArray(app.dedicated_ips) ? app.dedicated_ips : [];
-  if (!final) {
-    assert(dedicated.length === 0, "Bootstrap App unexpectedly owns dedicated egress");
+  if (!contract.dedicatedEgress) {
+    assert(dedicated.length === 0, "Staging cannot own dedicated egress");
     return [];
   }
-  assert(dedicated.length === 2, "DigitalOcean must assign exactly two dedicated egress IPv4s");
+  assert(dedicated.length === 2, "Production must own exactly two dedicated egress addresses");
   const addresses = dedicated.map((entry) => {
-    assert(entry?.status === "ASSIGNED", "A dedicated egress address is not assigned");
-    assert(validIpv4(entry.ip), "Dedicated egress IPv4 is invalid");
+    assert(entry?.status === "ASSIGNED", "A production egress address is not assigned");
+    assert(
+      typeof entry.ip === "string" && /^\d{1,3}(?:\.\d{1,3}){3}$/u.test(entry.ip),
+      "Production egress IPv4 is invalid",
+    );
     return entry.ip;
   });
-  assert(new Set(addresses).size === 2, "Dedicated egress IPv4s must be distinct");
+  assert(new Set(addresses).size === 2, "Production egress addresses must be distinct");
   return addresses.sort();
 }
 
-function validateAppSpec(value, app, contract, label) {
-  const spec = record(value, `${label} spec`);
-  const allowedKeys = [
-    "alerts",
-    "features",
-    "ingress",
-    "maintenance",
-    "name",
-    "region",
-    "services",
-  ];
-  if (spec.domains !== undefined) {
-    allowedKeys.push("domains");
-  }
-  if (finalMode(contract.mode)) {
-    allowedKeys.push("egress", "jobs");
-    for (const field of EDGE_FIELDS) {
-      if (contract.edge[field] === true || spec[field] !== undefined) {
-        allowedKeys.push(field);
-      }
-    }
-  } else {
-    for (const field of EDGE_FIELDS) {
-      if (spec[field] !== undefined) {
-        assert(spec[field] === false, "Bootstrap App has an invalid custom-domain edge setting");
-        allowedKeys.push(field);
-      }
-    }
-  }
-  exactKeys(spec, allowedKeys, `${label} spec`);
-  equal(spec.name, contract.name, `${label} name`);
-  equal(spec.region, contract.region, `${label} region`);
-  equal(spec.features, contract.features, `${label} features`);
-  const maintenance = record(spec.maintenance, `${label} maintenance policy`);
-  exactKeys(
-    maintenance,
-    maintenance.enabled === undefined ? [] : ["enabled"],
-    `${label} maintenance policy`,
-  );
-  assert(
-    maintenance.enabled === undefined || maintenance.enabled === false,
-    `${label} maintenance policy changed`,
-  );
-  equal(
-    spec.alerts,
-    contract.alerts.app.map((rule) => ({ rule })),
-    `${label} alerts`,
-  );
-  assert(
-    Array.isArray(spec.services) && spec.services.length === 1,
-    `${label} service topology changed`,
-  );
-  validateService(spec.services[0], contract);
-  assert(spec.envs === undefined, "App-level environment variables are prohibited");
-  for (const key of ["databases", "functions", "static_sites", "workers", "vpc"]) {
-    assert(spec[key] === undefined, `${label} contains prohibited ${key}`);
-  }
-
-  const defaultDomain = providerDefaultDomain(app, spec);
-  validateDomains(spec, contract, defaultDomain);
-  equal(spec.ingress, expectedIngress(contract, defaultDomain), `${label} ingress`);
-  if (finalMode(contract.mode)) {
-    equal(spec.egress, contract.egress, `${label} dedicated egress policy`);
-    for (const field of EDGE_FIELDS) {
-      const actual = spec[field] === undefined ? false : spec[field];
-      assert(typeof actual === "boolean", `DigitalOcean ${field} is invalid`);
-      equal(actual, contract.edge[field], `${label} ${field}`);
-    }
-    assert(Array.isArray(spec.jobs) && spec.jobs.length === 1, `${label} job topology changed`);
-    validateJob(spec.jobs[0], contract);
-  } else {
-    assert(spec.jobs === undefined, "Bootstrap App cannot contain a job");
-    assert(spec.egress === undefined, "Bootstrap App cannot request dedicated egress");
-  }
-}
-
 export function validateApp({ app: value, appId, contract, expectedRevision }) {
-  validateContract(contract);
   assert(REVISION_PATTERN.test(expectedRevision), "A full 40-character revision is required");
   const app = unwrapApp(value);
   if (appId !== undefined) {
-    assert(app.id === appId, "DigitalOcean App ID does not match the pinned authority");
+    equal(app.id, appId, "Pinned App ID");
   }
-  assert(typeof app.id === "string" && app.id.length > 0, "DigitalOcean App ID is missing");
-  assert(app.in_progress_deployment == null, "A DigitalOcean deployment is already in progress");
-  const deployment = record(app.active_deployment, "DigitalOcean active deployment");
-  assert(
-    typeof deployment.id === "string" && deployment.id.length > 0,
-    "Active deployment ID is missing",
-  );
+  assert(typeof app.id === "string" && app.id.length > 0, "App ID is missing");
+  assert(app.in_progress_deployment == null, "A deployment is already in progress");
+  const deployment = record(app.active_deployment, "Active deployment");
+  assert(typeof deployment.id === "string" && deployment.id.length > 0, "Deployment ID is missing");
   validateDeploymentComponents(deployment, contract, expectedRevision);
-  validateAppSpec(app.spec, app, contract, "DigitalOcean desired App");
-  validateAppSpec(deployment.spec, app, contract, "DigitalOcean active deployment");
-  const dedicatedIps = validateDedicatedIps(app, finalMode(contract.mode));
-  return {
+  validateSpec(app.spec, app, contract, "Desired App");
+  validateSpec(deployment.spec, app, contract, "Active deployment");
+  return Object.freeze({
     appId: app.id,
-    dedicatedIps,
+    dedicatedIps: validateEgress(app, contract),
     deploymentId: deployment.id,
-    mode: contract.mode,
+    environment: contract.environment,
     revision: expectedRevision,
-  };
+  });
 }

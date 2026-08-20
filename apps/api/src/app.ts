@@ -117,28 +117,21 @@ export interface ApplicationDependencies {
 export function createApplication(config: ApiConfig, dependencies: ApplicationDependencies = {}) {
   const isKnownApplicationAsset = createKnownApplicationAssetValidator(config.webAssetsDirectory);
   const requestIdFactory = dependencies.requestIdFactory ?? randomUUID;
-  if (config.deploymentProfile === "managed-rehearsal" && dependencies.modelGateway === undefined) {
-    throw new Error("The managed rehearsal requires its injected deterministic model gateway");
-  }
   const modelGateway =
     dependencies.modelGateway ??
     (config.modelGateway === "openrouter"
       ? new OpenRouterGateway({ apiKey: config.openRouterApiKey ?? "" })
       : new FakeModelGateway());
-  if (
-    (config.nodeEnv === "production" || config.deploymentProfile === "managed-rehearsal") &&
-    modelGateway instanceof FakeModelGateway
-  ) {
-    throw new Error("FakeModelGateway is prohibited in production and the managed rehearsal");
+  if (config.applicationEnvironment !== "development" && modelGateway instanceof FakeModelGateway) {
+    throw new Error("FakeModelGateway is prohibited in hosted environments");
   }
   let applicationTelemetry: ApplicationTelemetry | undefined;
   const logMirror =
     dependencies.logMirror === undefined
-      ? (config.nodeEnv === "production" || config.deploymentProfile === "managed-rehearsal") &&
-        dependencies.loggerStream === undefined
+      ? config.applicationEnvironment !== "development" && dependencies.loggerStream === undefined
         ? createNewRelicLogMirror({
             apiKey: config.otlpHeaders["api-key"] ?? "",
-            environment: config.deploymentProfile ?? "production",
+            environment: config.applicationEnvironment,
             onDrop(reason, count) {
               try {
                 applicationTelemetry?.recordLogMirrorDrop(reason, count);
@@ -174,7 +167,7 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
     dependencies.telemetry ??
     createApplicationTelemetry({
       endpoint: config.otlpEndpoint,
-      environment: config.deploymentProfile ?? config.nodeEnv,
+      environment: config.applicationEnvironment,
       headers: config.otlpHeaders,
       onExporterFailure(metadata) {
         server.log.warn(metadata, "telemetry exporter operation failed");
@@ -205,9 +198,12 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
       onDeliveryReport: (report) =>
         observeTelemetry("email-delivery", () => telemetry.recordEmailDelivery(report)),
       resendApiKey: config.resendApiKey,
+      ...(config.applicationEnvironment === "staging"
+        ? { allowedRecipients: config.stagingEmailRecipients }
+        : {}),
     });
-  if (config.nodeEnv === "production" && emailSender.kind !== "resend") {
-    throw new Error("Resend email delivery is required in production");
+  if (config.applicationEnvironment !== "development" && emailSender.kind !== "resend") {
+    throw new Error("Resend email delivery is required in hosted environments");
   }
   const identity = dependencies.identity ?? createIdentityService(database);
   const budget = dependencies.budget ?? createBudgetService(database, { telemetry });
@@ -247,14 +243,7 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
     dependencies.modelPolicy ?? createModelPolicyService(database, { cursorCodec });
   const assistantRules =
     dependencies.assistantRules ?? createAssistantRulesService(database, { cursorCodec });
-  const readinessPolicyMode =
-    config.nodeEnv === "production" || config.deploymentProfile === "managed-rehearsal"
-      ? "openrouter"
-      : config.nodeEnv === "test" && config.webAssetsDirectory !== null
-        ? config.modelGateway === "openrouter"
-          ? "openrouter"
-          : "simulated"
-        : null;
+  const readinessPolicyMode = config.applicationEnvironment === "development" ? null : "openrouter";
   const lifecycle = createApplicationLifecycle(pool, {
     ...(readinessPolicyMode === null
       ? {}
@@ -302,7 +291,7 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
       telemetry,
     });
   const catalogClient =
-    config.modelGateway === "openrouter" && config.deploymentProfile === null
+    config.modelGateway === "openrouter"
       ? new OpenRouterCatalogClient({ apiKey: config.openRouterApiKey ?? "" })
       : undefined;
   const catalogRefreshOwnerId = randomUUID();
@@ -357,7 +346,7 @@ export function createApplication(config: ApiConfig, dependencies: ApplicationDe
 
   server.addHook("onRequest", (request, reply, done) => {
     captureTrustedClientAddress(request, config.clientAddressSource);
-    applySecurityHeaders(reply, config.nodeEnv, config.deploymentProfile);
+    applySecurityHeaders(reply, config.applicationEnvironment);
     if (!ordinaryRequestDrain.track(request, reply)) {
       done(new ApplicationError(503, "INTERNAL_ERROR", "El servicio se está reiniciando."));
       return;

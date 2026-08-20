@@ -3,92 +3,76 @@ import {
   ConfigurationError,
   loadConfig,
   loadDatabaseConfig,
-  loadEgressBootstrapConfig,
+  loadHealthBootstrapConfig,
   loadIdentityOperatorConfig,
   loadInitializationOperatorConfig,
-  loadManagedRehearsalInitializationConfig,
   loadMigrationConfig,
   loadOpenRouterOperatorConfig,
   loadRecoveryPreparationOperatorConfig,
   publicConfigMetadata,
 } from "../src/config.js";
 
-const productionEnvironment = {
-  BETTER_AUTH_SECRET: "production-auth-secret-with-at-least-thirty-two-characters",
+const hostedCommon = {
+  BETTER_AUTH_SECRET: "hosted-auth-secret-with-at-least-thirty-two-characters",
   CAPSTONE_SECRET_SOURCE: "platform-environment",
   CLIENT_ADDRESS_SOURCE: "digitalocean-app-platform",
   DATABASE_URL: "postgresql://app:secret@database.internal:5432/capstone?sslmode=verify-full",
-  DEPLOYMENT_TARGET: "digitalocean-app-platform",
   DEPLOYMENT_REVISION: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  DEPLOYMENT_TARGET: "digitalocean-app-platform",
   EMAIL_DELIVERY: "resend",
-  EMAIL_FROM: "Capstone Chat <no-reply@mail.capstone.com.ec>",
   HOST: "0.0.0.0",
   MODEL_GATEWAY: "openrouter",
   NODE_ENV: "production",
   OPENROUTER_API_KEY: "test-openrouter-key-never-sent",
   OTEL_EXPORTER_OTLP_ENDPOINT: "https://otlp.nr-data.net",
   OTEL_EXPORTER_OTLP_HEADERS: "api-key=test-license-key-never-sent",
-  PUBLIC_ORIGIN: "https://chat.capstone.com.ec",
   RESEND_API_KEY: "test-resend-key-never-sent",
 } satisfies NodeJS.ProcessEnv;
 
-describe("loadConfig", () => {
-  it("rejects production credentials without the exact platform authority", () => {
-    const keys = [...Object.keys(productionEnvironment), "CAPSTONE_SECRET_FILE"];
-    const previous = new Map(keys.map((key) => [key, process.env[key]]));
-    try {
-      Object.assign(process.env, productionEnvironment);
-      delete process.env.CAPSTONE_SECRET_FILE;
-      delete process.env.CAPSTONE_SECRET_SOURCE;
+const stagingEnvironment = {
+  ...hostedCommon,
+  CAPSTONE_ENVIRONMENT: "staging",
+  CAPSTONE_STAGING_EMAIL_RECIPIENTS: "administrator@capstone.com.ec,qa@capstone.com.ec",
+  EMAIL_FROM: "Capstone Chat Staging <no-reply@staging.mail.capstone.com.ec>",
+  PUBLIC_ORIGIN: "https://staging.chat.capstone.com.ec",
+} satisfies NodeJS.ProcessEnv;
 
-      expect(() => loadConfig()).toThrow("CAPSTONE_SECRET_SOURCE");
-    } finally {
-      for (const [key, value] of previous) {
-        if (value === undefined) {
-          delete process.env[key];
-        } else {
-          process.env[key] = value;
-        }
-      }
-    }
-  });
+const productionEnvironment = {
+  ...hostedCommon,
+  CAPSTONE_ENVIRONMENT: "production",
+  EMAIL_FROM: "Capstone Chat <no-reply@mail.capstone.com.ec>",
+  PUBLIC_ORIGIN: "https://chat.capstone.com.ec",
+} satisfies NodeJS.ProcessEnv;
 
-  it("accepts component-scoped production environment credentials", () => {
-    const keys = [...Object.keys(productionEnvironment), "CAPSTONE_SECRET_FILE"];
-    const previous = new Map(keys.map((key) => [key, process.env[key]]));
-    try {
-      for (const [key, value] of Object.entries(productionEnvironment)) {
-        process.env[key] = value;
-      }
-      delete process.env.CAPSTONE_SECRET_FILE;
+const initializationCommon = {
+  CAPSTONE_BOOTSTRAP_DATABASE_URL:
+    "postgresql://initializer:app@database.internal:5432/capstone?sslmode=verify-full",
+  CAPSTONE_BOOTSTRAP_MIGRATION_DATABASE_URL:
+    "postgresql://initializer_migrate:migrate@database.internal:5432/capstone?sslmode=verify-full",
+  CAPSTONE_INITIALIZATION_DOCUMENT: '{"schemaVersion":1}',
+  CAPSTONE_INITIALIZATION_SCHEMA_VERSION: "1",
+  CAPSTONE_SECRET_SOURCE: "platform-environment",
+  DEPLOYMENT_REVISION: hostedCommon.DEPLOYMENT_REVISION,
+  DEPLOYMENT_TARGET: "digitalocean-app-platform",
+  MODEL_GATEWAY: "openrouter",
+  NODE_ENV: "production",
+  OPENROUTER_API_KEY: "temporary-catalog-key",
+} satisfies NodeJS.ProcessEnv;
 
-      expect(loadConfig().nodeEnv).toBe("production");
-    } finally {
-      for (const [key, value] of previous) {
-        if (value === undefined) {
-          delete process.env[key];
-        } else {
-          process.env[key] = value;
-        }
-      }
-    }
-  });
-
-  it("returns frozen development defaults", () => {
+describe("application configuration", () => {
+  it("returns frozen development defaults only for a non-production NODE_ENV", () => {
     const config = loadConfig({});
-
     expect(config).toEqual({
+      applicationEnvironment: "development",
       authSecret: "capstone-chat-local-auth-secret-not-for-production-use",
       clientAddressSource: "socket",
       databaseUrl: "postgresql://capstone:capstone@127.0.0.1:5432/capstone_chat",
-      deploymentProfile: null,
       deploymentRevision: "development",
       deploymentTarget: null,
       emailDelivery: "fake",
       emailFrom: null,
       host: "127.0.0.1",
       logLevel: "info",
-      loadDiagnosticsSecret: null,
       modelGateway: "fake",
       nodeEnv: "development",
       openRouterApiKey: null,
@@ -98,500 +82,168 @@ describe("loadConfig", () => {
       publicOrigin: "http://localhost:5173",
       resendApiKey: null,
       secretSource: null,
+      stagingEmailRecipients: [],
       trustProxy: false,
       webAssetsDirectory: null,
     });
     expect(Object.isFrozen(config)).toBe(true);
     expect(Object.isFrozen(config.otlpHeaders)).toBe(true);
+    expect(Object.isFrozen(config.stagingEmailRecipients)).toBe(true);
   });
 
-  it("accepts explicit test configuration", () => {
-    const config = loadConfig({
-      DATABASE_URL: "postgres://tester:tester@localhost:6543/test_database",
-      CLIENT_ADDRESS_SOURCE: "socket",
-      DEPLOYMENT_REVISION: "test-release.12",
-      HOST: "0.0.0.0",
-      LOG_LEVEL: "debug",
-      NODE_ENV: "test",
-      PORT: "4100",
-      PUBLIC_ORIGIN: "http://127.0.0.1:5173/",
-    });
-
-    expect(config).toMatchObject({
+  it("accepts a complete explicit test fixture and a development OpenRouter opt-in", () => {
+    expect(
+      loadConfig({
+        DATABASE_URL: "postgres://tester:tester@localhost:6543/test_database",
+        DEPLOYMENT_REVISION: "test-release.12",
+        HOST: "0.0.0.0",
+        LOG_LEVEL: "debug",
+        NODE_ENV: "test",
+        PORT: "4100",
+        PUBLIC_ORIGIN: "http://127.0.0.1:5173/",
+      }),
+    ).toMatchObject({
+      applicationEnvironment: "development",
       deploymentRevision: "test-release.12",
-      clientAddressSource: "socket",
-      emailDelivery: "fake",
       host: "0.0.0.0",
       logLevel: "debug",
-      modelGateway: "fake",
       nodeEnv: "test",
-      port: 4100,
       publicOrigin: "http://127.0.0.1:5173",
     });
-  });
-
-  it("serves the production build only in production or an explicit test rehearsal", () => {
-    expect(loadConfig({ NODE_ENV: "test" }).webAssetsDirectory).toBeNull();
-
-    const rehearsal = loadConfig({
-      DATABASE_URL: productionEnvironment.DATABASE_URL,
-      NODE_ENV: "test",
-      WEB_ASSETS: "production-build",
-    });
-    expect(rehearsal.webAssetsDirectory).toMatch(/\/apps\/web\/dist\/?$/u);
-    expect(() =>
+    expect(() => loadConfig({ MODEL_GATEWAY: "openrouter" })).toThrow("OPENROUTER_API_KEY");
+    expect(
       loadConfig({
-        DATABASE_URL: "postgresql://tester:tester@localhost:6543/test_database",
-        NODE_ENV: "test",
-        WEB_ASSETS: "production-build",
-      }),
-    ).toThrow("verify-full");
-
-    expect(() => loadConfig({ NODE_ENV: "development", WEB_ASSETS: "production-build" })).toThrow(
-      "managed test rehearsal",
-    );
-    expect(() => loadConfig({ NODE_ENV: "test", WEB_ASSETS: "true" })).toThrow(
-      "managed test rehearsal",
-    );
-    expect(() =>
-      loadConfig({
-        ...productionEnvironment,
-        MODEL_GATEWAY: "fake",
-        WEB_ASSETS: "production-build",
-      }),
-    ).toThrow("prohibited in production");
-    expect(() =>
-      loadConfig({
-        ...productionEnvironment,
-        EMAIL_DELIVERY: "disabled",
-        WEB_ASSETS: "production-build",
-      }),
-    ).toThrow("must be resend in production");
+        MODEL_GATEWAY: "openrouter",
+        OPENROUTER_API_KEY: "development-only-key",
+      }).modelGateway,
+    ).toBe("openrouter");
   });
 
-  it("uses the image commit and App Platform as the canonical production authority", () => {
-    const config = loadConfig(productionEnvironment);
-
-    expect(config.deploymentRevision).toBe(productionEnvironment.DEPLOYMENT_REVISION);
-    expect(config.clientAddressSource).toBe("digitalocean-app-platform");
-    expect(config.deploymentTarget).toBe("digitalocean-app-platform");
-    expect(config.secretSource).toBe("platform-environment");
-    expect(config.webAssetsDirectory).toMatch(/\/apps\/web\/dist\/?$/u);
-    expect(config.otlpHeaders).toEqual({ "api-key": "test-license-key-never-sent" });
-    expect(Object.isFrozen(config.otlpHeaders)).toBe(true);
-  });
-
-  it("requires both OTLP settings when telemetry is enabled outside production", () => {
-    expect(() =>
-      loadConfig({
-        NODE_ENV: "test",
-        OTEL_EXPORTER_OTLP_ENDPOINT: "https://otlp.nr-data.net",
-      }),
-    ).toThrow("OTEL_EXPORTER_OTLP_HEADERS");
-    expect(() =>
-      loadConfig({
-        NODE_ENV: "test",
-        OTEL_EXPORTER_OTLP_HEADERS: "api-key=test-license-key",
-      }),
-    ).toThrow("OTEL_EXPORTER_OTLP_ENDPOINT");
-  });
-
-  it("accepts the exact EU New Relic account region", () => {
-    const config = loadConfig({
-      ...productionEnvironment,
-      OTEL_EXPORTER_OTLP_ENDPOINT: "https://otlp.eu01.nr-data.net",
+  it("accepts complete staging and production fixtures with identical hosted safeguards", () => {
+    const staging = loadConfig(stagingEnvironment);
+    const production = loadConfig(productionEnvironment);
+    expect(staging).toMatchObject({
+      applicationEnvironment: "staging",
+      emailFrom: stagingEnvironment.EMAIL_FROM,
+      nodeEnv: "production",
+      publicOrigin: stagingEnvironment.PUBLIC_ORIGIN,
+      stagingEmailRecipients: ["administrator@capstone.com.ec", "qa@capstone.com.ec"],
     });
-
-    expect(config.otlpEndpoint).toBe("https://otlp.eu01.nr-data.net");
-  });
-
-  it("loads migration configuration without unrelated production settings", () => {
-    const config = loadDatabaseConfig({
-      CAPSTONE_SECRET_SOURCE: productionEnvironment.CAPSTONE_SECRET_SOURCE,
-      DATABASE_URL: productionEnvironment.DATABASE_URL,
-      DEPLOYMENT_TARGET: productionEnvironment.DEPLOYMENT_TARGET,
-      NODE_ENV: "production",
-    });
-
-    expect(config).toEqual({ databaseUrl: productionEnvironment.DATABASE_URL });
-    expect(Object.isFrozen(config)).toBe(true);
-    expect(() =>
-      loadDatabaseConfig({
-        CAPSTONE_SECRET_SOURCE: productionEnvironment.CAPSTONE_SECRET_SOURCE,
-        DATABASE_URL: productionEnvironment.DATABASE_URL,
-        DEPLOYMENT_TARGET: productionEnvironment.DEPLOYMENT_TARGET,
-        NODE_ENV: "production",
-        OPENROUTER_API_KEY: productionEnvironment.OPENROUTER_API_KEY,
-      }),
-    ).toThrow("migration job cannot receive application");
-  });
-
-  it("loads database operator configuration after the documented service-secret isolation", () => {
-    const operatorEnvironment: NodeJS.ProcessEnv = { ...productionEnvironment };
-    for (const key of [
-      "BETTER_AUTH_SECRET",
-      "OPENROUTER_API_KEY",
-      "OTEL_EXPORTER_OTLP_HEADERS",
-      "RESEND_API_KEY",
-    ]) {
-      delete operatorEnvironment[key];
-    }
-
-    expect(loadDatabaseConfig(operatorEnvironment)).toEqual({
-      databaseUrl: productionEnvironment.DATABASE_URL,
-    });
-    expect(operatorEnvironment.DEPLOYMENT_REVISION).toBe(productionEnvironment.DEPLOYMENT_REVISION);
-    expect(operatorEnvironment.DEPLOYMENT_TARGET).toBe(productionEnvironment.DEPLOYMENT_TARGET);
-    expect(operatorEnvironment.CAPSTONE_SECRET_SOURCE).toBe(
-      productionEnvironment.CAPSTONE_SECRET_SOURCE,
-    );
-  });
-
-  it("loads identity operator configuration without model or telemetry credentials", () => {
-    const config = loadIdentityOperatorConfig({
-      BETTER_AUTH_SECRET: productionEnvironment.BETTER_AUTH_SECRET,
-      CAPSTONE_SECRET_SOURCE: productionEnvironment.CAPSTONE_SECRET_SOURCE,
-      DATABASE_URL: productionEnvironment.DATABASE_URL,
-      DEPLOYMENT_TARGET: productionEnvironment.DEPLOYMENT_TARGET,
-      EMAIL_DELIVERY: productionEnvironment.EMAIL_DELIVERY,
-      EMAIL_FROM: productionEnvironment.EMAIL_FROM,
-      NODE_ENV: "production",
-      PUBLIC_ORIGIN: productionEnvironment.PUBLIC_ORIGIN,
-      RESEND_API_KEY: productionEnvironment.RESEND_API_KEY,
-    });
-
-    expect(config).toEqual({
-      authSecret: productionEnvironment.BETTER_AUTH_SECRET,
-      databaseUrl: productionEnvironment.DATABASE_URL,
-      emailDelivery: "resend",
+    expect(production).toMatchObject({
+      applicationEnvironment: "production",
       emailFrom: productionEnvironment.EMAIL_FROM,
       nodeEnv: "production",
       publicOrigin: productionEnvironment.PUBLIC_ORIGIN,
-      resendApiKey: productionEnvironment.RESEND_API_KEY,
+      stagingEmailRecipients: [],
     });
-    expect(Object.isFrozen(config)).toBe(true);
+    for (const config of [staging, production]) {
+      expect(config.clientAddressSource).toBe("digitalocean-app-platform");
+      expect(config.deploymentTarget).toBe("digitalocean-app-platform");
+      expect(config.secretSource).toBe("platform-environment");
+      expect(config.modelGateway).toBe("openrouter");
+      expect(config.emailDelivery).toBe("resend");
+      expect(config.webAssetsDirectory).toMatch(/\/apps\/web\/dist\/?$/u);
+      expect(config.otlpHeaders).toEqual({ "api-key": "test-license-key-never-sent" });
+    }
   });
 
-  it("loads the recovery migration URL and its strict-file path together", () => {
-    const config = loadRecoveryPreparationOperatorConfig({
-      CAPSTONE_SECRET_FILE: "/run/capstone-secrets/migration.json",
-      DATABASE_URL: productionEnvironment.DATABASE_URL,
-      NODE_ENV: "production",
-    });
-
-    expect(config).toEqual({
-      databaseUrl: productionEnvironment.DATABASE_URL,
-      migrationSecretFilePath: "/run/capstone-secrets/migration.json",
-    });
-    expect(Object.isFrozen(config)).toBe(true);
-  });
-
-  it("loads the backend-only OpenRouter operator credential independently", () => {
-    expect(
-      loadOpenRouterOperatorConfig({ OPENROUTER_API_KEY: "test-openrouter-key-never-sent" }),
-    ).toEqual({ apiKey: "test-openrouter-key-never-sent" });
-    expect(() => loadOpenRouterOperatorConfig({})).toThrow("OPENROUTER_API_KEY");
-  });
-
-  it("loads the secret-free App Platform egress bootstrap contract", () => {
-    const config = loadEgressBootstrapConfig({
-      CAPSTONE_SECRET_SOURCE: "platform-environment",
-      CLIENT_ADDRESS_SOURCE: "digitalocean-app-platform",
-      DEPLOYMENT_REVISION: productionEnvironment.DEPLOYMENT_REVISION,
-      DEPLOYMENT_TARGET: "digitalocean-app-platform",
-      HOST: "0.0.0.0",
-      NODE_ENV: "production",
-      PORT: "3000",
-    });
-
-    expect(config).toEqual({
-      clientAddressSource: "digitalocean-app-platform",
-      deploymentRevision: productionEnvironment.DEPLOYMENT_REVISION,
-      deploymentTarget: "digitalocean-app-platform",
-      host: "0.0.0.0",
-      nodeEnv: "production",
-      port: 3000,
-      secretSource: "platform-environment",
-    });
-    expect(Object.isFrozen(config)).toBe(true);
-    expect(() =>
-      loadEgressBootstrapConfig({
-        CAPSTONE_SECRET_SOURCE: "platform-environment",
-        CLIENT_ADDRESS_SOURCE: "digitalocean-app-platform",
-        DATABASE_URL: productionEnvironment.DATABASE_URL,
-        DEPLOYMENT_REVISION: productionEnvironment.DEPLOYMENT_REVISION,
-        DEPLOYMENT_TARGET: "digitalocean-app-platform",
-        HOST: "0.0.0.0",
-        NODE_ENV: "production",
-        PORT: "3000",
-      }),
-    ).toThrow("cannot receive runtime secrets");
-  });
-
-  it("loads only distinct temporary roles and bounded input for initialization", () => {
-    const environment = {
-      CAPSTONE_BOOTSTRAP_DATABASE_URL:
-        "postgresql://initializer:app@database.internal:5432/capstone?sslmode=verify-full",
-      CAPSTONE_BOOTSTRAP_MIGRATION_DATABASE_URL:
-        "postgresql://initializer_migrate:migrate@database.internal:5432/capstone?sslmode=verify-full",
-      CAPSTONE_INITIALIZATION_DOCUMENT: '{"schemaVersion":1}',
-      CAPSTONE_INITIALIZATION_SCHEMA_VERSION: "1",
-      CAPSTONE_SECRET_SOURCE: "platform-environment",
-      DEPLOYMENT_REVISION: productionEnvironment.DEPLOYMENT_REVISION,
-      DEPLOYMENT_TARGET: "digitalocean-app-platform",
-      MODEL_GATEWAY: "openrouter",
-      NODE_ENV: "production",
-      OPENROUTER_API_KEY: "temporary-catalog-key",
-    } satisfies NodeJS.ProcessEnv;
-
-    const config = loadInitializationOperatorConfig(environment);
-
-    expect(config).toMatchObject({
-      applicationDatabaseUrl: environment.CAPSTONE_BOOTSTRAP_DATABASE_URL,
-      initializationDocument: environment.CAPSTONE_INITIALIZATION_DOCUMENT,
-      initializationSchemaVersion: 1,
-      migrationDatabaseUrl: environment.CAPSTONE_BOOTSTRAP_MIGRATION_DATABASE_URL,
-      modelGateway: "openrouter",
-      openRouterApiKey: "temporary-catalog-key",
-    });
-    expect(Object.isFrozen(config)).toBe(true);
-    expect(() =>
-      loadInitializationOperatorConfig({
-        ...environment,
-        CAPSTONE_INITIALIZATION_DOCUMENT: `{"value":"${"x".repeat(32 * 1_024)}"}`,
-      }),
-    ).toThrow("32768 UTF-8 bytes");
-    expect(() =>
-      loadInitializationOperatorConfig({
-        ...environment,
-        CAPSTONE_BOOTSTRAP_MIGRATION_DATABASE_URL: environment.CAPSTONE_BOOTSTRAP_DATABASE_URL,
-      }),
-    ).toThrow("must be distinct");
-    expect(() =>
-      loadInitializationOperatorConfig({
-        ...environment,
-        CAPSTONE_BOOTSTRAP_MIGRATION_DATABASE_URL:
-          "postgresql://initializer_migrate:migrate@other.internal:5432/capstone?sslmode=verify-full",
-      }),
-    ).toThrow("same database");
-    expect(() =>
-      loadInitializationOperatorConfig({
-        ...environment,
-        BETTER_AUTH_SECRET: productionEnvironment.BETTER_AUTH_SECRET,
-      }),
-    ).toThrow("cannot receive steady application credentials");
-    expect(() => loadInitializationOperatorConfig({ ...environment, HOST: "0.0.0.0" })).toThrow(
-      "cannot receive steady application credentials",
-    );
-  });
-
-  it("loads the exact managed rehearsal without any provider or delivery credential", () => {
-    const environment = {
-      BETTER_AUTH_SECRET: productionEnvironment.BETTER_AUTH_SECRET,
-      CAPSTONE_DEPLOYMENT_PROFILE: "managed-rehearsal",
-      CAPSTONE_LOAD_DIAGNOSTICS_SECRET: "diagnostics-secret-with-at-least-32-characters",
-      CAPSTONE_SECRET_SOURCE: "platform-environment",
-      CLIENT_ADDRESS_SOURCE: "digitalocean-app-platform",
-      DATABASE_URL: productionEnvironment.DATABASE_URL,
-      DEPLOYMENT_REVISION: productionEnvironment.DEPLOYMENT_REVISION,
-      DEPLOYMENT_TARGET: "digitalocean-app-platform",
-      EMAIL_DELIVERY: "disabled",
-      HOST: "0.0.0.0",
-      LOG_LEVEL: "info",
-      MODEL_GATEWAY: "openrouter",
-      NODE_ENV: "test",
-      OTEL_EXPORTER_OTLP_ENDPOINT: "https://otlp.eu01.nr-data.net",
-      OTEL_EXPORTER_OTLP_HEADERS: "api-key=test-license-key-never-sent",
-      PORT: "3000",
-      PUBLIC_ORIGIN: "https://rehearsal.chat.capstone.com.ec",
-      WEB_ASSETS: "production-build",
-    } satisfies NodeJS.ProcessEnv;
-
-    const config = loadConfig(environment);
-    expect(config).toMatchObject({
-      deploymentProfile: "managed-rehearsal",
-      emailDelivery: "disabled",
-      loadDiagnosticsSecret: environment.CAPSTONE_LOAD_DIAGNOSTICS_SECRET,
-      modelGateway: "openrouter",
-      nodeEnv: "test",
-      openRouterApiKey: null,
-      publicOrigin: "https://rehearsal.chat.capstone.com.ec",
-    });
-    for (const [key, value] of [
-      ["OPENROUTER_API_KEY", "provider-key"],
-      ["RESEND_API_KEY", "delivery-key"],
-      ["CAPSTONE_BOOTSTRAP_DATABASE_URL", productionEnvironment.DATABASE_URL],
-    ] as const) {
-      expect(() => loadConfig({ ...environment, [key]: value })).toThrow(
-        "managed rehearsal service cannot receive",
+  it("applies direct verify-full PostgreSQL and hosted runtime policy equally", () => {
+    for (const environment of [stagingEnvironment, productionEnvironment]) {
+      expect(() =>
+        loadConfig({
+          ...environment,
+          DATABASE_URL: "postgresql://app:secret@database.internal:5432/capstone",
+        }),
+      ).toThrow("verify-full");
+      expect(() => loadConfig({ ...environment, MODEL_GATEWAY: "fake" })).toThrow(
+        "must be openrouter",
+      );
+      expect(() => loadConfig({ ...environment, WEB_ASSETS: "development" })).toThrow(
+        "production-build",
       );
     }
-    expect(() => loadConfig({ ...environment, PUBLIC_ORIGIN: "https://evil.example" })).toThrow(
-      "must be https://rehearsal.chat.capstone.com.ec",
-    );
-    expect(() => loadConfig({ ...environment, CAPSTONE_LOAD_DIAGNOSTICS_SECRET: "short" })).toThrow(
-      "32 to 256",
-    );
-  });
-
-  it("keeps managed migration and initialization component environments disjoint", () => {
-    const authority = {
-      CAPSTONE_DEPLOYMENT_PROFILE: "managed-rehearsal",
-      CAPSTONE_SECRET_SOURCE: "platform-environment",
-      DEPLOYMENT_REVISION: productionEnvironment.DEPLOYMENT_REVISION,
-      DEPLOYMENT_TARGET: "digitalocean-app-platform",
-      NODE_ENV: "test",
-    } satisfies NodeJS.ProcessEnv;
-    expect(
-      loadMigrationConfig({ ...authority, DATABASE_URL: productionEnvironment.DATABASE_URL }),
-    ).toEqual({ databaseUrl: productionEnvironment.DATABASE_URL });
-    expect(() =>
-      loadMigrationConfig({
-        ...authority,
-        BETTER_AUTH_SECRET: productionEnvironment.BETTER_AUTH_SECRET,
-        DATABASE_URL: productionEnvironment.DATABASE_URL,
-      }),
-    ).toThrow("migration job cannot receive");
-
-    const initialization = {
-      ...authority,
-      CAPSTONE_BOOTSTRAP_DATABASE_URL:
-        "postgresql://initializer:app@database.internal:5432/capstone?sslmode=verify-full",
-      CAPSTONE_BOOTSTRAP_MIGRATION_DATABASE_URL:
-        "postgresql://initializer_migrate:migrate@database.internal:5432/capstone?sslmode=verify-full",
-      CAPSTONE_INITIALIZATION_DOCUMENT: '{"schemaVersion":1}',
-      CAPSTONE_INITIALIZATION_SCHEMA_VERSION: "1",
-    } satisfies NodeJS.ProcessEnv;
-    expect(loadManagedRehearsalInitializationConfig(initialization)).toMatchObject({
-      deploymentProfile: "managed-rehearsal",
-      nodeEnv: "test",
-    });
-    for (const [key, value] of [
-      ["OPENROUTER_API_KEY", "provider-key"],
-      ["HOST", "0.0.0.0"],
-      ["BETTER_AUTH_SECRET", productionEnvironment.BETTER_AUTH_SECRET],
-    ] as const) {
-      expect(() =>
-        loadManagedRehearsalInitializationConfig({ ...initialization, [key]: value }),
-      ).toThrow("managed rehearsal initialization job cannot receive");
-    }
-  });
-
-  it("identifies the invalid configuration field without exposing its value", () => {
-    let error: unknown;
-    try {
-      loadDatabaseConfig({
-        CAPSTONE_SECRET_SOURCE: productionEnvironment.CAPSTONE_SECRET_SOURCE,
-        DATABASE_URL: "not-a-database-url",
-        DEPLOYMENT_TARGET: productionEnvironment.DEPLOYMENT_TARGET,
-        NODE_ENV: "production",
-      });
-    } catch (caught: unknown) {
-      error = caught;
-    }
-
-    expect(error).toBeInstanceOf(ConfigurationError);
-    expect(error).toMatchObject({ configurationKey: "DATABASE_URL" });
-    expect(JSON.stringify(error)).not.toContain("not-a-database-url");
   });
 
   it.each([
+    [{ NODE_ENV: "production" }, "CAPSTONE_ENVIRONMENT"],
+    [{ CAPSTONE_ENVIRONMENT: "development", NODE_ENV: "production" }, "non-production"],
+    [{ CAPSTONE_ENVIRONMENT: "staging", NODE_ENV: "test" }, "NODE_ENV must be production"],
     [
-      {
-        CAPSTONE_SECRET_SOURCE: productionEnvironment.CAPSTONE_SECRET_SOURCE,
-        DEPLOYMENT_TARGET: productionEnvironment.DEPLOYMENT_TARGET,
-        NODE_ENV: "production",
-        PUBLIC_ORIGIN: "https://chat.capstone.com.ec",
-      },
-      "DATABASE_URL",
+      { CAPSTONE_ENVIRONMENT: "production", NODE_ENV: "development" },
+      "NODE_ENV must be production",
     ],
+    [{ CAPSTONE_ENVIRONMENT: "other", NODE_ENV: "test" }, "development, staging, or production"],
+  ] satisfies [NodeJS.ProcessEnv, string][])(
+    "rejects invalid CAPSTONE_ENVIRONMENT/NODE_ENV pair %#",
+    (environment, message) => {
+      expect(() => loadConfig(environment)).toThrow(message);
+    },
+  );
+
+  it("rejects cross-environment origins, senders, and hosted origins in development", () => {
+    expect(() =>
+      loadConfig({ ...stagingEnvironment, PUBLIC_ORIGIN: productionEnvironment.PUBLIC_ORIGIN }),
+    ).toThrow("approved staging origin");
+    expect(() =>
+      loadConfig({ ...productionEnvironment, PUBLIC_ORIGIN: stagingEnvironment.PUBLIC_ORIGIN }),
+    ).toThrow("approved production origin");
+    expect(() =>
+      loadConfig({ ...stagingEnvironment, EMAIL_FROM: productionEnvironment.EMAIL_FROM }),
+    ).toThrow("approved staging sender");
+    expect(() =>
+      loadConfig({ ...productionEnvironment, EMAIL_FROM: stagingEnvironment.EMAIL_FROM }),
+    ).toThrow("approved production sender");
+    expect(() => loadConfig({ PUBLIC_ORIGIN: productionEnvironment.PUBLIC_ORIGIN })).toThrow(
+      "loopback",
+    );
+    expect(() => loadConfig({ EMAIL_DELIVERY: "resend" })).toThrow("fake mailbox");
+  });
+
+  it("requires a bounded unique normalized staging recipient allowlist", () => {
+    expect(() =>
+      loadConfig({ ...stagingEnvironment, CAPSTONE_STAGING_EMAIL_RECIPIENTS: undefined }),
+    ).toThrow("1 to 10");
+    for (const recipients of [
+      "Administrator@capstone.com.ec",
+      " administrator@capstone.com.ec",
+      "administrator@capstone.com.ec,administrator@capstone.com.ec",
+      "not-an-email",
+      Array.from({ length: 11 }, (_, index) => `qa${index}@capstone.com.ec`).join(","),
+    ]) {
+      expect(() =>
+        loadConfig({ ...stagingEnvironment, CAPSTONE_STAGING_EMAIL_RECIPIENTS: recipients }),
+      ).toThrow("CAPSTONE_STAGING_EMAIL_RECIPIENTS");
+    }
+    expect(() =>
+      loadConfig({
+        ...productionEnvironment,
+        CAPSTONE_STAGING_EMAIL_RECIPIENTS: "qa@capstone.com.ec",
+      }),
+    ).toThrow("only in staging");
+  });
+
+  it.each([
     [{ ...productionEnvironment, BETTER_AUTH_SECRET: undefined }, "BETTER_AUTH_SECRET"],
-    [
-      {
-        CAPSTONE_SECRET_SOURCE: productionEnvironment.CAPSTONE_SECRET_SOURCE,
-        DATABASE_URL: "postgresql://app:secret@database.internal/capstone?sslmode=verify-full",
-        DEPLOYMENT_TARGET: productionEnvironment.DEPLOYMENT_TARGET,
-        NODE_ENV: "production",
-      },
-      "PUBLIC_ORIGIN",
-    ],
-    [{ ...productionEnvironment, PUBLIC_ORIGIN: "http://chat.capstone.com.ec" }, "https"],
-    [{ ...productionEnvironment, PUBLIC_ORIGIN: "https://other.capstone.com.ec" }, "approved"],
-    [{ ...productionEnvironment, HOST: undefined }, "HOST"],
-    [{ ...productionEnvironment, HOST: "127.0.0.1" }, "0.0.0.0"],
-    [{ ...productionEnvironment, CLIENT_ADDRESS_SOURCE: undefined }, "CLIENT_ADDRESS_SOURCE"],
-    [
-      { ...productionEnvironment, CLIENT_ADDRESS_SOURCE: "legacy-proxy" },
-      "must be digitalocean-app-platform",
-    ],
-    [{ ...productionEnvironment, DEPLOYMENT_TARGET: undefined }, "DEPLOYMENT_TARGET"],
-    [
-      { ...productionEnvironment, DEPLOYMENT_TARGET: "unsupported-target" },
-      "digitalocean-app-platform",
-    ],
+    [{ ...productionEnvironment, BETTER_AUTH_SECRET: "short" }, "32 characters"],
     [{ ...productionEnvironment, CAPSTONE_SECRET_SOURCE: undefined }, "CAPSTONE_SECRET_SOURCE"],
     [{ ...productionEnvironment, CAPSTONE_SECRET_SOURCE: "file" }, "platform-environment"],
-    [{ ...productionEnvironment, CAPSTONE_SECRET_FILE: "/run/secrets/runtime.json" }, "prohibited"],
-    [
-      { ...productionEnvironment, CAPSTONE_INITIALIZATION_DOCUMENT: "{}" },
-      "cannot receive initialization credentials",
-    ],
-    [{ ...productionEnvironment, PORT: "0" }, "PORT"],
-    [{ ...productionEnvironment, PORT: "3001" }, "must be 3000"],
-    [{ ...productionEnvironment, DATABASE_URL: "https://database.internal/capstone" }, "postgres"],
-    [
-      {
-        ...productionEnvironment,
-        DATABASE_URL: "postgresql://app:secret@database.internal:6432/capstone?sslmode=verify-full",
-      },
-      "direct port 5432",
-    ],
+    [{ ...productionEnvironment, CLIENT_ADDRESS_SOURCE: undefined }, "CLIENT_ADDRESS_SOURCE"],
+    [{ ...productionEnvironment, CLIENT_ADDRESS_SOURCE: "socket" }, "digitalocean-app-platform"],
+    [{ ...productionEnvironment, DEPLOYMENT_TARGET: undefined }, "DEPLOYMENT_TARGET"],
+    [{ ...productionEnvironment, DEPLOYMENT_REVISION: "short" }, "full Git commit"],
+    [{ ...productionEnvironment, EMAIL_DELIVERY: "fake" }, "must be resend"],
+    [{ ...productionEnvironment, EMAIL_FROM: undefined }, "approved production sender"],
+    [{ ...productionEnvironment, HOST: "127.0.0.1" }, "0.0.0.0"],
+    [{ ...productionEnvironment, MODEL_GATEWAY: "fake" }, "must be openrouter"],
+    [{ ...productionEnvironment, OPENROUTER_API_KEY: undefined }, "OPENROUTER_API_KEY"],
+    [{ ...productionEnvironment, PORT: "3001" }, "3000"],
+    [{ ...productionEnvironment, RESEND_API_KEY: undefined }, "RESEND_API_KEY"],
     [
       {
         ...productionEnvironment,
-        DATABASE_URL:
-          "postgresql://app:secret@database.internal:5432/capstone?sslmode=verify-full&host=override.invalid",
-      },
-      "direct port 5432",
-    ],
-    [
-      {
-        ...productionEnvironment,
-        DATABASE_URL:
-          "postgresql://app:secret@database.internal:5432/capstone?sslmode=verify-full&user=override",
-      },
-      "direct port 5432",
-    ],
-    [
-      {
-        ...productionEnvironment,
-        DATABASE_URL: "postgresql://app:secret@database.internal:5432/capstone",
+        DATABASE_URL: "postgresql://app:secret@database.internal/capstone",
       },
       "verify-full",
-    ],
-    [
-      {
-        ...productionEnvironment,
-        DATABASE_URL:
-          "postgresql://app:secret@database.internal:5432/capstone?sslmode=verify-full&sslrootcert=/secret/path",
-      },
-      "platform-trusted TLS",
-    ],
-    [
-      {
-        ...productionEnvironment,
-        DATABASE_URL:
-          "postgresql://app:secret@database.internal:5432/capstone?sslmode=verify-full&sslmode=disable",
-      },
-      "exactly one verify-full",
-    ],
-    [
-      {
-        ...productionEnvironment,
-        DATABASE_URL:
-          "postgresql://app:secret@database.internal:5432/capstone?sslmode=verify-full&options=-c%20statement_timeout%3D0",
-      },
-      "direct port 5432",
     ],
     [
       {
@@ -600,69 +252,177 @@ describe("loadConfig", () => {
       },
       "DNS host",
     ],
-    [{ ...productionEnvironment, LOG_LEVEL: "verbose" }, "LOG_LEVEL"],
-    [{ ...productionEnvironment, BETTER_AUTH_SECRET: "too-short" }, "32 characters"],
-    [{ ...productionEnvironment, EMAIL_DELIVERY: "fake" }, "must be resend"],
-    [{ ...productionEnvironment, EMAIL_DELIVERY: "disabled" }, "must be resend"],
-    [{ ...productionEnvironment, EMAIL_DELIVERY: "provider" }, "disabled, fake, or resend"],
-    [{ ...productionEnvironment, EMAIL_DELIVERY: undefined }, "EMAIL_DELIVERY"],
-    [{ ...productionEnvironment, RESEND_API_KEY: undefined }, "RESEND_API_KEY"],
-    [{ ...productionEnvironment, EMAIL_FROM: undefined }, "EMAIL_FROM"],
-    [{ ...productionEnvironment, EMAIL_FROM: "Other <other@example.com>" }, "approved"],
-    [{ ...productionEnvironment, MODEL_GATEWAY: "fake" }, "prohibited"],
-    [{ ...productionEnvironment, MODEL_GATEWAY: "other" }, "fake or openrouter"],
-    [{ ...productionEnvironment, MODEL_GATEWAY: undefined }, "MODEL_GATEWAY"],
-    [{ ...productionEnvironment, OPENROUTER_API_KEY: undefined }, "OPENROUTER_API_KEY"],
-    [{ ...productionEnvironment, DEPLOYMENT_REVISION: undefined }, "DEPLOYMENT_REVISION"],
-    [{ ...productionEnvironment, DEPLOYMENT_REVISION: "short" }, "full Git commit"],
-    [{ ...productionEnvironment, OTEL_EXPORTER_OTLP_ENDPOINT: undefined }, "OTLP_ENDPOINT"],
-    [{ ...productionEnvironment, OTEL_EXPORTER_OTLP_HEADERS: undefined }, "OTLP_HEADERS"],
-    [
-      { ...productionEnvironment, OTEL_EXPORTER_OTLP_ENDPOINT: "http://otlp.nr-data.net" },
-      "HTTPS origin",
-    ],
     [
       {
         ...productionEnvironment,
-        OTEL_EXPORTER_OTLP_ENDPOINT: "https://otlp.nr-data.net/v1/traces",
+        DATABASE_URL: "postgresql://app:secret@database.internal:6432/capstone?sslmode=verify-full",
       },
-      "HTTPS origin",
+      "direct port 5432",
     ],
-    [
-      { ...productionEnvironment, OTEL_EXPORTER_OTLP_ENDPOINT: "https://telemetry.example.com" },
-      "New Relic",
-    ],
-    [
-      {
-        ...productionEnvironment,
-        OTEL_EXPORTER_OTLP_ENDPOINT: "https://otlp.staging.nr-data.net",
-      },
-      "exact US or EU",
-    ],
-    [
-      {
-        ...productionEnvironment,
-        OTEL_EXPORTER_OTLP_HEADERS: "api-key=first,api-key=second",
-      },
-      "exactly one",
-    ],
+    [{ ...productionEnvironment, OTEL_EXPORTER_OTLP_ENDPOINT: undefined }, "OTLP"],
     [{ ...productionEnvironment, OTEL_EXPORTER_OTLP_HEADERS: "authorization=value" }, "api-key"],
+    [
+      { ...productionEnvironment, PUBLIC_ORIGIN: "http://chat.capstone.com.ec" },
+      "approved production origin",
+    ],
+    [{ ...productionEnvironment, WEB_ASSETS: "other" }, "production-build"],
+    [{ ...productionEnvironment, CAPSTONE_SECRET_FILE: "/run/secrets/runtime.json" }, "prohibited"],
+    [
+      { ...productionEnvironment, CAPSTONE_INITIALIZATION_DOCUMENT: "{}" },
+      "cannot receive initialization",
+    ],
   ] satisfies [NodeJS.ProcessEnv, string][])(
-    "rejects invalid production configuration %#",
+    "preserves hosted production safeguard %#",
     (environment, message) => {
       expect(() => loadConfig(environment)).toThrow(message);
     },
   );
 
-  it("does not expose the database URL in startup metadata", () => {
-    const metadata = publicConfigMetadata(loadConfig(productionEnvironment));
+  it("keeps database, identity, recovery, and OpenRouter operator boundaries explicit", () => {
+    const operatorAuthority = {
+      CAPSTONE_ENVIRONMENT: "production",
+      CAPSTONE_SECRET_SOURCE: "platform-environment",
+      DATABASE_URL: productionEnvironment.DATABASE_URL,
+      DEPLOYMENT_TARGET: "digitalocean-app-platform",
+      NODE_ENV: "production",
+    } satisfies NodeJS.ProcessEnv;
+    expect(loadDatabaseConfig(operatorAuthority)).toEqual({
+      databaseUrl: productionEnvironment.DATABASE_URL,
+    });
+    expect(() =>
+      loadDatabaseConfig({ ...operatorAuthority, OPENROUTER_API_KEY: "provider-key" }),
+    ).toThrow("cannot receive application");
 
-    expect(metadata).not.toHaveProperty("databaseUrl");
-    expect(metadata).not.toHaveProperty("authSecret");
-    expect(metadata).not.toHaveProperty("openRouterApiKey");
-    expect(metadata).not.toHaveProperty("otlpHeaders");
-    expect(metadata).not.toHaveProperty("resendApiKey");
-    expect(metadata).not.toHaveProperty("emailFrom");
+    const identity = loadIdentityOperatorConfig({
+      BETTER_AUTH_SECRET: productionEnvironment.BETTER_AUTH_SECRET,
+      CAPSTONE_ENVIRONMENT: "production",
+      CAPSTONE_SECRET_SOURCE: "platform-environment",
+      DATABASE_URL: productionEnvironment.DATABASE_URL,
+      DEPLOYMENT_TARGET: "digitalocean-app-platform",
+      EMAIL_DELIVERY: "resend",
+      EMAIL_FROM: productionEnvironment.EMAIL_FROM,
+      NODE_ENV: "production",
+      PUBLIC_ORIGIN: productionEnvironment.PUBLIC_ORIGIN,
+      RESEND_API_KEY: productionEnvironment.RESEND_API_KEY,
+    });
+    expect(identity).toMatchObject({
+      applicationEnvironment: "production",
+      nodeEnv: "production",
+      stagingEmailRecipients: [],
+    });
+    expect(
+      loadOpenRouterOperatorConfig({ OPENROUTER_API_KEY: "test-openrouter-key-never-sent" }),
+    ).toEqual({ apiKey: "test-openrouter-key-never-sent" });
+    expect(() => loadOpenRouterOperatorConfig({})).toThrow("OPENROUTER_API_KEY");
+
+    expect(
+      loadRecoveryPreparationOperatorConfig({
+        CAPSTONE_SECRET_FILE: "/run/capstone-secrets/migration.json",
+        DATABASE_URL: "postgresql://local:local@127.0.0.1:5432/recovery",
+        NODE_ENV: "test",
+      }),
+    ).toEqual({
+      databaseUrl: "postgresql://local:local@127.0.0.1:5432/recovery",
+      migrationSecretFilePath: "/run/capstone-secrets/migration.json",
+    });
+  });
+
+  it.each(["staging", "production"] as const)(
+    "accepts only migration credentials and non-secret metadata for %s",
+    (applicationEnvironment) => {
+      const migration = {
+        CAPSTONE_ENVIRONMENT: applicationEnvironment,
+        CAPSTONE_SECRET_SOURCE: "platform-environment",
+        DATABASE_URL: hostedCommon.DATABASE_URL,
+        DEPLOYMENT_REVISION: hostedCommon.DEPLOYMENT_REVISION,
+        DEPLOYMENT_TARGET: "digitalocean-app-platform",
+        NODE_ENV: "production",
+      } satisfies NodeJS.ProcessEnv;
+      expect(loadMigrationConfig(migration)).toEqual({ databaseUrl: hostedCommon.DATABASE_URL });
+      for (const [key, value] of [
+        ["BETTER_AUTH_SECRET", hostedCommon.BETTER_AUTH_SECRET],
+        ["OPENROUTER_API_KEY", hostedCommon.OPENROUTER_API_KEY],
+        ["OTEL_EXPORTER_OTLP_HEADERS", hostedCommon.OTEL_EXPORTER_OTLP_HEADERS],
+        ["RESEND_API_KEY", hostedCommon.RESEND_API_KEY],
+      ] as const) {
+        expect(() => loadMigrationConfig({ ...migration, [key]: value })).toThrow(
+          "migration job cannot receive",
+        );
+      }
+    },
+  );
+
+  it.each(["staging", "production"] as const)(
+    "uses the schema-1 initializer for %s with distinct temporary database roles",
+    (applicationEnvironment) => {
+      const environment = {
+        ...initializationCommon,
+        CAPSTONE_ENVIRONMENT: applicationEnvironment,
+      } satisfies NodeJS.ProcessEnv;
+      expect(loadInitializationOperatorConfig(environment)).toMatchObject({
+        applicationEnvironment,
+        initializationSchemaVersion: 1,
+        modelGateway: "openrouter",
+        nodeEnv: "production",
+      });
+      expect(() =>
+        loadInitializationOperatorConfig({
+          ...environment,
+          CAPSTONE_BOOTSTRAP_MIGRATION_DATABASE_URL: environment.CAPSTONE_BOOTSTRAP_DATABASE_URL,
+        }),
+      ).toThrow("distinct");
+      expect(() =>
+        loadInitializationOperatorConfig({ ...environment, BETTER_AUTH_SECRET: "not-allowed" }),
+      ).toThrow("cannot receive steady application");
+    },
+  );
+
+  it("loads a minimal provider-native health bootstrap for either hosted environment", () => {
+    for (const applicationEnvironment of ["staging", "production"] as const) {
+      const environment = {
+        CAPSTONE_ENVIRONMENT: applicationEnvironment,
+        CAPSTONE_SECRET_SOURCE: "platform-environment",
+        CLIENT_ADDRESS_SOURCE: "digitalocean-app-platform",
+        DEPLOYMENT_REVISION: hostedCommon.DEPLOYMENT_REVISION,
+        DEPLOYMENT_TARGET: "digitalocean-app-platform",
+        HOST: "0.0.0.0",
+        NODE_ENV: "production",
+        PORT: "3000",
+      } satisfies NodeJS.ProcessEnv;
+      expect(loadHealthBootstrapConfig(environment)).toMatchObject({
+        applicationEnvironment,
+        nodeEnv: "production",
+        port: 3000,
+      });
+      expect(() =>
+        loadHealthBootstrapConfig({ ...environment, DATABASE_URL: hostedCommon.DATABASE_URL }),
+      ).toThrow("cannot receive runtime secrets");
+    }
+  });
+
+  it("identifies invalid fields without exposing their values or secrets in metadata", () => {
+    let error: unknown;
+    try {
+      loadConfig({ ...productionEnvironment, DATABASE_URL: "not-a-database-url" });
+    } catch (caught: unknown) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(ConfigurationError);
+    expect(error).toMatchObject({ configurationKey: "DATABASE_URL" });
+    expect(JSON.stringify(error)).not.toContain("not-a-database-url");
+
+    const metadata = publicConfigMetadata(loadConfig(productionEnvironment));
+    for (const key of [
+      "databaseUrl",
+      "authSecret",
+      "openRouterApiKey",
+      "otlpHeaders",
+      "resendApiKey",
+      "emailFrom",
+      "stagingEmailRecipients",
+    ]) {
+      expect(metadata).not.toHaveProperty(key);
+    }
     expect(JSON.stringify(metadata)).not.toContain("secret");
     expect(Object.isFrozen(metadata)).toBe(true);
   });

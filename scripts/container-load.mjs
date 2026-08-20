@@ -6,7 +6,7 @@ const authSecret = process.env.CAPSTONE_LOAD_AUTH_SECRET;
 const portValue = process.env.CAPSTONE_LOAD_PORT ?? "3015";
 const port = Number(portValue);
 const candidateCpu = "1";
-const candidateMemory = "1g";
+const candidateMemory = "512m";
 
 function assert(condition, message) {
   if (!condition) {
@@ -27,7 +27,7 @@ function containerDatabaseUrl(value) {
   );
   assert(
     parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost",
-    "The container rehearsal accepts only a loopback disposable database",
+    "The container load check accepts only a loopback disposable database",
   );
   parsed.hostname = "host.docker.internal";
   return parsed.toString();
@@ -124,7 +124,7 @@ try {
       "--env",
       "MODEL_GATEWAY=openrouter",
       "--env",
-      "OPENROUTER_API_KEY=load-rehearsal-placeholder",
+      "OPENROUTER_API_KEY=local-load-placeholder",
       "--env",
       "EMAIL_DELIVERY=fake",
       "--env",
@@ -135,8 +135,8 @@ try {
       "node",
       image,
       "--expose-gc",
-      "apps/api/dist/load/load-server.js",
-      "--confirm-isolated-load-rehearsal",
+      "apps/api/dist/load/local-load-server.js",
+      "--confirm-isolated-local-load",
     ],
     {
       env: {
@@ -154,12 +154,12 @@ try {
     containerName,
   ]);
   assert(
-    limits === "1000000000 1073741824 1073741824 256 node",
+    limits === "1000000000 536870912 536870912 256 node",
     "Docker did not apply the selected App Platform candidate limits",
   );
   await waitForReadiness();
 
-  const rehearsal = spawnSync(
+  const loadRun = spawnSync(
     "pnpm",
     [
       "--filter",
@@ -178,17 +178,17 @@ try {
       timeout: 10 * 60 * 1_000,
     },
   );
-  if (rehearsal.stdout.length > 0) {
-    process.stdout.write(rehearsal.stdout);
+  if (loadRun.stdout.length > 0) {
+    process.stdout.write(loadRun.stdout);
   }
-  if (rehearsal.stderr.length > 0) {
-    process.stderr.write(rehearsal.stderr);
+  if (loadRun.stderr.length > 0) {
+    process.stderr.write(loadRun.stderr);
   }
-  if (rehearsal.status !== 0) {
-    throw new Error("The constrained built-container load rehearsal failed");
+  if (loadRun.status !== 0) {
+    throw new Error("The constrained built-container load check failed");
   }
   process.stdout.write(
-    `Built-container load rehearsal passed at ${candidateCpu} CPU and ${candidateMemory} RAM.\n`,
+    `Built-container load check passed at ${candidateCpu} CPU and ${candidateMemory} RAM.\n`,
   );
 } catch (error) {
   if (containerStarted) {

@@ -170,6 +170,8 @@ try {
     "--env",
     "RESEND_API_KEY=container-platform-email-value",
     "--env",
+    "CAPSTONE_ENVIRONMENT=production",
+    "--env",
     "NODE_ENV=production",
     "--env",
     "HOST=0.0.0.0",
@@ -202,6 +204,7 @@ try {
       const { loadConfig } = await import("./apps/api/dist/config.js");
       const config = loadConfig();
       if (
+        config.applicationEnvironment !== "production" ||
         config.nodeEnv !== "production" ||
         config.clientAddressSource !== "digitalocean-app-platform" ||
         config.deploymentTarget !== "digitalocean-app-platform" ||
@@ -225,6 +228,8 @@ try {
     "--env",
     "CAPSTONE_SECRET_SOURCE=platform-environment",
     "--env",
+    "CAPSTONE_ENVIRONMENT=production",
+    "--env",
     "CLIENT_ADDRESS_SOURCE=digitalocean-app-platform",
     "--env",
     "DEPLOYMENT_TARGET=digitalocean-app-platform",
@@ -240,7 +245,7 @@ try {
     "node",
     image,
     "apps/api/dist/entrypoint.js",
-    "egress-bootstrap",
+    "health-bootstrap",
   ]);
   await waitForInternalHealth("/api/health/ready", "ready");
   docker([

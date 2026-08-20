@@ -97,9 +97,9 @@ binding recovery objective; that exception does not weaken any controlled recove
 - V1 does not build a custom backup service.
 - Database restoration is an operational disaster-recovery procedure, not an employee or administrator conversation-restore feature.
 - A documented restore procedure must be successfully exercised before production acceptance and
-  the first employee invitation. The owner-authorized August 13, 2026 direct-production path may
-  provision the closed production infrastructure while the backup history ages; that state is not
-  an accepted launch and receives no real employee data.
+  the first employee invitation. Persistent staging is the normal pre-production application
+  environment, but it never substitutes for isolated recovery validation of the authoritative
+  production database. An unaccepted production stack receives no real employee data.
 - Conversation deletion is immediate and irreversible in the active application. Deleted content
   may remain inaccessible in encrypted database backups until the approved 84-hour retention
   window expires; that operating window does not assert an undocumented physical-media schedule.

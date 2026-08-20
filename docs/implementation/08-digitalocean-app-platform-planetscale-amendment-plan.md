@@ -1,13 +1,15 @@
 # Phase 8 amendment: DigitalOcean App Platform source builds and PlanetScale
 
-Status: repository implementation complete; direct staged production provisioning selected;
-production acceptance is not granted.
+Status: historical implementation record. Its production topology and recovery decisions remain
+authoritative, but its hosted rehearsal and direct-production release mechanics were superseded by
+the August 20, 2026 staging simplification. Production acceptance is not granted.
 
 Date: August 12, 2026.
 
-This is the active Phase 8 production amendment. It supersedes the Render and raw-Droplet
+This was the active Phase 8 production amendment. It superseded the Render and raw-Droplet
 deployment adapters and the earlier GHCR/exact-digest version of this App Platform plan. Git
-history keeps those attempts as evidence; they are not launch fallbacks.
+history keeps those attempts and this plan as evidence; they are not current release instructions.
+Use the active PRDs and operations runbooks for deployment.
 
 ## Approved decisions
 

@@ -1,5 +1,5 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
-import type { ApiConfig, DeploymentProfile, RuntimeMode } from "../config.js";
+import type { ApiConfig, ApplicationEnvironment } from "../config.js";
 import { ApplicationError } from "../errors.js";
 
 const mutationMethods = new Set(["DELETE", "PATCH", "POST", "PUT"]);
@@ -30,14 +30,13 @@ const securityHeaders = Object.freeze({
 
 export function applySecurityHeaders(
   reply: FastifyReply,
-  runtimeMode: RuntimeMode = "development",
-  deploymentProfile: DeploymentProfile | null = null,
+  applicationEnvironment: ApplicationEnvironment = "development",
 ): void {
   for (const [name, value] of Object.entries(securityHeaders)) {
     void reply.header(name, value);
   }
 
-  if (runtimeMode === "production" || deploymentProfile === "managed-rehearsal") {
+  if (applicationEnvironment !== "development") {
     void reply.header("strict-transport-security", "max-age=31536000");
   }
 }

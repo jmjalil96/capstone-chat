@@ -4,7 +4,6 @@ import { createDatabase } from "../database/database.js";
 import { migrateDatabase } from "../database/migrate.js";
 import { createDatabasePool } from "../database/pool.js";
 import { createIdentityService } from "../identity/service.js";
-import { createLoadRehearsalCatalog } from "../load/managed-rehearsal.js";
 import type { CatalogModelSnapshot, ModelTier } from "../model-policy/catalog.js";
 import { createModelPolicyService } from "../model-policy/service.js";
 import type { ProductionInitializationDocument } from "./initialization-document.js";
@@ -16,12 +15,6 @@ export interface ProductionInitializationInput {
   readonly document: ProductionInitializationDocument;
   readonly migrationDatabaseUrl: string;
   readonly openRouterApiKey: string;
-}
-
-export interface ManagedRehearsalInitializationInput {
-  readonly applicationDatabaseUrl: string;
-  readonly document: ProductionInitializationDocument;
-  readonly migrationDatabaseUrl: string;
 }
 
 interface InitializationDatabaseSession {
@@ -50,11 +43,6 @@ export interface ProductionInitializationResult {
   readonly phase: "complete";
 }
 
-export type ManagedRehearsalInitializationDependencies = Omit<
-  ProductionInitializationDependencies,
-  "loadCatalog"
->;
-
 const defaultDependencies: ProductionInitializationDependencies = Object.freeze({
   afterCheckpoint: () => undefined,
   loadCatalog: (apiKey: string) => loadApprovedOpenRouterCatalog(apiKey),
@@ -82,7 +70,7 @@ async function useDatabase<T>(
 }
 
 async function initializeWithCatalog(
-  input: ManagedRehearsalInitializationInput,
+  input: ProductionInitializationInput,
   dependencies: ProductionInitializationDependencies,
   loadCatalog: () => Promise<Readonly<Record<ModelTier, CatalogModelSnapshot>>>,
 ): Promise<ProductionInitializationResult> {
@@ -167,17 +155,4 @@ export async function initializeProduction(
   return initializeWithCatalog(input, dependencies, () =>
     dependencies.loadCatalog(input.openRouterApiKey),
   );
-}
-
-export async function initializeManagedRehearsal(
-  input: ManagedRehearsalInitializationInput,
-  overrides: Partial<ManagedRehearsalInitializationDependencies> = {},
-): Promise<ProductionInitializationResult> {
-  const dependencies: ProductionInitializationDependencies = Object.freeze({
-    ...defaultDependencies,
-    ...overrides,
-    loadCatalog: async () =>
-      createLoadRehearsalCatalog(input.document.privacyAttestation.verifiedAt),
-  });
-  return initializeWithCatalog(input, dependencies, () => dependencies.loadCatalog(""));
 }

@@ -4,34 +4,23 @@ import { installShutdownHandlers, startServer } from "../start.js";
 import { hasExplicitGarbageCollector, registerLoadDiagnostics } from "./diagnostics.js";
 import { LoadModelGateway } from "./load-gateway.js";
 
-const confirmation = "--confirm-isolated-load-rehearsal";
+const confirmation = "--confirm-isolated-local-load";
+
 async function main(): Promise<void> {
   if (process.argv.length !== 3 || process.argv[2] !== confirmation) {
-    throw new Error(`The load rehearsal server requires ${confirmation}`);
+    throw new Error(`The local load server requires ${confirmation}`);
   }
   if (!hasExplicitGarbageCollector()) {
-    throw new Error("The load rehearsal server requires explicit garbage collection");
+    throw new Error("The local load server requires explicit garbage collection");
   }
   const config = loadConfig();
   if (
+    config.applicationEnvironment !== "development" ||
     config.nodeEnv !== "test" ||
     config.modelGateway !== "openrouter" ||
-    config.publicOrigin === "https://chat.capstone.com.ec"
+    !["127.0.0.1", "localhost", "[::1]"].includes(new URL(config.publicOrigin).hostname)
   ) {
-    throw new Error(
-      "The load rehearsal server requires test mode, isolated inference, and a non-production origin",
-    );
-  }
-  const diagnosticsSecret =
-    config.deploymentProfile === "managed-rehearsal"
-      ? config.loadDiagnosticsSecret
-      : config.authSecret;
-  if (
-    diagnosticsSecret === null ||
-    diagnosticsSecret === undefined ||
-    diagnosticsSecret.length < 32
-  ) {
-    throw new Error("The load rehearsal server requires a bounded diagnostics secret");
+    throw new Error("The local load server requires test mode and an isolated loopback origin");
   }
 
   const application = await startServer(
@@ -46,7 +35,7 @@ async function main(): Promise<void> {
         configuredApplication.server,
         configuredApplication.pool,
         configuredApplication.streamRegistry,
-        diagnosticsSecret,
+        config.authSecret,
       );
     },
   );
@@ -55,7 +44,7 @@ async function main(): Promise<void> {
 
 main().catch((error: unknown) => {
   process.stderr.write(
-    `${JSON.stringify({ ...operationalErrorMetadata(error), outcome: "load-rehearsal-start-failed" })}\n`,
+    `${JSON.stringify({ ...operationalErrorMetadata(error), outcome: "local-load-start-failed" })}\n`,
   );
   process.exitCode = 1;
 });

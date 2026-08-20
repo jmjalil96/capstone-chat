@@ -1,64 +1,42 @@
 # Secret rotation
 
-Bitwarden Teams in the Capstone organization is the recoverable source. App Platform stores only
-component-scoped encrypted `RUN_TIME` `SECRET` copies. Provider-encrypted values are not source
-copies and never belong in Git, evidence, tasks, screenshots, or command output.
+Bitwarden Teams is the recoverable source for production secrets. Staging uses separate provider
+resources and credentials. App Platform holds encrypted component-scoped `RUN_TIME` copies only;
+encrypted dashboard values are not recovery sources and never belong in Git or evidence.
 
-Rotate one boundary at a time unless a provider requires overlap. Freeze release-pointer changes,
-confirm `app-platform-production` is the accepted green commit, record the active deployment, and
-make the authorized change in App Platform. Configuration changes can rebuild source, so require
-the service/job `source_commit_hash` and public readiness revision to remain on the frozen commit.
-Verify the replacement before revoking the old value.
+Rotate one environment and one boundary at a time. Freeze its release pointer, record the active
+deployment and revision, install the authorized replacement, require the exact hosted contract and
+readiness revision, verify the new authority, then revoke the old one.
 
-## Component scope
+## Steady scopes
 
-The steady service receives only:
+The service has `BETTER_AUTH_SECRET`, `DATABASE_URL`, `OPENROUTER_API_KEY`,
+`OTEL_EXPORTER_OTLP_HEADERS`, and `RESEND_API_KEY`. Staging alone also has
+`CAPSTONE_STAGING_EMAIL_RECIPIENTS`. `OTEL_EXPORTER_OTLP_ENDPOINT` is non-secret. The migration job
+has only its distinct migration `DATABASE_URL`; recovery and initialization credentials are absent.
+The validator rejects extra, plaintext, wrongly scoped, App-level, or build-time secrets.
 
-```text
-BETTER_AUTH_SECRET
-DATABASE_URL
-OPENROUTER_API_KEY
-OTEL_EXPORTER_OTLP_HEADERS
-RESEND_API_KEY
-```
-
-`OTEL_EXPORTER_OTLP_ENDPOINT` is a non-secret service variable. The steady `PRE_DEPLOY` job
-receives only its distinct migration `DATABASE_URL`. A recovery role is absent.
-
-During first provisioning only, the temporary initialization job receives two distinct bootstrap
-database URLs, the bounded initialization document, and the short-lived catalog key where needed.
-It receives no final database role, Better Auth, Resend, or New Relic credential. Remove the job
-and variables and revoke those temporary authorities before the final service activates.
-
-The read-only live validator rejects missing, extra, wrongly scoped, plaintext, App-level, or
-build-time secrets and retained initialization configuration. No secret may be a Docker build
-argument.
-
-## Rotation order and impact
-
-- **Better Auth:** schedule maintenance because rotation invalidates cookies and cursors. Update
-  only the service, verify authentication, then revoke the old value.
-- **Application database role:** create a least-privilege replacement restricted to both existing
-  egress `/32`s, update only the service, force new connections, prove DML and DDL/admin denial,
-  terminate old sessions, then revoke.
-- **Migration database role:** rotate separately, restrict both `/32`s, update only the job, run a
-  safe migration metadata check, prove the service cannot use it, then revoke.
-- **Recovery/default database role:** keep only in Bitwarden or an authorized isolated recovery
-  environment; never install it in the normal App.
-- **OpenRouter:** preserve approved privacy and price controls, update only the service, refresh the
-  catalog, run a separately authorized minimal paid smoke, then revoke.
-- **Resend:** use a send-only key restricted to `mail.capstone.com.ec`, keep tracking disabled,
-  update only the service, send one controlled template, then revoke.
-- **New Relic:** replace only the service's license-bearing header and verify OTLP plus bounded log
+- **Better Auth:** update the service only; rotation invalidates cookies and cursors.
+- **Application database role:** replace the environment's least-privilege role, force new
+  connections, prove DML plus DDL/admin denial, then revoke. Production retains both egress `/32`s;
+  staging retains strict `verify-full` public connectivity without claiming an IP allowlist.
+- **Migration role:** rotate separately in the job, prove migration metadata access and service
+  denial, then revoke.
+- **OpenRouter:** preserve privacy/price policy, use the environment's dedicated key, refresh the
+  catalog, authorize any paid smoke separately, then revoke.
+- **Resend:** production uses its existing `mail.capstone.com.ec` key and sender. Staging uses a
+  separate send-only key restricted to `staging.mail.capstone.com.ec`, the exact staging sender,
+  and the 1–10-recipient allowlist. Prove a rejected recipient makes no provider request.
+- **New Relic:** replace only the environment's license-bearing header; verify OTLP and bounded log
   mirror delivery before revocation.
-- **GitHub source integration:** review repository-only access and branch protections before
-  replacing/re-authorizing it. It is not a runtime secret.
-- **DigitalOcean deployment token:** keep the pinned App ID and minimum deploy/read scope, replace
-  it in the protected GitHub environment, run a read-only audit, then revoke the old token.
-- **Provisioning, console, or teardown authority:** mint only for the separately authorized
-  operation and revoke immediately. Delete authority is granted only after domain release.
+- **GitHub/DigitalOcean:** preserve repository-only source access, protected pointers, fixed App
+  IDs, environment separation, and minimum deployment-token scopes.
 
-Never expose values in shell arguments/history, console transcripts, environment dumps,
-build/deploy/runtime/crash logs, telemetry, provider payloads, process metadata, or evidence. If
-compromise is suspected, revoke first when safe, terminate affected sessions/connections, enable
-maintenance for write-authority risk, and follow [incident response](./incident-response.md).
+First-provisioning initialization roles, document, and catalog key are short-lived and never
+rotated into steady service. Recovery credentials remain in Bitwarden or an isolated authorized
+recovery environment only.
+
+Never expose secrets through shell arguments/history, environment dumps, console transcripts,
+screenshots, logs, telemetry, provider payloads, or evidence. For suspected compromise, revoke
+when safe, terminate affected sessions/connections, freeze releases, and follow
+[Incident response](./incident-response.md).

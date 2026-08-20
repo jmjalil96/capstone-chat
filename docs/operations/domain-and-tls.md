@@ -1,6 +1,7 @@
 # Domain, managed edge, and TLS
 
-The application origin remains exactly `https://chat.capstone.com.ec`; transactional mail uses
+The hosted origins are exactly `https://staging.chat.capstone.com.ec` and
+`https://chat.capstone.com.ec`; their mail domains are `staging.mail.capstone.com.ec` and
 `mail.capstone.com.ec`. DigitalOcean App Platform and its Cloudflare-backed edge terminate public
 TLS and can process plaintext prompts, responses, cookies, and identity links. Domain attachment is
 permitted under the owner's August 12, 2026 acceptance of the current DPA, subprocessors,
@@ -21,23 +22,23 @@ challenges, credentials, full provider responses, employee content, or identity-
 2. Inspect CAA. If present, it must authorize both `letsencrypt.org` and `pki.goog`; otherwise stop
    until the owner approves the exact DNS correction. A prior planning query is not launch evidence.
 3. Fetch the current App spec and provider-generated `.ondigitalocean.app` target. Confirm the App
-   ID, managed `ric` region, Dedicated Egress, health-only maintenance or ready service state, and
-   absence of any conflicting domain. Never copy a historical target.
-4. With the release pointer frozen to the accepted source commit, attach exactly
-   `chat.capstone.com.ec` as `PRIMARY` with `minimum_tls_version: "1.2"` and no App-managed DNS
-   `zone`. Preserve the provider `DEFAULT` starter domain returned by the live spec.
+   ID, managed `ric` region, expected environment egress policy, source revision, and absence of
+   any conflicting domain. Never copy a historical target.
+4. With the release pointer frozen to the accepted source commit, attach only the environment's
+   fixed hostname as `PRIMARY` with `minimum_tls_version: "1.2"` and no App-managed DNS `zone`.
+   Preserve the provider `DEFAULT` starter domain returned by the live spec.
 5. At Hostinger authoritative DNS, remove conflicting `A`/`AAAA` records and publish a DNS-only
-   CNAME from `chat` to the current provider target. Do not add another CDN/proxy, wildcard,
+   CNAME from `chat` or `staging.chat` to the current provider target. Do not add another CDN/proxy, wildcard,
    secondary authenticated origin, direct service address, or App-managed zone.
 6. Preserve DigitalOcean's literal `${STARTER_DOMAIN}` authority binding in both the desired and
-   active ingress specs. It must redirect over HTTPS with status 308 to `chat.capstone.com.ec`,
+   active ingress specs. It must redirect over HTTPS with status 308 to the environment's primary,
    without a replacement URI so path and query survive. Independently fetch `default_ingress` and
    prove that resolved starter hostname follows this rule; never substitute the fetched hostname
    into the App spec. The starter domain must not establish an independent authenticated origin.
 7. With the custom domain attached, introduce the custom-domain-only edge controls together:
    disable App Platform edge caching and email obfuscation, and leave enhanced threat control
    disabled for this authenticated streaming service. These fields are unavailable and remain
-   absent during bootstrap/egress while only the starter domain exists. A future threat-control
+   absent until the custom domain exists. A future threat-control
    change requires measured auth, cancellation, and streaming evidence.
 8. Wait for managed certificate issuance. Verify public chain, hostname, validity, renewal state,
    minimum TLS, HTTP-to-primary HTTPS redirect, and the provider domain's redirect externally.
@@ -80,11 +81,12 @@ before proceeding.
 
 ## Email domain
 
-1. In Resend, verify `mail.capstone.com.ec` and publish only the exact provider-issued SPF/DKIM
-   records. Do not reuse the application CNAME or enable inbound mail.
-2. Confirm `Capstone Chat <no-reply@mail.capstone.com.ec>`, a send-only domain-restricted key, and
-   disabled open/click tracking.
-3. Final service readiness alone does not authorize an invitation. After every pre-invitation gate
+1. In Resend, verify each mail domain separately and publish only the exact provider-issued
+   SPF/DKIM records. Do not reuse the application CNAME or enable inbound mail.
+2. Confirm the exact environment sender, a dedicated send-only domain-restricted key, and disabled
+   tracking. Staging additionally requires `CAPSTONE_STAGING_EMAIL_RECIPIENTS` and may send only to
+   those normalized addresses.
+3. Production readiness alone does not authorize an invitation. After every pre-invitation gate
    in [Provision and deploy](./provision-and-deploy.md) passes, send the initial owner invitation as
    the final controlled email gate. Verify invitation, verification, and reset delivery,
    production-origin fragment links, Spanish HTML, plain text, expiry, and current desktop/mobile

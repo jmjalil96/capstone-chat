@@ -1,7 +1,7 @@
 # Capstone Chat v1 PRD
 
 Status: locked decision baseline  
-Last updated: 2026-08-15
+Last updated: 2026-08-20
 
 This directory records only the Capstone Chat decisions explicitly approved during product discovery. It is the baseline for continued design and implementation.
 
@@ -98,6 +98,23 @@ gate, protected release-pointer branches remove the source-fetch race, runtime/p
 identity replaces digest identity, and rollback is a reviewed forward `git revert`. The same
 amendment records the explicitly accepted loss of byte-identical artifact recovery and the retained
 staged provisioning, egress, database, secret, privacy, and recovery gates.
+
+The August 20, 2026 staging decision supersedes managed load rehearsal and routine validation on
+the closed production stack. Every accepted `main` commit now advances a protected staging source
+pointer without force and is built, migrated, activated, contract-validated, and readiness-checked
+on a persistent staging App before it may be selected for production. Staging uses
+`NODE_ENV=production`, `CAPSTONE_ENVIRONMENT=staging`, the fixed
+`https://staging.chat.capstone.com.ec` origin, a dedicated low-limit OpenRouter key, a dedicated
+Resend sender with an application-enforced recipient allowlist, synthetic data, a separate PS-5
+database, one 512 MiB service, and one 512 MiB migration job without Dedicated Egress. Production
+retains its existing origin, sizes, credentials, Dedicated Egress, edge policy, and authoritative
+database. Both environments use the same Dockerfile, normal server command, migration-only
+`PRE_DEPLOY` job, and focused read-only contract validator. This does not restore image/digest
+publication, byte-identical rebuild claims, hosted fake-model load infrastructure, or a routine
+source-preparation operation. Provider-native health bootstrap remains a first-provisioning or
+controlled-recovery tool only. Isolated PITR and cold-recreation exercises remain distinct
+recovery rehearsals. The implementation boundary is recorded in the
+[staging and deployment simplification plan](../implementation/staging-deployment-simplification-plan.md).
 
 The earlier
 [DigitalOcean Droplet and PlanetScale amendment](../implementation/08-digitalocean-planetscale-amendment-plan.md),

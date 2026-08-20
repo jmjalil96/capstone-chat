@@ -7,12 +7,13 @@ OTLP, and the deployment, recovery, load, browser, accessibility, and operator g
 Approved employees can use the complete conversation experience, choose Fast, Balanced, or Pro for
 each next response, and continue long selected branches through bounded backend-owned compaction.
 
-The approved provisional production candidate is one DigitalOcean App Platform dynamic service in
-`ric`, sized `apps-s-1vcpu-1gb-fixed`, with one 512 MiB `PRE_DEPLOY` migration job and paid
-Dedicated Egress. PlanetScale Postgres remains the only application-data authority: one PS-5 ARM
-Single Node cluster in AWS `us-east-1`, initially 10 GB with a hard 15 GB ceiling. Both exclusive
-egress IPv4 addresses are allowlisted separately for the applicable least-privilege database roles,
-and every connection uses direct port 5432 with `sslmode=verify-full`.
+Hosted releases follow one staging-first path. Staging uses one 512 MiB App Platform service, one
+512 MiB `PRE_DEPLOY` migration job, an independent PS-5 ARM Single Node database, synthetic data,
+dedicated low-limit provider keys, and no Dedicated Egress. Production keeps one
+`apps-s-1vcpu-1gb-fixed` service, one 512 MiB migration job, paid Dedicated Egress, and its existing
+authoritative PS-5 database. Both Apps run in `ric`; both databases are in AWS `us-east-1`, start at
+10 GB, and have a hard 15 GB ceiling. Production allowlists both exclusive egress IPv4 addresses;
+all hosted connections use direct port 5432 with `sslmode=verify-full`.
 
 App Platform and Cloudflare provide managed ingress and TLS. Fastify accepts only the documented
 `do-connecting-ip` address claim after stripping every forwarded alternative. New Relic receives
@@ -26,21 +27,16 @@ Bitwarden owner; one Uptime check may add USD 1 if it is not included. At the 15
 it is approximately USD 44.63–45.63 before taxes, variable backup/network charges, temporary
 resources, and model use. OpenRouter spend is separate and remains hard-capped by the application
 at USD 100 per workspace month.
-The deferred second Bitwarden recovery owner remains a visible launch risk. The topology remains
-unaccepted until it passes the closed production-stack checks in the committed runbooks. On August
-13, 2026, the owner explicitly replaced the two disposable managed rehearsals with direct staged
-production provisioning and accepted DigitalOcean's current feature-preview label for the
-selected compute sizes. This explicitly waives the two managed 20-employee/40-stream passes; the
-two clean one-CPU/one-GiB container repetitions are the accepted capacity evidence because the
-fake load server correctly refuses production mode and the real production hostname. The empty,
-closed production service still requires bounded real-path smoke coverage for source identity,
-egress, database, TLS, migration, readiness, secret isolation, telemetry, streaming/cancellation,
-and Ecuador/browser/accessibility. No employee is invited until those checks plus isolated aged
-PITR and controlled cold recreation pass. The initial owner invitation is the final controlled
-email gate; no second employee is invited until invitation, verification, and password-reset
-delivery are proven and final acceptance is recorded. The owner accepted a best-effort maximum
-24-hour domain-binding exception for accidental App deletion; controlled recovery keeps the
-four-hour RTO.
+The deferred second Bitwarden recovery owner remains a visible launch risk. Every accepted `main`
+commit is source-built, migrated, contract-validated, and readiness-checked in persistent staging
+before manual protected production approval can select that exact commit. Deterministic load
+testing remains local/container-only and runs at the staging-sized one-CPU/512-MiB limit. The empty
+production service still requires bounded real-path coverage for source identity, egress, database,
+TLS, migration, readiness, secret isolation, telemetry, streaming/cancellation, and
+Ecuador/browser/accessibility. No employee is invited until those checks plus isolated aged PITR
+and controlled cold recreation pass. The initial owner invitation is the final controlled email
+gate. The owner-approved maximum 24-hour domain-binding exception applies only to accidental App
+deletion; controlled recovery keeps the four-hour RTO.
 
 Earlier Render, raw-Droplet, RIC1/NYC3 host, Caddy, systemd, UFW, Volume, and Fluent Bit records are
 historical evidence only. They are not alternate production instructions.
@@ -50,8 +46,8 @@ Real inference is an explicit `MODEL_GATEWAY=openrouter` opt-in and requires a d
 validated catalog, and a fresh privacy attestation. No DigitalOcean, PlanetScale, GitHub Package,
 Resend, New Relic, DNS, paid OpenRouter, or recovery resource is created by repository setup.
 Production acceptance remains a separate operator exercise with evidence from the committed
-runbooks; the direct-production decision authorizes the staged production target, not a bypass of
-its security-sensitive provisioning order.
+runbooks. A successful staging deployment is required evidence, not authority to bypass protected
+production approval or its security-sensitive provisioning order.
 
 ## Prerequisites
 
@@ -465,7 +461,7 @@ report that the service is unavailable. Restart it with `docker compose start po
 | `pnpm model-policy:bootstrap …` | Create the explicit simulated or real workspace model/cost policy |
 | `pnpm model-policy:attest …` | Renew the content-free OpenRouter privacy attestation for an existing real policy |
 | `pnpm model-catalog:refresh` | Revalidate approved real OpenRouter models and print a metadata-only summary |
-| `pnpm production:initialize` | Run the latched empty-database initialization contract; reserved for the temporary authorized App Platform job |
+| `pnpm environment:initialize` | Run the schema-1 latched empty-database initialization contract; reserved for a temporary authorized hosted job |
 | `pnpm --filter @capstone/api auth:schema:generate` | Regenerate the reviewed Better Auth Drizzle schema with the pinned CLI |
 
 Use `pnpm run ci`, not `pnpm ci`: `ci` is also a built-in pnpm install alias and does not invoke the
@@ -522,13 +518,11 @@ harness additionally refuses the production origin, credentials in the target UR
 confirmations, a nonempty or mismatched fixture database, or an invalid NDJSON lifecycle. Its report
 contains only safe identifiers, counts, resource measurements, and latency percentiles. Delete the
 disposable database after the wrapper stops. A source/`tsx` load server can still aid debugging, but
-it is not managed capacity evidence. Historical Render and raw-Droplet constraints/results remain
-recorded in superseded implementation plans only. On August 13, 2026, the owner explicitly waived
-a managed repetition of this synthetic load test and accepted the two clean one-CPU/one-GiB
-container runs as capacity evidence. The load server remains prohibited on the production origin
-and in production mode. The closed production service instead receives bounded real-path
-streaming, deployment, rollback, secret, edge, and recovery smokes without test-only endpoints or
-a fake gateway.
+it is never hosted. Historical Render and raw-Droplet constraints/results remain in superseded
+implementation plans only. Run two clean one-CPU/512-MiB built-container repetitions as the
+staging-sized deterministic capacity gate. Hosted Apps instead receive bounded real-path streaming,
+deployment, forward-revert, secret, edge, and recovery smokes without test-only endpoints or a fake
+gateway.
 
 GitHub Actions runs formatting/linting, repository and operations validation, type checking, clean
 migrations, unit/PostgreSQL integration tests, production builds, the bundle report, dependency
@@ -536,10 +530,12 @@ audit, and a non-root container startup/static/API smoke as named steps in one q
 Playwright remains separate. CI uses only synthetic identities, a test auth secret, fake providers,
 and job-local PostgreSQL. It builds but does not publish the production Dockerfile.
 
-The protected manual deployment workflow accepts only the current green `main` commit. It advances
-`app-platform-production` by non-force fast-forward, asks App Platform to build that source with
-autodeploy disabled, and accepts the release only when the service, migration job, and public
-readiness report the authorized commit. First provisioning, initialization, configuration,
+After quality and Playwright succeed for a `main` push, CI automatically fast-forwards the staging
+pointer, deploys, validates both component SHAs, and verifies readiness. The protected manual
+production workflow accepts only a fixed staging-accepted commit reachable from `main` and strictly
+ahead of production. It advances `app-platform-production` without force, asks App Platform to
+build with autodeploy disabled, and accepts only matching service, migration-job, and readiness
+revisions. First provisioning, initialization, configuration,
 teardown, paid smoke, and recovery remain separately authorized.
 
 ## Auth schema regeneration
@@ -564,22 +560,24 @@ object through the process.
 | Variable | Local example | Meaning |
 | --- | --- | --- |
 | `NODE_ENV` | `development` | `development`, `test`, or `production` |
-| `HOST` | `127.0.0.1` | Fastify listen address; production requires `0.0.0.0` inside App Platform |
+| `CAPSTONE_ENVIRONMENT` | `development` | Defaults only for non-production Node; hosted runs require `staging` or `production` |
+| `HOST` | `127.0.0.1` | Fastify listen address; hosted environments require `0.0.0.0` |
 | `PORT` | `3000` | Fastify listen port |
 | `DATABASE_URL` | `postgresql://capstone:capstone@127.0.0.1:5432/capstone_chat` | PostgreSQL connection URL |
-| `PUBLIC_ORIGIN` | `http://localhost:5173` | Exact browser origin, with no path; HTTPS is required in production |
-| `BETTER_AUTH_SECRET` | `capstone-chat-local-auth-secret-not-for-production-use` | Better Auth signing secret, at least 32 characters; explicit and secret in production |
-| `EMAIL_DELIVERY` | `fake` | `fake` or `disabled` outside production; production requires `resend` |
+| `PUBLIC_ORIGIN` | `http://localhost:5173` | Loopback locally; the staging and production origins are fixed exactly |
+| `BETTER_AUTH_SECRET` | `capstone-chat-local-auth-secret-not-for-production-use` | Better Auth signing secret, at least 32 characters; explicit and secret when hosted |
+| `EMAIL_DELIVERY` | `fake` | Local fake/disabled; both hosted environments require `resend` |
 | `RESEND_API_KEY` | unset | Backend-only Resend key required with `EMAIL_DELIVERY=resend` |
-| `EMAIL_FROM` | unset | Approved sender; production requires `Capstone Chat <no-reply@mail.capstone.com.ec>` |
+| `EMAIL_FROM` | unset | Fixed environment sender when hosted |
+| `CAPSTONE_STAGING_EMAIL_RECIPIENTS` | unset | Staging-only comma-separated allowlist of 1–10 unique normalized addresses |
 | `LOG_LEVEL` | `info` | Pino log level |
-| `MODEL_GATEWAY` | `fake` | `fake` or `openrouter`; production requires `openrouter` |
+| `MODEL_GATEWAY` | `fake` | `fake` or development opt-in `openrouter`; hosted environments require `openrouter` |
 | `OPENROUTER_API_KEY` | unset | Backend-only key required when `MODEL_GATEWAY=openrouter` |
-| `WEB_ASSETS` | unset | Exact `production-build` mode for the deployed production image or managed test rehearsal; ordinary development/test leaves assets to Vite |
-| `DEPLOYMENT_REVISION` | `development` | Safe local label; production requires the full 40-character deployed Git revision |
-| `DEPLOYMENT_TARGET` | unset | Production requires exactly `digitalocean-app-platform` |
-| `CAPSTONE_SECRET_SOURCE` | unset | Production requires exactly `platform-environment` |
-| `CLIENT_ADDRESS_SOURCE` | `socket` | `socket` for local/test; production requires exactly `digitalocean-app-platform` |
+| `WEB_ASSETS` | unset | Hosted images require exact `production-build`; development/test leaves assets to Vite |
+| `DEPLOYMENT_REVISION` | `development` | Safe local label; hosted runs require the full deployed Git revision |
+| `DEPLOYMENT_TARGET` | unset | Hosted runs require exactly `digitalocean-app-platform` |
+| `CAPSTONE_SECRET_SOURCE` | unset | Hosted runs require exactly `platform-environment` |
+| `CLIENT_ADDRESS_SOURCE` | `socket` | Local socket; hosted runs require exactly `digitalocean-app-platform` |
 | `CAPSTONE_SECRET_FILE` | unset | Prohibited for the normal production service/job; retained only for authenticated offline recovery tooling that explicitly requires it |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | New Relic regional HTTPS OTLP origin; required in production |
 | `OTEL_EXPORTER_OTLP_HEADERS` | unset | Exactly one backend-only `api-key=…` header; required in production |
@@ -633,22 +631,22 @@ docker build --file apps/api/Dockerfile \
 The API image runs as the non-root `node` user and includes the compiled runtime, migrations, and
 `apps/web/dist`. Fastify serves the SPA and API from the same origin with explicit API-404, fallback,
 cache, security-header, and streaming boundaries. The committed
-[`deploy/app-platform`](./deploy/app-platform/) contains four source contracts and one read-only
-live-state validator. App Platform builds the protected release-pointer commit with
+[`deploy/app-platform`](./deploy/app-platform/) contains one common hosted contract, fixed staging
+and production overlays, and one read-only live-state validator. App Platform builds each protected release-pointer commit with
 `apps/api/Dockerfile` for one non-root service and one non-root `PRE_DEPLOY` migration job.
 `DEPLOYMENT_REVISION=${_self.COMMIT_HASH}` is injected at runtime; component source hashes and
 public readiness must agree. PlanetScale remains the only authoritative application data store.
 
-Production secrets originate in Bitwarden and enter only encrypted, component-scoped App Platform
-variables. The service receives the application database role and runtime-provider credentials; the
-steady migration job receives only its distinct migration `DATABASE_URL`; the recovery role is
-never installed. API startup never applies migrations. Protected deployment may select only the
-current checked `main` release. Compatible rollback is a reviewed `git revert`, green CI, and
-normal forward source deployment through the **current** App configuration; DigitalOcean's native
-rollback action is not production authority.
+Hosted secrets enter only encrypted, component-scoped App Platform variables, with separate
+staging and production provider authority. The service receives its application database role and
+runtime-provider credentials; the migration job receives only its distinct migration
+`DATABASE_URL`; the recovery role is never installed. API startup never applies migrations.
+Staging automatically accepts an exact green `main` commit; production manually selects that fixed,
+staging-accepted revision behind protected approval. Compatible rollback is a reviewed `git revert`,
+green CI, staging, and normal forward production deployment; native rollback is not authority.
 
-Empty-database provisioning first runs a secret-free health-only service to acquire the two stable
-Dedicated Egress addresses. After PlanetScale restrictions are installed, a temporary job performs
+First provisioning may temporarily run the minimal `health-bootstrap` command to establish domain
+or production egress without product authority. After database restrictions are installed, a temporary job performs
 ordered migration, database-only identity bootstrap, catalog validation, and model-policy bootstrap
 behind a durable initialization-document hash latch. Operators then remove its configuration,
 revoke every temporary role/key, deploy the steady service, and send
@@ -656,9 +654,10 @@ the one initial administrator invitation only after every pre-invitation product
 initialized or restored database must verify the existing latch and authority; it must never reuse
 the initialization document/job/key or resend that invitation.
 
-`EMAIL_DELIVERY=disabled` is an honest non-production validation mode, not a launch-capable setup.
-Production rejects disabled/fake email, the fake model gateway, a noncanonical origin, absent release
-metadata, or incomplete New Relic OTLP configuration. OpenRouter mode requires its key and a
+`EMAIL_DELIVERY=disabled` is a local validation mode, not a hosted setup. Staging and production
+reject disabled/fake email, the fake model gateway, cross-environment origin/sender values, absent
+release metadata, or incomplete New Relic OTLP configuration. Staging additionally enforces its
+normalized recipient allowlist before any provider call. OpenRouter mode requires its key and a
 previously bootstrapped real policy with a fresh privacy attestation. Identity action credentials
 are delivered in URL fragments, removed immediately when the SPA starts, kept only in memory, and
 sent to Better Auth in JSON rather than entering request paths, queries, storage, or referrers.

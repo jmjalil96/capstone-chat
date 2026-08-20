@@ -1,12 +1,12 @@
 import { createServer, type Server } from "node:http";
 
-export interface EgressBootstrapServerOptions {
+export interface HealthBootstrapServerOptions {
   readonly deploymentRevision: string;
 }
 
 const healthPaths = new Set(["/api/health/live", "/api/health/ready"]);
 
-export function createEgressBootstrapServer(options: EgressBootstrapServerOptions): Server {
+export function createHealthBootstrapServer(options: HealthBootstrapServerOptions): Server {
   return createServer((request, response) => {
     response.setHeader("cache-control", "no-store");
     response.setHeader("content-type", "application/json; charset=utf-8");

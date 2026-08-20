@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { GatewayEvent, GenerationRequest } from "../src/generations/model-gateway.js";
-import { LoadModelGateway, loadRehearsalSteps } from "../src/load/load-gateway.js";
+import { LoadModelGateway, loadFixtureSteps } from "../src/load/load-gateway.js";
 import { initialTierModels } from "../src/model-policy/catalog.js";
 import { testEffectiveParameters } from "./support/generation.js";
 
@@ -58,7 +58,7 @@ describe("load rehearsal gateway", () => {
   });
 
   it("echoes only the synthetic run canary in a normal deterministic response", () => {
-    const steps = loadRehearsalSteps(
+    const steps = loadFixtureSteps(
       request("CAPSTONE_LOAD_V1:00000000-0000-4000-8000-000000000001:1:1:0:normal"),
     );
     expect(steps).toHaveLength(22);
@@ -72,22 +72,22 @@ describe("load rehearsal gateway", () => {
 
   it("provides bounded failure, cancellation, slow-reader, and compaction scripts", () => {
     const prefix = "CAPSTONE_LOAD_V1:00000000-0000-4000-8000-000000000001:1:1:0:";
-    const failure = loadRehearsalSteps(request(`${prefix}failure`));
+    const failure = loadFixtureSteps(request(`${prefix}failure`));
     expect(failure).toHaveLength(7);
     expect(failure.at(-1)).toMatchObject({
       delayMilliseconds: 12_500,
       event: { type: "response.failed" },
     });
-    expect(loadRehearsalSteps(request(`${prefix}cancel`))).toHaveLength(22);
-    expect(loadRehearsalSteps(request(`${prefix}large`))).toHaveLength(822);
-    expect(loadRehearsalSteps(request(`${prefix}seed`))).toHaveLength(5);
-    const slow = loadRehearsalSteps(request(`${prefix}slow`));
+    expect(loadFixtureSteps(request(`${prefix}cancel`))).toHaveLength(22);
+    expect(loadFixtureSteps(request(`${prefix}large`))).toHaveLength(822);
+    expect(loadFixtureSteps(request(`${prefix}seed`))).toHaveLength(5);
+    const slow = loadFixtureSteps(request(`${prefix}slow`));
     expect(slow).toHaveLength(98);
     expect(slow.at(-1)?.delayMilliseconds).toBe(15_000);
-    expect(loadRehearsalSteps(request("ignored", "compaction")).at(-1)?.event.type).toBe(
+    expect(loadFixtureSteps(request("ignored", "compaction")).at(-1)?.event.type).toBe(
       "response.completed",
     );
-    expect(loadRehearsalSteps(request("ignored", "title"))).toMatchObject([
+    expect(loadFixtureSteps(request("ignored", "title"))).toMatchObject([
       { event: { type: "generation.metadata" } },
       { delayMilliseconds: 100, event: { type: "content.delta" } },
       { delayMilliseconds: 200, event: { type: "response.completed" } },
@@ -95,7 +95,7 @@ describe("load rehearsal gateway", () => {
   });
 
   it("fails closed for an ordinary message", () => {
-    expect(loadRehearsalSteps(request("ordinary employee content"))).toEqual([
+    expect(loadFixtureSteps(request("ordinary employee content"))).toEqual([
       {
         event: {
           errorCode: "GENERATION_FAILED",
@@ -114,7 +114,7 @@ describe("load rehearsal gateway", () => {
         new AbortController().signal,
       ),
     ).resolves.toMatchObject({
-      accounting: { metadata: { provider: "capstone-load-rehearsal" } },
+      accounting: { metadata: { provider: "capstone-local-load" } },
       status: "found",
       usage: { inputTokens: 32, outputTokens: 4 },
     });
@@ -135,7 +135,7 @@ describe("load rehearsal gateway", () => {
     ).resolves.toMatchObject({
       accounting: {
         metadata: {
-          provider: "capstone-load-rehearsal",
+          provider: "capstone-local-load",
           resolvedModel: initialTierModels.fast,
         },
       },

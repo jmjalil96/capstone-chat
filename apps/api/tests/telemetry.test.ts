@@ -44,7 +44,7 @@ describe("content-free application telemetry", () => {
     const telemetry = createApplicationTelemetry(
       {
         endpoint: null,
-        environment: "test",
+        environment: "development",
         headers: {},
         release: "release-abc123",
       },

@@ -189,6 +189,12 @@ Phase 11 initializes Fast, Balanced, and Pro with reasoning settings `off/0`, `o
 validation ratios, capability-resolution semantics, and concurrency verification are locked by the
 [Phase 11 plan](../implementation/11-workspace-behavior-controls-plan.md).
 
+Persistent staging uses one 512 MiB App service, one 512 MiB migration job when deploying, and one
+independent PS-5 ARM Single Node database. It has no Dedicated Egress. Its OpenRouter credential is
+environment-dedicated and provider-limited below production exposure; staging email uses a separate
+send-only domain key plus a 1–10-recipient allowlist. Staging spend and provider limits remain
+separate from production and must be re-approved when provider pricing or terms change.
+
 ## Deferred
 
 - Hard per-employee budget enforcement

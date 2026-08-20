@@ -161,3 +161,54 @@ jobs:
             apps/web/test-results/
           if-no-files-found: ignore
           retention-days: 14
+
+  staging:
+    name: Deploy accepted commit to staging
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    needs:
+      - quality
+      - playwright
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    permissions:
+      contents: write
+    environment:
+      name: staging
+      url: https://staging.chat.capstone.com.ec
+    steps:
+      - name: Check out accepted main commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
+        with:
+          version: 11.20.0
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24.13.0
+          cache: pnpm
+
+      - name: Install locked validator dependency
+        run: pnpm install --frozen-lockfile --ignore-scripts --filter capstone-chat
+
+      - name: Install doctl
+        uses: digitalocean/action-doctl@3cb3953159719656269e044e0e24ca16dd2a690f # v2.5.2
+        with:
+          no_auth: true
+          version: 1.166.0
+
+      - name: Deploy staging source
+        uses: ./.github/actions/deploy-app-platform
+        with:
+          access-token: ${{ secrets.DIGITALOCEAN_DEPLOY_TOKEN }}
+          app-id: ${{ vars.DIGITALOCEAN_APP_ID }}
+          environment: staging
+          origin: https://staging.chat.capstone.com.ec
+          release-branch: app-platform-staging
+          revision: ${{ github.sha }}

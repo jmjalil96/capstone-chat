@@ -140,6 +140,7 @@ describe.sequential("identity integration", () => {
       url: `/api/auth${path}`,
       headers: {
         "content-type": "application/json",
+        "do-connecting-ip": "203.0.113.10",
         origin: publicOrigin,
         ...(cookie === undefined ? {} : { cookie }),
         ...extraHeaders,
@@ -1168,20 +1169,28 @@ describe.sequential("identity integration", () => {
       {
         ...loadConfig({
           BETTER_AUTH_SECRET: "capstone-chat-test-secret-with-more-than-thirty-two-characters",
-          DATABASE_URL: databaseUrl,
+          CAPSTONE_ENVIRONMENT: "production",
+          CAPSTONE_SECRET_SOURCE: "platform-environment",
+          CLIENT_ADDRESS_SOURCE: "digitalocean-app-platform",
+          DATABASE_URL:
+            "postgresql://app:password@database.example:5432/capstone?sslmode=verify-full",
           DEPLOYMENT_REVISION: "0123456789abcdef0123456789abcdef01234567",
+          DEPLOYMENT_TARGET: "digitalocean-app-platform",
           EMAIL_DELIVERY: "resend",
           EMAIL_FROM: "Capstone Chat <no-reply@mail.capstone.com.ec>",
+          HOST: "0.0.0.0",
           LOG_LEVEL: "silent",
           MODEL_GATEWAY: "openrouter",
-          NODE_ENV: "test",
+          NODE_ENV: "production",
           OPENROUTER_API_KEY: "test-openrouter-key-never-sent",
           OTEL_EXPORTER_OTLP_ENDPOINT: "https://otlp.nr-data.net",
           OTEL_EXPORTER_OTLP_HEADERS: "api-key=test-license-key",
+          PORT: "3000",
           PUBLIC_ORIGIN: productionOrigin,
           RESEND_API_KEY: "re_test_only",
+          WEB_ASSETS: "production-build",
         }),
-        nodeEnv: "production",
+        databaseUrl,
         publicOrigin: productionOrigin,
         webAssetsDirectory: null,
       },
@@ -1193,11 +1202,14 @@ describe.sequential("identity integration", () => {
       url: "/api/auth/sign-in/email",
       headers: {
         "content-type": "application/json",
+        "do-connecting-ip": "203.0.113.10",
+        host: "chat.capstone.com.ec",
         origin: productionOrigin,
+        "x-forwarded-proto": "https",
       },
       payload: { email: adminEmail, password: originalPassword },
     });
-    expect(productionSignIn.statusCode).toBe(200);
+    expect(productionSignIn.statusCode, productionSignIn.body).toBe(200);
     const productionCookies = setCookies(productionSignIn);
     expect(productionCookies).not.toEqual([]);
     expect(productionCookies.every((cookie) => /;\s*Secure/iu.test(cookie))).toBe(true);
@@ -1205,41 +1217,54 @@ describe.sequential("identity integration", () => {
 
     await app.shutdown();
     application = undefined;
-    const rehearsalOrigin = "https://rehearsal.chat.capstone.com.ec";
+    const stagingOrigin = "https://staging.chat.capstone.com.ec";
+    const stagingEmailSender = new ResendEmailSender({
+      apiKey: "re_test_only",
+      fetch: async () =>
+        new Response(JSON.stringify({ id: "49a3999c-0ce1-4ea6-ab68-afcd6dc2e794" }), {
+          headers: { "content-type": "application/json" },
+          status: 200,
+        }),
+      from: "Capstone Chat Staging <no-reply@staging.mail.capstone.com.ec>",
+    });
     app = createApplication(
       {
         ...loadConfig({
           BETTER_AUTH_SECRET: "capstone-chat-test-secret-with-more-than-thirty-two-characters",
           DATABASE_URL: databaseUrl,
-          EMAIL_DELIVERY: "disabled",
+          EMAIL_DELIVERY: "fake",
           LOG_LEVEL: "silent",
           MODEL_GATEWAY: "openrouter",
           NODE_ENV: "test",
           OPENROUTER_API_KEY: "test-key-not-used-by-the-injected-gateway",
-          PUBLIC_ORIGIN: rehearsalOrigin,
+          PUBLIC_ORIGIN: publicOrigin,
         }),
-        deploymentProfile: "managed-rehearsal",
-        openRouterApiKey: null,
-        publicOrigin: rehearsalOrigin,
+        applicationEnvironment: "staging",
+        publicOrigin: stagingOrigin,
       },
       {
-        emailSender: new FakeEmailSender(),
+        emailSender: stagingEmailSender,
         logMirror: null,
         modelGateway: inertProductionGateway,
       },
     );
     application = app;
-    const rehearsalSignIn = await app.server.inject({
-      headers: { "content-type": "application/json", origin: rehearsalOrigin },
+    const stagingSignIn = await app.server.inject({
+      headers: {
+        "content-type": "application/json",
+        host: "staging.chat.capstone.com.ec",
+        origin: stagingOrigin,
+        "x-forwarded-proto": "https",
+      },
       method: "POST",
       payload: { email: adminEmail, password: originalPassword },
       url: "/api/auth/sign-in/email",
     });
-    expect(rehearsalSignIn.statusCode).toBe(200);
-    expect(rehearsalSignIn.headers["strict-transport-security"]).toBe("max-age=31536000");
-    const rehearsalCookies = setCookies(rehearsalSignIn);
-    expect(rehearsalCookies).not.toEqual([]);
-    expect(rehearsalCookies.every((cookie) => /;\s*Secure/iu.test(cookie))).toBe(true);
+    expect(stagingSignIn.statusCode).toBe(200);
+    expect(stagingSignIn.headers["strict-transport-security"]).toBe("max-age=31536000");
+    const stagingCookies = setCookies(stagingSignIn);
+    expect(stagingCookies).not.toEqual([]);
+    expect(stagingCookies.every((cookie) => /;\s*Secure/iu.test(cookie))).toBe(true);
   });
 
   it("slides remembered database sessions and forwards the refreshed cookie", async () => {

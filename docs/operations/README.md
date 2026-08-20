@@ -1,57 +1,37 @@
-# Capstone Chat operations
+# Operations
 
-The active provisional Phase 8 path is one DigitalOcean App Platform source-built service in
-managed region `ric`, one source-built `PRE_DEPLOY` migration job, paid Dedicated Egress, and one
-PlanetScale Postgres PS-5 ARM Single Node cluster in AWS `us-east-1`. App Platform owns ingress,
-managed TLS, readiness-gated replacement, and its Cloudflare-backed edge. PlanetScale accepts
-direct `verify-full` port-5432 connections only from both exclusive egress IPv4 `/32`s and the
-exact role being used.
+Capstone Chat has two hosted application environments and one release path:
 
-The service candidate is one `apps-s-1vcpu-1gb-fixed` instance; the job is
-`apps-s-1vcpu-0.5gb` and exists only during deployment. The live DigitalOcean account currently
-labels both slugs feature preview. The owner explicitly accepted the selected slugs' current
-preview status for production on August 13, 2026; a later size change still requires a new
-capacity decision and evidence on that size.
+```text
+exact green main commit
+  -> protected source pointer
+  -> App Platform source build
+  -> migration-only PRE_DEPLOY
+  -> normal server
+  -> exact contract and readiness revision
+```
 
-GitHub Actions validates every release. App Platform builds `apps/api/Dockerfile` from the
-protected `app-platform-production` pointer with autodeploy disabled. A release is authoritative
-only when service/job `source_commit_hash` and public readiness match the exact green commit.
-Earlier Render, raw-Droplet, and GHCR/digest paths are historical only.
+Staging is persistent, synthetic-only, and the required pre-production gate. Production remains
+the authoritative employee environment and database. Source builds from one commit are expected to
+be functionally equivalent, not byte-identical. No registry publication, startup migration,
+backward pointer movement, native rollback, database replacement, or routine initialization is
+part of deployment.
 
-## Authority and privacy
-
-Repository implementation never authorizes an external mutation. Creating/deleting an App,
-egress pair, database branch/role, domain, Uptime check, credential, backup, or other paid resource
-requires a fresh grant naming target, maximum spend, lifetime, data class, and cleanup scope.
-Production DNS, credentials/data, deployment, email, paid inference, and PITR cutover remain
-separately gated.
-
-Bitwarden Teams in the Capstone organization is the recoverable secret source. One
-company-controlled owner has MFA and a sealed offline kit; the deferred second owner is a visible
-launch risk. DigitalOcean, PlanetScale, GitHub, DNS, New Relic, Resend, OpenRouter, Bitwarden, and
-the administrator mailbox use company ownership and MFA where supported.
-
-Never put credentials, employee content, raw provider bodies, secret-bearing App captures,
-database URLs, or identity-action links in tasks, arguments, logs, screenshots, CI artifacts, or
-evidence. App Platform/Cloudflare can process plaintext traffic under the owner's August 12, 2026
-acceptance; do not describe the path as end-to-end encrypted to the container.
+Repository implementation is not permission to create, mutate, deploy, spend, send email, call a
+paid model, change DNS, install a secret, or touch production data. Each external operation needs a
+separate grant naming its target, cost/data boundary, rollback, and cleanup.
 
 ## Routine inspection
 
-Before/after each deploy, daily during launch week, and weekly thereafter inspect:
+Before and after each deployment, inspect the exact service/job source commit, migration result,
+active/desired contract, domain, readiness revision, resource signals, database health, telemetry,
+email categories, provider budgets, and protected-pointer state. Production additionally requires
+exactly two assigned Dedicated Egress addresses and database `/32` restrictions. Staging must have
+no Dedicated Egress and no non-synthetic data.
 
-- App Platform build/deployment/job/domain/readiness, source commit, CPU, memory, restart, request,
-  latency, egress pair, encrypted-variable scope, and independent Uptime;
-- PlanetScale CPU/RAM, connections, locks, I/O, storage, WAL, backup schedule, oldest PITR point,
-  Query Insights, roles, and database-wide IP restrictions;
-- New Relic readiness/5xx/latency, response-start, generation outcomes, budgets, reconciliation,
-  pool waiting, Resend categories, OTLP, and bounded direct-log-mirror delivery/drop counts; and
-- protected-main/production-pointer state, CI result, offline Git bundle, Bitwarden recovery,
-  provider billing, and live cost estimates.
-
-Storage warns before 60% and requires action before the provider's 70% growth threshold; the hard
-ceiling is 15 GB. Resource exhaustion triggers an explicit sizing decision—not automatic resize,
-new services, or relaxed gates.
+The read-only validator in `deploy/app-platform/` is the deployment audit authority. Recovery
+evidence remains independently validated with `pnpm verify:recovery -- <safe-evidence.json>`.
+Recovery exercises are isolated PITR or controlled App recreation, not staging deployments.
 
 ## Runbooks
 
@@ -64,11 +44,7 @@ new services, or relaxed gates.
 - [Employee access](./employee-access.md)
 - [Domain and TLS](./domain-and-tls.md)
 
-The four non-secret contracts and read-only validator live in `deploy/app-platform/`. The operator
-must preserve exact protected Git commits, the source-controlled Dockerfile/contracts, an encrypted
-offline Git bundle, Bitwarden, and PlanetScale recovery material within the four-hour controlled
-recovery target.
-
-Evidence contains UTC timestamps, full source revision, deployment/build IDs, migration number,
-safe outcome, duration, provider sizes/regions, and operator role only. Stop if any step would
-change locked privacy, security, cost, retention, model, availability, or recovery policy.
+Evidence contains UTC time, environment, full source revision, deployment/build ID, migration,
+safe outcome, duration, provider size/region, and operator role only. Never retain credentials,
+database URLs, recipients, action URLs, prompts, responses, summaries, drafts, or raw provider
+payloads.

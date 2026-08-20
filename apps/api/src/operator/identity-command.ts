@@ -47,14 +47,14 @@ function role(argumentsMap: ReadonlyMap<string, string>): WorkspaceRole {
   return value;
 }
 
-function syntheticRehearsalEmail(value: string): string {
+function syntheticLocalEmail(value: string): string {
   const separator = value.lastIndexOf("@");
   const domain = value
     .slice(separator + 1)
     .trim()
     .toLowerCase();
   if (separator <= 0 || domain.length <= ".test".length || !domain.endsWith(".test")) {
-    throw new Error("The managed rehearsal administrator email must use the reserved .test TLD");
+    throw new Error("The isolated local administrator email must use the reserved .test TLD");
   }
   return value;
 }
@@ -81,14 +81,15 @@ async function run(): Promise<void> {
     invitationDelivery !== undefined &&
     (!invitationDisabled || config.nodeEnv !== "test" || config.emailDelivery !== "disabled")
   ) {
-    throw new Error(
-      "--invitation-delivery disabled is permitted only for the managed test rehearsal",
-    );
+    throw new Error("--invitation-delivery disabled is permitted only for isolated local tests");
   }
   const pool = createDatabasePool(config.databaseUrl);
   const database = createDatabase(pool);
   const identity = createIdentityService(database);
   const emailSender = createEmailSender(config.emailDelivery, {
+    ...(config.applicationEnvironment === "staging"
+      ? { allowedRecipients: config.stagingEmailRecipients }
+      : {}),
     emailFrom: config.emailFrom,
     resendApiKey: config.resendApiKey,
   });
@@ -97,7 +98,7 @@ async function run(): Promise<void> {
     if (command === "bootstrap") {
       const adminEmail = requiredOperatorArgument(argumentsMap, "--email");
       const result = await identity.bootstrap({
-        adminEmail: invitationDisabled ? syntheticRehearsalEmail(adminEmail) : adminEmail,
+        adminEmail: invitationDisabled ? syntheticLocalEmail(adminEmail) : adminEmail,
         displayName: requiredOperatorArgument(argumentsMap, "--name"),
         workspaceIdentity: workspaceIdentity(argumentsMap),
       });

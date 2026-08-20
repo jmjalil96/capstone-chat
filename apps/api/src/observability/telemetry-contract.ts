@@ -1,6 +1,6 @@
 import type { ClientErrorKind, ClientErrorRoute, GenerationModelTier } from "@capstone/protocol";
 
-export type TelemetryEnvironment = "development" | "managed-rehearsal" | "production" | "test";
+export type TelemetryEnvironment = "development" | "staging" | "production";
 export type TelemetryPurpose = "chat" | "compaction" | "title";
 export type TelemetryContextMode = "compacted" | "fallback" | "full";
 export type TelemetryOutcome = "cancelled" | "completed" | "failed" | "incomplete" | "rejected";

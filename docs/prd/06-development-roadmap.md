@@ -107,15 +107,16 @@ recorded in the
   is built from the same verified Git source commit and Dockerfile as the service. Launch has no
   autoscaling, scale-to-zero, second service, worker,
   application high availability, database high availability, read replica, or automatic failover.
-  On August 13, 2026, the owner explicitly replaced the two disposable managed rehearsal passes
-  with direct staged validation on the closed production stack and accepted the selected sizes'
-  current DigitalOcean feature-preview status. This explicitly waives the two managed
-  20-employee/40-stream passes and accepts the two clean one-CPU/one-GiB container repetitions as
-  capacity evidence; the test-only fake load server remains prohibited on the production origin
-  and in production mode. Before any invitation or real employee data, the empty production stack
-  must still pass bounded real-path source-identity, egress, database, edge-streaming, TLS,
-  migration, readiness, secret-isolation, telemetry, cancellation, Ecuador
-  latency/device/accessibility, authorization, failure-preservation, and forward-revert checks.
+  Persistent staging is the normal pre-production path. It uses one 512 MiB service and one
+  512 MiB migration job in `ric`, a separate PS-5 ARM Single Node database in `us-east-1`,
+  synthetic data, dedicated provider credentials, and no Dedicated Egress. It runs the normal
+  production-mode server at `https://staging.chat.capstone.com.ec`; the deterministic load server
+  remains local/container-only. Two clean one-CPU/512-MiB built-container repetitions are the
+  capacity gate. Before any invitation or real employee data, staging and the empty production
+  stack must pass bounded source-identity, database, edge-streaming, TLS, migration, readiness,
+  secret-isolation, telemetry, cancellation, Ecuador latency/device/accessibility, authorization,
+  failure-preservation, and forward-revert checks. Production additionally proves Dedicated
+  Egress and its database IP restrictions.
   The initial owner invitation is the final controlled email gate. No second employee is invited
   until invitation, verification, and password-reset delivery pass and final acceptance is
   recorded.

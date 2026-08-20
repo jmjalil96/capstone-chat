@@ -119,7 +119,7 @@ export interface NewRelicLogMirror {
 
 export interface NewRelicLogMirrorOptions {
   readonly apiKey: string;
-  readonly environment: "managed-rehearsal" | "production";
+  readonly environment: "staging" | "production";
   readonly fetch?: typeof fetch;
   readonly onDrop?: ((reason: LogMirrorDropReason, count: number) => void) | undefined;
   readonly otlpEndpoint: string;
