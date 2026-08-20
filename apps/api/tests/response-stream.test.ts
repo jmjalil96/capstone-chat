@@ -16,6 +16,7 @@ import type {
 } from "../src/generations/service.js";
 import { generationTuning } from "../src/generations/settings.js";
 import { buildTitleRequest } from "../src/generations/title-service.js";
+import { testEffectiveParameters } from "./support/generation.js";
 
 const started: StartedResponse = {
   admittedAt: new Date(),
@@ -23,6 +24,7 @@ const started: StartedResponse = {
   generationId: "00000000-0000-4000-8000-000000000002",
   messageId: "00000000-0000-4000-8000-000000000003",
   request: {
+    effectiveParameters: testEffectiveParameters(),
     history: [],
     message: { role: "user", text: "Synthetic request" },
     modelTier: "balanced",

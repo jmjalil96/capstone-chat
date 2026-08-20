@@ -1,4 +1,5 @@
 import type { GenerationModelTier } from "@capstone/protocol";
+import type { EffectiveModelParameters } from "../model-policy/effective-parameters.js";
 import { serializeSummaryFrame } from "./compaction-prompt.js";
 
 export type GatewayCompletionReason = "content_filter" | "length" | "refusal" | "stop";
@@ -66,6 +67,7 @@ export interface GenerationDerivedContext {
 export type GenerationPurpose = "chat" | "compaction" | "title";
 
 interface GenerationRequestBase {
+  readonly effectiveParameters: EffectiveModelParameters;
   readonly history: readonly GenerationContextMessage[];
   readonly message: GenerationContextMessage & { readonly role: "user" };
   /** Required by a real gateway; omitted only by legacy/fake Phase 4 fixtures. */

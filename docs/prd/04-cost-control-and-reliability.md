@@ -46,6 +46,9 @@ Rules:
 - Timing fields support measurement of time to first token, generation duration, and total latency.
 - Daily and monthly reporting is derived from generation records initially; no separate analytics system is introduced in v1.
 - Non-content generation metadata is retained for accounting after conversation content is permanently deleted.
+- Phase 11 keeps normalized reasoning tokens in the existing `reasoning_tokens` field and
+  administrator **Tokens de razonamiento** column. Raw reasoning content is never an accounting
+  input and never reaches persistence, logs, telemetry, reports, or the browser.
 
 ## Budget policy
 
@@ -59,12 +62,16 @@ Rules:
 - An optional hard employee limit may be added later.
 - Each tier has its own maximum output allowance.
 - Balanced is the default tier, while Pro may be governed more strictly.
+- The tier maximum output allowance is the complete provider output envelope: visible completion
+  plus hidden reasoning. A configured reasoning budget is a sub-cap within that envelope and is
+  never additive. When reasoning is enabled, policy validation reserves at least 1,024 tokens for
+  visible output.
 
 Before an OpenRouter call begins, Fastify atomically reserves a conservative estimated maximum cost:
 
 ```text
 estimated input cost
-+ permitted maximum output cost
++ full permitted visible-plus-hidden output cost
 = reservation
 ```
 
@@ -75,6 +82,13 @@ reserve -> generate -> settle actual cost -> release remainder
 ```
 
 The budget check and reservation occur in one PostgreSQL transaction with row locking so concurrent requests cannot independently spend the same remaining budget.
+
+Reservation remains conservative input cost plus the full total-output price ceiling, fixed request
+fee, and approved margin. It does not shrink when an effective reasoning control is approximate or
+unsupported. Actual provider cost remains settlement truth; normalized reasoning-token counts are
+diagnostic and do not recompute the charge. Explicit stop, timeout, provider failure, missing
+terminal usage, authoritative usage lookup, lookup failure, and expiry reconciliation retain their
+existing ambiguity and full-envelope safety behavior.
 
 Reservations expire. A reconciliation process identifies abandoned generations after an API crash and releases their unused reservations.
 
@@ -168,6 +182,12 @@ authoritative even when a generation, compaction, timeout, cancellation, or reco
 active. The 15-minute reservation expiry is deliberately longer than the five-minute generation
 ceiling and its bounded terminal accounting work, preventing the reconciler from racing a healthy
 request while still releasing crash-orphaned reservations promptly.
+
+Phase 11 initializes Fast, Balanced, and Pro with reasoning settings `off/0`, `off/0`, and
+`high/8,192` respectively, and temperatures 0.2, 0.4, and 0.4. These controls do not change the
+4,096 / 8,192 / 16,384 total-output ceilings or the USD 100 workspace ceiling. Complete values,
+validation ratios, capability-resolution semantics, and concurrency verification are locked by the
+[Phase 11 plan](../implementation/11-workspace-behavior-controls-plan.md).
 
 ## Deferred
 

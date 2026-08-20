@@ -63,6 +63,26 @@ Fourth, reports disappear with their source content. The exact contracts, guardr
 rollout boundary, pre-launch no-user exception, and verification plan are recorded in
 [the Phase 10 resilient responses and feedback plan](../implementation/10-resilient-responses-and-feedback-plan.md).
 
+The August 17, 2026 workspace-behavior-controls decision (Phase 11) amends the locked prompt,
+model-policy, administration, persistence, generation-snapshot, and one-time deployment contracts.
+A mandatory code-owned base prompt remains locked while one normalized, immutable-revisioned
+workspace layer supplies administrator-owned company context and rules. Administrators also gain
+bounded per-tier temperature, reasoning-effort, and reasoning-budget settings, with complete
+actor-attributed policy history and append-only revert. Active members may read the current
+workspace and locked rules but cannot edit them. The total output allowance continues to include
+visible output and hidden reasoning; the reasoning budget is a non-additive sub-cap. Provider
+capability resolution is conservative, every reasoning request excludes traces, and raw reasoning
+content remains outside persistence, logs, telemetry, reports, and the browser.
+
+Phase 11 preserves the authoritative Phase 10 database and follows the ordinary expand/contract
+deployment rule. Additive migration `0009` backfills truthful `migration` snapshots while retaining
+schema-1 initialization and predecessor version-1 writes; Phase 11 application code explicitly
+writes version 2. It does not quiesce the application, replace the database, expose initialization
+credentials to deployment components, or add a custom workflow operation. A later `0010` contract
+migration remains reserved until production acceptance. The exact product decisions, limits,
+initial values, corrected release choreography, prior failed attempt, and verification gates are recorded in
+[the Phase 11 workspace behavior controls plan](../implementation/11-workspace-behavior-controls-plan.md).
+
 The production-hosting decisions approved on 2026-08-11 replace the active raw-Droplet path with
 one DigitalOcean App Platform dynamic service in managed region `ric`, Dedicated Egress, and the
 already selected PlanetScale Postgres PS-5 Single Node cluster in AWS `us-east-1`. They amend the

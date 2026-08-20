@@ -73,6 +73,30 @@ releases: release A adds protocol and web acceptance of the `title` usage purpos
 `conversation.naming` event; release B adds migration `0008`, the `finalizing` lifecycle,
 automatic titles, durable reattachment, and answer reports.
 
+Phase 11 (workspace behavior controls, approved and implementation-authorized 2026-08-17) is a
+post-roadmap amendment that adds one administrator-owned workspace-rules layer, immutable prompt
+and policy history, and bounded per-tier reasoning and temperature controls. It does not reopen the
+eight milestones or introduce personal instructions, reasoning traces, queues, services, caches, or
+new infrastructure.
+
+Implementation remains dependency ordered:
+
+1. one narrow storage/protocol foundation establishes schema `0009`, both immutable ledgers,
+   generation references, and coherent initialization before either feature has an available write;
+2. workspace rules ship end to end through backend, context planning, administrator/member web
+   surfaces, and automated plus user acceptance;
+3. only after that prompt checkpoint may catalog capability behavior, complete policy controls,
+   resolver/gateway shaping, and Models history activate; and
+4. the complete protocol, API, web, migration, and operations changes release together in one
+   synchronized prelaunch product release.
+
+The foundation may not expose tier behavior early. Phase 11 uses the ordinary migration-only
+`PRE_DEPLOY` job and the locked expand/contract sequence: additive `0009`, predecessor-compatible
+replacement, and no destructive contract migration in the release candidate. A later `0010` is
+reserved until production acceptance. The corrected release boundary and failed prior attempt are
+recorded in the
+[implementation plan](../implementation/11-workspace-behavior-controls-plan.md).
+
 ## Production launch baseline
 
 **Locked for Milestone 8**

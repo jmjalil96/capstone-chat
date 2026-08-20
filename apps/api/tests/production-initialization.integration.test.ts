@@ -4,6 +4,10 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testconta
 import { eq } from "drizzle-orm";
 import { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  workspaceAssistantPromptRevisions,
+  workspaceAssistantPrompts,
+} from "../src/database/assistant-rules-schema.js";
 import { createDatabase } from "../src/database/database.js";
 import { employeeApprovals, workspaces } from "../src/database/identity-schema.js";
 import { productionInitialization } from "../src/database/initialization-schema.js";
@@ -11,6 +15,8 @@ import { migrateDatabase } from "../src/database/migrate.js";
 import {
   workspaceCostPolicies,
   workspaceModelPolicies,
+  workspaceModelPolicyRevisions,
+  workspaceModelPolicyRevisionTiers,
 } from "../src/database/model-policy-schema.js";
 import { createIdentityService } from "../src/identity/service.js";
 import {
@@ -69,6 +75,19 @@ function catalog(
         Object.freeze({
           available: true,
           canonicalSlug: initialTierModels[tier],
+          capability: Object.freeze({
+            reasoning: Object.freeze({
+              contractSource: "fixture",
+              defaultEffort: null,
+              defaultEnabled: null,
+              effortSupport: Object.freeze({ kind: "all" as const }),
+              exclusionVerifiedAt: new Date(),
+              kind: "optional" as const,
+              maxTokensAccepted: true,
+              traceSafety: "provider_excluded" as const,
+            }),
+            temperatureSupported: true,
+          }),
           completionPricePerToken,
           contextLength: 128_000,
           displayName: `Model ${tier}`,
@@ -79,7 +98,12 @@ function catalog(
           outputModalities: Object.freeze(["text"]),
           promptPricePerToken: "0.000001",
           requestPriceUsd: "0",
-          supportedParameters: Object.freeze(["max_tokens", "reasoning"]),
+          supportedParameters: Object.freeze([
+            "max_tokens",
+            "reasoning",
+            "reasoning_effort",
+            "temperature",
+          ]),
           validatedAt: new Date(),
         }),
       ]),
@@ -208,6 +232,18 @@ describe.sequential("production initialization", () => {
         { employeeActiveGenerationLimit: 2, monthlyBudgetUsd: "100.000000000000000000" },
       ]);
       await expect(database.select().from(workspaceModelPolicies)).resolves.toHaveLength(3);
+      await expect(database.select().from(workspaceAssistantPrompts)).resolves.toMatchObject([
+        { revision: 1 },
+      ]);
+      await expect(
+        database.select().from(workspaceAssistantPromptRevisions),
+      ).resolves.toMatchObject([{ actorKind: "system", changeKind: "bootstrap", revision: 1 }]);
+      await expect(database.select().from(workspaceModelPolicyRevisions)).resolves.toMatchObject([
+        { actorKind: "system", changeKind: "bootstrap", revision: 1 },
+      ]);
+      await expect(database.select().from(workspaceModelPolicyRevisionTiers)).resolves.toHaveLength(
+        3,
+      );
       await expect(
         createIdentityService(database).initialInvitationTarget({
           adminEmail: initializationDocument.administratorEmail,

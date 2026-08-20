@@ -82,6 +82,19 @@ function realCatalog(validatedAt: Date): Readonly<Record<ModelTier, CatalogModel
         Object.freeze({
           available: true,
           canonicalSlug: initialTierModels[tier],
+          capability: Object.freeze({
+            reasoning: Object.freeze({
+              contractSource: "fixture",
+              defaultEffort: null,
+              defaultEnabled: null,
+              effortSupport: Object.freeze({ kind: "all" as const }),
+              exclusionVerifiedAt: validatedAt,
+              kind: "optional" as const,
+              maxTokensAccepted: true,
+              traceSafety: "provider_excluded" as const,
+            }),
+            temperatureSupported: true,
+          }),
           completionPricePerToken: "0.000002",
           contextLength: 128_000,
           displayName: `Model ${tier}`,
@@ -92,7 +105,12 @@ function realCatalog(validatedAt: Date): Readonly<Record<ModelTier, CatalogModel
           outputModalities: Object.freeze(["text"]),
           promptPricePerToken: "0.000001",
           requestPriceUsd: "0",
-          supportedParameters: Object.freeze(["max_tokens", "reasoning"]),
+          supportedParameters: Object.freeze([
+            "max_tokens",
+            "reasoning",
+            "reasoning_effort",
+            "temperature",
+          ]),
           validatedAt,
         }),
       ]),

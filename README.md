@@ -280,10 +280,28 @@ credentials inside the administration area.
 - `/search` searches owned active and archived titles and message text without putting the query in
   the browser URL.
 - `/archived` pages through archived conversations.
-- `/admin/employees`, `/admin/models`, and `/admin/usage` are available only to administrators.
+- `/account/assistant-rules` shows every active member the current workspace and locked assistant
+  rules without edit or history authority.
+- `/admin/employees`, `/admin/assistant`, `/admin/models`, `/admin/usage`, and `/admin/reports` are
+  available only to administrators.
 
 Verification and reset tokens are removed from the visible browser URL and are never intended for
 logs or browser storage.
+
+## Workspace behavior controls
+
+Administrators can edit one normalized plain-text workspace rules layer under **Asistente** and
+review or revert its immutable actor-attributed history. The code-owned mandatory base is composed
+last and wins on conflict. Under **Modelos**, administrators configure closed reasoning-effort,
+reasoning-budget, and temperature presets for Fast, Balanced, and Pro and can review or revert the
+complete immutable policy history. Employees still choose only the three tier names and receive no
+model, capability, parameter, actor, history, prompt-text, or reasoning-trace metadata in chat.
+
+Migration `0009_workspace_behavior_controls.sql` upgrades the authoritative Phase 10 database
+additively through the existing migration-only `PRE_DEPLOY` job. It preserves schema-1 production
+initialization and predecessor version-1 generation writes; Phase 11 writes version 2 explicitly.
+There is no application quiesce, replacement database, schema-2 initializer, temporary Phase 11
+credential, or custom cutover workflow.
 
 ## Conversation core
 

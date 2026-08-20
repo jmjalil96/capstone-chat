@@ -3,6 +3,7 @@ import { OpaqueCursorSchema } from "./conversation.js";
 import { GenerationModelTierSchema } from "./generation.js";
 
 export const ADMIN_LIST_PAGE_SIZE = 50;
+export const ADMIN_POLICY_HISTORY_PAGE_SIZE = 20;
 export const ADMIN_POLICY_REVISION_MAX = 2_147_483_647;
 
 const DatabaseIdentifierSchema = Type.String({ format: "uuid" });
@@ -18,6 +19,25 @@ const PersonNameSchema = Type.String({
 });
 const EmailSchema = Type.String({ format: "email", maxLength: 320 });
 const PositiveDatabaseIntegerSchema = Type.Integer({ minimum: 1, maximum: 2_147_483_647 });
+
+export const AdminRevisionActorSchema = Type.Union([
+  Type.Object(
+    {
+      kind: Type.Literal("system"),
+      label: Type.Literal("Sistema"),
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      kind: Type.Literal("user"),
+      userId: IdentityIdSchema,
+      displayName: PersonNameSchema,
+    },
+    { additionalProperties: false },
+  ),
+]);
+export type AdminRevisionActor = Type.Static<typeof AdminRevisionActorSchema>;
 
 export const AdminUsdSchema = Type.String({
   minLength: 1,
@@ -156,6 +176,115 @@ const CatalogDisplayNameSchema = Type.String({
   pattern: "^(?=.*\\S)[^\\u0000-\\u001f\\u007f]+$",
 });
 
+export const AdminGatewayEffortSchema = Type.Union([
+  Type.Literal("none"),
+  Type.Literal("minimal"),
+  Type.Literal("low"),
+  Type.Literal("medium"),
+  Type.Literal("high"),
+  Type.Literal("xhigh"),
+  Type.Literal("max"),
+]);
+export type AdminGatewayEffort = Type.Static<typeof AdminGatewayEffortSchema>;
+
+export const AdminReasoningEffortSchema = Type.Union([
+  Type.Literal("off"),
+  Type.Literal("low"),
+  Type.Literal("medium"),
+  Type.Literal("high"),
+]);
+export type AdminReasoningEffort = Type.Static<typeof AdminReasoningEffortSchema>;
+
+export const AdminReasoningBudgetTokensSchema = Type.Union([
+  Type.Literal(0),
+  Type.Literal(1_024),
+  Type.Literal(2_048),
+  Type.Literal(4_096),
+  Type.Literal(8_192),
+]);
+export type AdminReasoningBudgetTokens = Type.Static<typeof AdminReasoningBudgetTokensSchema>;
+
+export const AdminTemperaturePresetSchema = Type.Union([
+  Type.Literal("precise"),
+  Type.Literal("balanced"),
+  Type.Literal("flexible"),
+  Type.Literal("creative"),
+]);
+export type AdminTemperaturePreset = Type.Static<typeof AdminTemperaturePresetSchema>;
+
+export const AdminReasoningCapabilitySchema = Type.Object(
+  {
+    kind: Type.Union([
+      Type.Literal("none"),
+      Type.Literal("optional"),
+      Type.Literal("mandatory"),
+      Type.Literal("unverified"),
+    ]),
+    effortSupport: Type.Union([
+      Type.Object({ kind: Type.Literal("none") }, { additionalProperties: false }),
+      Type.Object({ kind: Type.Literal("all") }, { additionalProperties: false }),
+      Type.Object(
+        {
+          kind: Type.Literal("listed"),
+          values: Type.Array(AdminGatewayEffortSchema, { maxItems: 7, minItems: 1 }),
+        },
+        { additionalProperties: false },
+      ),
+    ]),
+    maxTokensAccepted: Type.Boolean(),
+    defaultEffort: Type.Union([AdminGatewayEffortSchema, Type.Null()]),
+    defaultEnabled: Type.Union([Type.Boolean(), Type.Null()]),
+    traceSafety: Type.Union([
+      Type.Literal("non_reasoning"),
+      Type.Literal("provider_excluded"),
+      Type.Literal("unverified"),
+    ]),
+  },
+  { additionalProperties: false },
+);
+export type AdminReasoningCapability = Type.Static<typeof AdminReasoningCapabilitySchema>;
+
+export const AdminModelCapabilitySchema = Type.Object(
+  {
+    temperatureSupported: Type.Boolean(),
+    reasoning: AdminReasoningCapabilitySchema,
+  },
+  { additionalProperties: false },
+);
+export type AdminModelCapability = Type.Static<typeof AdminModelCapabilitySchema>;
+
+export const AdminParameterSupportKindSchema = Type.Union([
+  Type.Literal("exact"),
+  Type.Literal("translated"),
+  Type.Literal("unsupported"),
+  Type.Literal("mandatory"),
+]);
+export type AdminParameterSupportKind = Type.Static<typeof AdminParameterSupportKindSchema>;
+
+export const AdminParameterSupportReasonSchema = Type.Union([
+  Type.Literal("supported"),
+  Type.Literal("temperature_unsupported"),
+  Type.Literal("non_reasoning_model"),
+  Type.Literal("reasoning_disabled"),
+  Type.Literal("mandatory_reasoning"),
+  Type.Literal("max_tokens_precision_unverified"),
+  Type.Literal("effort_nearest_supported"),
+  Type.Literal("effort_control_unavailable"),
+  Type.Literal("budget_control_unavailable"),
+  Type.Literal("provider_default_strength"),
+  Type.Literal("capability_unverified"),
+]);
+export type AdminParameterSupportReason = Type.Static<typeof AdminParameterSupportReasonSchema>;
+
+export const AdminParameterSupportSchema = Type.Object(
+  {
+    kind: AdminParameterSupportKindSchema,
+    reason: AdminParameterSupportReasonSchema,
+  },
+  { additionalProperties: false },
+);
+export type AdminParameterSupport = Type.Static<typeof AdminParameterSupportSchema>;
+
 export const AdminModelCatalogItemSchema = Type.Object(
   {
     catalogId: DatabaseIdentifierSchema,
@@ -164,6 +293,7 @@ export const AdminModelCatalogItemSchema = Type.Object(
     available: Type.Boolean(),
     contextLength: PositiveDatabaseIntegerSchema,
     maximumOutputTokens: PositiveDatabaseIntegerSchema,
+    capability: AdminModelCapabilitySchema,
     validatedAt: Type.String({ format: "date-time" }),
   },
   { additionalProperties: false },
@@ -217,6 +347,7 @@ const AdminMappedCatalogSchema = Type.Object(
     available: Type.Boolean(),
     contextLength: PositiveDatabaseIntegerSchema,
     maximumOutputTokens: PositiveDatabaseIntegerSchema,
+    capability: AdminModelCapabilitySchema,
     validatedAt: Type.String({ format: "date-time" }),
   },
   { additionalProperties: false },
@@ -230,6 +361,12 @@ const adminModelPolicyTierResponse = (tier: "fast" | "balanced" | "pro") =>
       enabled: Type.Boolean(),
       available: Type.Boolean(),
       maximumOutputTokens: PositiveDatabaseIntegerSchema,
+      reasoningEffort: AdminReasoningEffortSchema,
+      reasoningBudgetTokens: AdminReasoningBudgetTokensSchema,
+      temperaturePreset: AdminTemperaturePresetSchema,
+      temperatureStatus: AdminParameterSupportSchema,
+      effortStatus: AdminParameterSupportSchema,
+      budgetStatus: AdminParameterSupportSchema,
       catalog: AdminMappedCatalogSchema,
     },
     { additionalProperties: false },
@@ -242,6 +379,9 @@ const adminModelPolicyTierRequest = (tier: "fast" | "balanced" | "pro") =>
       catalogId: DatabaseIdentifierSchema,
       enabled: Type.Boolean(),
       maximumOutputTokens: PositiveDatabaseIntegerSchema,
+      reasoningEffort: AdminReasoningEffortSchema,
+      reasoningBudgetTokens: AdminReasoningBudgetTokensSchema,
+      temperaturePreset: AdminTemperaturePresetSchema,
     },
     { additionalProperties: false },
   );
@@ -252,6 +392,18 @@ export const AdminModelPolicyResponseSchema = Type.Object(
     currency: Type.Literal("USD"),
     defaultTier: GenerationModelTierSchema,
     monthlyBudgetUsd: AdminUsdSchema,
+    actor: AdminRevisionActorSchema,
+    changeKind: Type.Union([
+      Type.Literal("bootstrap"),
+      Type.Literal("migration"),
+      Type.Literal("update"),
+      Type.Literal("revert"),
+    ]),
+    revertedFromRevision: Type.Union([
+      Type.Integer({ minimum: 1, maximum: ADMIN_POLICY_REVISION_MAX }),
+      Type.Null(),
+    ]),
+    updatedAt: Type.String({ format: "date-time" }),
     tiers: Type.Tuple([
       adminModelPolicyTierResponse("fast"),
       adminModelPolicyTierResponse("balanced"),
@@ -281,6 +433,40 @@ export const AdminUpdateModelPolicyResponseSchema = AdminModelPolicyResponseSche
 export type AdminUpdateModelPolicyResponse = Type.Static<
   typeof AdminUpdateModelPolicyResponseSchema
 >;
+
+export const AdminModelPolicyHistoryQuerySchema = AdminCursorQuerySchema;
+export type AdminModelPolicyHistoryQuery = Type.Static<typeof AdminModelPolicyHistoryQuerySchema>;
+
+export const AdminModelPolicyHistoryResponseSchema = Type.Object(
+  {
+    items: Type.Array(AdminModelPolicyResponseSchema, {
+      maxItems: ADMIN_POLICY_HISTORY_PAGE_SIZE,
+    }),
+    nextCursor: Type.Union([OpaqueCursorSchema, Type.Null()]),
+  },
+  { additionalProperties: false },
+);
+export type AdminModelPolicyHistoryResponse = Type.Static<
+  typeof AdminModelPolicyHistoryResponseSchema
+>;
+
+export const AdminModelPolicyRevisionParamsSchema = Type.Object(
+  {
+    revision: Type.Integer({ minimum: 1, maximum: ADMIN_POLICY_REVISION_MAX }),
+  },
+  { additionalProperties: false },
+);
+export type AdminModelPolicyRevisionParams = Type.Static<
+  typeof AdminModelPolicyRevisionParamsSchema
+>;
+
+export const AdminRevertModelPolicyRequestSchema = Type.Object(
+  {
+    observedRevision: Type.Integer({ minimum: 1, maximum: ADMIN_POLICY_REVISION_MAX }),
+  },
+  { additionalProperties: false },
+);
+export type AdminRevertModelPolicyRequest = Type.Static<typeof AdminRevertModelPolicyRequestSchema>;
 
 export const AdminUsagePurposeSchema = Type.Union([
   Type.Literal("chat"),

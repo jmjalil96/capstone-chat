@@ -1,7 +1,10 @@
 import { expect, test } from "@playwright/test";
 
 import { copy } from "../src/copy";
-import { openAuthenticatedBrowserEmployee } from "./support/phase5-fixture";
+import {
+  followConversationAccountLink,
+  openAuthenticatedBrowserEmployee,
+} from "./support/phase5-fixture";
 
 test("@critical-access protects administrator routes and opens a seeded member new chat", async ({
   isMobile,
@@ -31,6 +34,19 @@ test("@critical-access protects administrator routes and opens a seeded member n
     await expect(draft).toBeFocused();
     await expect(page.locator(".desktop-sidebar")).toBeVisible();
   }
+
+  await followConversationAccountLink(
+    page,
+    copy.conversations.navigation.assistantRules,
+    Boolean(isMobile),
+  );
+  await expect(page).toHaveURL(/\/account\/assistant-rules$/u);
+  await expect(
+    page.getByRole("heading", { level: 1, name: copy.identity.assistantRules.title }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("textbox", { name: copy.administration.assistant.label }),
+  ).toHaveCount(0);
 
   const administratorRequests: string[] = [];
   page.on("request", (request) => {

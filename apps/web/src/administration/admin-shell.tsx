@@ -58,6 +58,7 @@ export function AdminShell() {
           <p>{copy.administration.navigation.label}</p>
           <nav aria-label={copy.administration.navigation.label}>
             <NavLink to="/admin/employees">{copy.administration.navigation.employees}</NavLink>
+            <NavLink to="/admin/assistant">{copy.administration.navigation.assistant}</NavLink>
             <NavLink to="/admin/models">{copy.administration.navigation.models}</NavLink>
             <NavLink to="/admin/usage">{copy.administration.navigation.usage}</NavLink>
             <NavLink to="/admin/reports">{copy.administration.navigation.reports}</NavLink>

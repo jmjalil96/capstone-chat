@@ -2,19 +2,25 @@ import { describe, expect, it } from "vitest";
 import type { GatewayEvent, GenerationRequest } from "../src/generations/model-gateway.js";
 import { LoadModelGateway, loadRehearsalSteps } from "../src/load/load-gateway.js";
 import { initialTierModels } from "../src/model-policy/catalog.js";
+import { testEffectiveParameters } from "./support/generation.js";
 
 function request(
   message: string,
   purpose: "chat" | "compaction" | "title" = "chat",
 ): GenerationRequest {
   const base = {
+    effectiveParameters: testEffectiveParameters(purpose, purpose === "chat" ? "balanced" : "fast"),
     history: [],
     message: { role: "user" as const, text: message },
-    modelTier: purpose === "chat" ? ("balanced" as const) : ("fast" as const),
-    purpose,
     systemPrompt: { text: "Synthetic system prompt", version: "load-v1" },
   };
-  return base as GenerationRequest;
+  if (purpose === "chat") {
+    return { ...base, modelTier: "balanced", purpose };
+  }
+  if (purpose === "compaction") {
+    return { ...base, modelTier: "fast", purpose };
+  }
+  return { ...base, modelTier: "fast", purpose };
 }
 
 describe("load rehearsal gateway", () => {

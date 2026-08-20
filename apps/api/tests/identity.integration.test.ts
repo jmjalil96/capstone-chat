@@ -24,6 +24,7 @@ import type { ModelGateway } from "../src/generations/model-gateway.js";
 import { type EmailSender, FakeEmailSender } from "../src/identity/email.js";
 import { ResendEmailSender } from "../src/identity/resend-email.js";
 import { createIdentityService, type IdentityService } from "../src/identity/service.js";
+import { seedTestBehaviorRevisions } from "./support/workspace-behavior.js";
 
 const publicOrigin = "http://localhost:5173";
 const adminEmail = "admin.identity@example.test";
@@ -236,6 +237,7 @@ describe.sequential("identity integration", () => {
     if (admin === undefined || workspace === undefined) {
       throw new Error("The sign-out fixture is missing its administrator or workspace");
     }
+    await seedTestBehaviorRevisions(app.database, workspace.id, new Date());
     const conversationRows = await app.database
       .insert(conversations)
       .values({ title: "Trabajo en curso", userId: admin.id, workspaceId: workspace.id })
@@ -266,12 +268,15 @@ describe.sequential("identity integration", () => {
         conversationId,
         effectiveParameters: { context: { mode: "full" } },
         idempotencyKey: "0f5cbe0d-8f4c-4a3f-a5c6-6a3a3a1c9b01",
+        behaviorContractVersion: 2,
+        modelPolicyRevision: 1,
         purpose: "chat",
         requestedTier: "balanced",
         status: "active",
-        systemPromptVersion: "capstone-chat-v1",
+        systemPromptVersion: "capstone-chat-base-v2",
         userId: admin.id,
         workspaceId: workspace.id,
+        workspacePromptRevision: 1,
       })
       .returning({ id: generations.id });
     const generationId = activeRows[0]?.id ?? "";
@@ -287,6 +292,7 @@ describe.sequential("identity integration", () => {
       userId: admin.id,
       workspaceId: secondWorkspaceId,
     });
+    await seedTestBehaviorRevisions(app.database, secondWorkspaceId, new Date());
     const secondConversationRows = await app.database
       .insert(conversations)
       .values({ title: "Segundo trabajo", userId: admin.id, workspaceId: secondWorkspaceId })
@@ -317,12 +323,15 @@ describe.sequential("identity integration", () => {
         conversationId: secondConversationId,
         effectiveParameters: { context: { mode: "full" } },
         idempotencyKey: "89628ebc-e67e-4ace-9f5c-bb7290763b2e",
+        behaviorContractVersion: 2,
+        modelPolicyRevision: 1,
         purpose: "chat",
         requestedTier: "balanced",
         status: "active",
-        systemPromptVersion: "capstone-chat-v1",
+        systemPromptVersion: "capstone-chat-base-v2",
         userId: admin.id,
         workspaceId: secondWorkspaceId,
+        workspacePromptRevision: 1,
       })
       .returning({ id: generations.id });
     const secondGenerationId = secondGenerationRows[0]?.id ?? "";
@@ -401,6 +410,7 @@ describe.sequential("identity integration", () => {
     if (admin === undefined || workspace === undefined) {
       throw new Error("The sign-out rollback fixture is incomplete");
     }
+    await seedTestBehaviorRevisions(app.database, workspace.id, new Date());
     const conversationRows = await app.database
       .insert(conversations)
       .values({ title: "Trabajo protegido", userId: admin.id, workspaceId: workspace.id })
@@ -431,12 +441,15 @@ describe.sequential("identity integration", () => {
         conversationId,
         effectiveParameters: { context: { mode: "full" } },
         idempotencyKey: "7b61cf18-9d83-42be-89f4-59d4a57b7071",
+        behaviorContractVersion: 2,
+        modelPolicyRevision: 1,
         purpose: "chat",
         requestedTier: "balanced",
         status: "active",
-        systemPromptVersion: "capstone-chat-v1",
+        systemPromptVersion: "capstone-chat-base-v2",
         userId: admin.id,
         workspaceId: workspace.id,
+        workspacePromptRevision: 1,
       })
       .returning({ id: generations.id });
     const generationId = generationRows[0]?.id ?? "";

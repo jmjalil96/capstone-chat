@@ -1,5 +1,15 @@
 import { and, eq, isNull, lte, or, sql } from "drizzle-orm";
+import { AssistantRulesConflictError } from "../assistant-rules/errors.js";
+import {
+  createSystemPromptSnapshot,
+  type SystemPromptSnapshot,
+} from "../assistant-rules/prompt.js";
+import { bootstrapAssistantRulesInTransaction } from "../assistant-rules/service.js";
 import type { CursorCodec } from "../conversations/cursor.js";
+import {
+  workspaceAssistantPromptRevisions,
+  workspaceAssistantPrompts,
+} from "../database/assistant-rules-schema.js";
 import { conversations } from "../database/conversation-schema.js";
 import type { AppDatabase, AppDatabaseExecutor, AppTransaction } from "../database/database.js";
 import { workspaces } from "../database/identity-schema.js";
@@ -9,6 +19,8 @@ import {
   workspaceCatalogApprovals,
   workspaceCostPolicies,
   workspaceModelPolicies,
+  workspaceModelPolicyRevisions,
+  workspaceModelPolicyRevisionTiers,
 } from "../database/model-policy-schema.js";
 import { createModelPolicyAdministration } from "./administration.js";
 import {
@@ -18,11 +30,14 @@ import {
   budgetAdmissionStateQuery,
 } from "./budget-service.js";
 import {
+  type CatalogModelCapability,
   type CatalogModelSnapshot,
+  gatewayEfforts,
   type ModelTier,
   modelTiers,
   type VerifiedPrivacyAttestation,
 } from "./catalog.js";
+import { INITIAL_TIER_BEHAVIOR_DEFAULTS } from "./defaults.js";
 import {
   ModelPolicyConflictError,
   ModelPolicyNotFoundError,
@@ -35,6 +50,7 @@ import {
   canonicalUnitPrice,
   canonicalUsd,
 } from "./money.js";
+import { assertLivePolicyMatchesHead } from "./policy-integrity.js";
 import { costControlTuning } from "./settings.js";
 
 export {
@@ -42,6 +58,7 @@ export {
   ModelPolicyChangedError,
   ModelPolicyConflictError,
   ModelPolicyNotFoundError,
+  ModelPolicyRevisionNotFoundError,
   ModelPolicyUnavailableError,
 } from "./errors.js";
 
@@ -65,15 +82,20 @@ export interface ConversationOwner {
 }
 
 export interface ResolvedTierPolicy {
+  readonly capability: CatalogModelCapability;
   readonly completionPriceCeilingPerToken: string;
   readonly contextLength: number;
   readonly employeeActiveGenerationLimit: number;
   readonly maximumOutputTokens: number;
   readonly monthlyBudgetUsd: string;
+  readonly policyRevision: number;
   readonly promptPriceCeilingPerToken: string;
   readonly requestPriceCeilingUsd: string;
   readonly reservationMarginBasisPoints: number;
+  readonly reasoningBudgetTokens: 0 | 1_024 | 2_048 | 4_096 | 8_192;
+  readonly reasoningEffort: "off" | "low" | "medium" | "high";
   readonly resolvedModel: string;
+  readonly temperaturePreset: "precise" | "balanced" | "flexible" | "creative";
   readonly tier: ModelTier;
 }
 
@@ -83,6 +105,7 @@ export interface ResolvedGenerationAdmission {
     readonly chat: ResolvedTierPolicy;
     readonly fast: ResolvedTierPolicy | null;
   };
+  readonly promptSnapshot: SystemPromptSnapshot;
 }
 
 export interface ModelPolicyBootstrapInput {
@@ -133,6 +156,9 @@ interface ExistingPolicyRow {
   readonly maximumOutputTokens: number;
   readonly modelId: string;
   readonly promptPricePerToken: string;
+  readonly reasoningMode: string;
+  readonly reasoningTraceSafety: string;
+  readonly temperatureSupported: boolean;
   readonly requestPriceUsd: string;
   readonly tier: string;
 }
@@ -141,7 +167,11 @@ type NullableGenerationPolicyRow = {
   readonly [Key in keyof GenerationPolicyRow]: GenerationPolicyRow[Key] | null;
 };
 
-type ResolvedGenerationAdmissionRow = BudgetAdmissionStateRow & NullableGenerationPolicyRow;
+type ResolvedGenerationAdmissionRow = BudgetAdmissionStateRow &
+  NullableGenerationPolicyRow & {
+    readonly workspacePromptRevision: number | null;
+    readonly workspaceText: string | null;
+  };
 
 function assertPositiveInteger(value: number, label: string): void {
   if (!Number.isSafeInteger(value) || value <= 0) {
@@ -201,7 +231,42 @@ function toResolvedTierPolicy(
   ) {
     throw new ModelPolicyUnavailableError("Requested tier is unavailable");
   }
+  if (
+    !Number.isSafeInteger(row.policyRevision) ||
+    row.policyRevision <= 0 ||
+    !["off", "low", "medium", "high"].includes(row.reasoningEffort) ||
+    ![0, 1_024, 2_048, 4_096, 8_192].includes(row.reasoningBudgetTokens) ||
+    !["precise", "balanced", "flexible", "creative"].includes(row.temperaturePreset) ||
+    !["none", "optional", "mandatory"].includes(row.reasoningMode) ||
+    !["none", "all", "listed"].includes(row.reasoningEffortSupportKind) ||
+    !["non_reasoning", "provider_excluded"].includes(row.reasoningTraceSafety)
+  ) {
+    throw new ModelPolicyUnavailableError("Stored model behavior policy is invalid");
+  }
+  const recognizedEfforts = row.reasoningEfforts.filter((effort) =>
+    gatewayEfforts.includes(effort as (typeof gatewayEfforts)[number]),
+  ) as (typeof gatewayEfforts)[number][];
+  const effortSupport =
+    row.reasoningEffortSupportKind === "all"
+      ? ({ kind: "all" } as const)
+      : row.reasoningEffortSupportKind === "listed" && recognizedEfforts.length > 0
+        ? ({ kind: "listed", values: Object.freeze(recognizedEfforts) } as const)
+        : ({ kind: "none" } as const);
   return Object.freeze({
+    capability: Object.freeze({
+      reasoning: Object.freeze({
+        contractSource: "stored-catalog",
+        defaultEffort:
+          gatewayEfforts.find((effort) => effort === row.reasoningDefaultEffort) ?? null,
+        defaultEnabled: row.reasoningDefaultEnabled,
+        effortSupport: Object.freeze(effortSupport),
+        exclusionVerifiedAt: row.reasoningTraceSafety === "provider_excluded" ? checkedAt : null,
+        kind: row.reasoningMode as "none" | "optional" | "mandatory",
+        maxTokensAccepted: row.reasoningMaxTokensAccepted,
+        traceSafety: row.reasoningTraceSafety as "non_reasoning" | "provider_excluded",
+      }),
+      temperatureSupported: row.temperatureSupported,
+    }),
     completionPriceCeilingPerToken: applyReservationMarginToUnitPrice(
       row.completionPricePerToken,
       row.reservationMarginBasisPoints,
@@ -210,6 +275,7 @@ function toResolvedTierPolicy(
     employeeActiveGenerationLimit: row.employeeActiveGenerationLimit,
     maximumOutputTokens: row.maximumOutputTokens,
     monthlyBudgetUsd: canonicalUsd(row.monthlyBudgetUsd),
+    policyRevision: row.policyRevision,
     promptPriceCeilingPerToken: applyReservationMarginToUnitPrice(
       row.promptPricePerToken,
       row.reservationMarginBasisPoints,
@@ -219,7 +285,10 @@ function toResolvedTierPolicy(
       row.reservationMarginBasisPoints,
     ),
     reservationMarginBasisPoints: row.reservationMarginBasisPoints,
+    reasoningBudgetTokens: row.reasoningBudgetTokens as 0 | 1_024 | 2_048 | 4_096 | 8_192,
+    reasoningEffort: row.reasoningEffort as "off" | "low" | "medium" | "high",
     resolvedModel: row.resolvedModel,
+    temperaturePreset: row.temperaturePreset as "precise" | "balanced" | "flexible" | "creative",
     tier,
   });
 }
@@ -267,8 +336,31 @@ function catalogMatches(row: ExistingPolicyRow, snapshot: CatalogModelSnapshot):
     canonicalUnitPrice(row.completionPricePerToken) === snapshot.completionPricePerToken &&
     row.modelId === snapshot.modelId &&
     canonicalUnitPrice(row.promptPricePerToken) === snapshot.promptPricePerToken &&
-    canonicalUsd(row.requestPriceUsd) === snapshot.requestPriceUsd
+    row.reasoningMode === snapshot.capability.reasoning.kind &&
+    row.reasoningTraceSafety === snapshot.capability.reasoning.traceSafety &&
+    canonicalUsd(row.requestPriceUsd) === snapshot.requestPriceUsd &&
+    row.temperatureSupported === snapshot.capability.temperatureSupported
   );
+}
+
+function catalogCapabilityColumns(snapshot: CatalogModelSnapshot) {
+  const { reasoning } = snapshot.capability;
+  return {
+    reasoningContractSource: reasoning.contractSource,
+    reasoningDefaultEffort: reasoning.defaultEffort,
+    reasoningDefaultEnabled: reasoning.defaultEnabled,
+    reasoningEffortSupportKind: reasoning.effortSupport.kind,
+    reasoningEfforts:
+      reasoning.effortSupport.kind === "listed"
+        ? reasoning.effortSupport.values
+        : Object.freeze([]),
+    reasoningExclusionVerifiedAt: reasoning.exclusionVerifiedAt,
+    reasoningMandatory: reasoning.kind === "mandatory",
+    reasoningMaxTokensAccepted: reasoning.maxTokensAccepted,
+    reasoningMode: reasoning.kind,
+    reasoningTraceSafety: reasoning.traceSafety,
+    temperatureSupported: snapshot.capability.temperatureSupported,
+  } as const;
 }
 
 async function policyRows(
@@ -287,7 +379,10 @@ async function policyRows(
       maximumOutputTokens: workspaceModelPolicies.maximumOutputTokens,
       modelId: modelCatalog.openRouterModelId,
       promptPricePerToken: modelCatalog.promptPricePerToken,
+      reasoningMode: modelCatalog.reasoningMode,
+      reasoningTraceSafety: modelCatalog.reasoningTraceSafety,
       requestPriceUsd: modelCatalog.requestPriceUsd,
+      temperatureSupported: modelCatalog.temperatureSupported,
       tier: workspaceModelPolicies.tier,
     })
     .from(workspaceModelPolicies)
@@ -434,7 +529,10 @@ export function createModelPolicyService(
   async function assertRuntimeMode(mode: ModelPolicyMode): Promise<void> {
     const checkedAt = now();
     const costRows = await database
-      .select({ workspaceId: workspaceCostPolicies.workspaceId })
+      .select({
+        revision: workspaceCostPolicies.revision,
+        workspaceId: workspaceCostPolicies.workspaceId,
+      })
       .from(workspaceCostPolicies);
     if (costRows.length === 0) {
       throw new ModelPolicyUnavailableError("Workspace model policy is not bootstrapped");
@@ -456,8 +554,34 @@ export function createModelPolicyService(
         ),
       );
 
-    for (const { workspaceId } of costRows) {
+    for (const { revision, workspaceId } of costRows) {
       const mappings = rows.filter((row) => row.workspaceId === workspaceId);
+      await assertLivePolicyMatchesHead(database, workspaceId);
+      const [policyRevisionRows, promptRows] = await Promise.all([
+        database
+          .select({ tier: workspaceModelPolicyRevisionTiers.tier })
+          .from(workspaceModelPolicyRevisionTiers)
+          .where(
+            and(
+              eq(workspaceModelPolicyRevisionTiers.workspaceId, workspaceId),
+              eq(workspaceModelPolicyRevisionTiers.revision, revision),
+            ),
+          ),
+        database
+          .select({ revision: workspaceAssistantPrompts.revision })
+          .from(workspaceAssistantPrompts)
+          .innerJoin(
+            workspaceAssistantPromptRevisions,
+            and(
+              eq(
+                workspaceAssistantPromptRevisions.workspaceId,
+                workspaceAssistantPrompts.workspaceId,
+              ),
+              eq(workspaceAssistantPromptRevisions.revision, workspaceAssistantPrompts.revision),
+            ),
+          )
+          .where(eq(workspaceAssistantPrompts.workspaceId, workspaceId)),
+      ]);
       const complete = modelTiers.every((tier) =>
         mappings.some(
           (mapping) =>
@@ -469,6 +593,9 @@ export function createModelPolicyService(
       if (
         !complete ||
         mappings.length !== modelTiers.length ||
+        policyRevisionRows.length !== modelTiers.length ||
+        !modelTiers.every((tier) => policyRevisionRows.some((row) => row.tier === tier)) ||
+        promptRows.length !== 1 ||
         (mode === "openrouter" && !(await privacyIsVerified(database, workspaceId, checkedAt)))
       ) {
         throw new ModelPolicyUnavailableError(
@@ -494,6 +621,7 @@ export function createModelPolicyService(
     if (workspace === undefined) {
       throw new ModelPolicyNotFoundError();
     }
+    await bootstrapAssistantRulesInTransaction(transaction, workspace.id, bootstrapAt);
 
     const existingCostRows = await transaction
       .select()
@@ -529,7 +657,10 @@ export function createModelPolicyService(
           maximumOutputTokens: input.maximumOutputTokens[tier],
           modelId: existingCatalog.openRouterModelId,
           promptPricePerToken: existingCatalog.promptPricePerToken,
+          reasoningMode: existingCatalog.reasoningMode,
+          reasoningTraceSafety: existingCatalog.reasoningTraceSafety,
           requestPriceUsd: existingCatalog.requestPriceUsd,
+          temperatureSupported: existingCatalog.temperatureSupported,
           tier,
         };
         if (!catalogMatches(comparable, snapshot)) {
@@ -545,6 +676,7 @@ export function createModelPolicyService(
         .insert(modelCatalog)
         .values({
           available: snapshot.available,
+          ...catalogCapabilityColumns(snapshot),
           canonicalSlug: snapshot.canonicalSlug,
           completionPricePerToken: snapshot.completionPricePerToken,
           contextLength: snapshot.contextLength,
@@ -585,6 +717,35 @@ export function createModelPolicyService(
       })),
     );
 
+    await transaction.insert(workspaceModelPolicyRevisions).values({
+      actorKind: "system",
+      changeKind: "bootstrap",
+      defaultTier: "balanced",
+      monthlyBudgetUsd: canonicalUsd(input.monthlyBudgetUsd),
+      revision: 1,
+      workspaceId: workspace.id,
+      createdAt: bootstrapAt,
+    });
+
+    for (const tier of modelTiers) {
+      const modelCatalogId = catalogIds.get(tier);
+      if (modelCatalogId === undefined) {
+        throw new Error("Catalog mapping disappeared during revision bootstrap");
+      }
+      const behavior = INITIAL_TIER_BEHAVIOR_DEFAULTS[tier];
+      await transaction.insert(workspaceModelPolicyRevisionTiers).values({
+        enabled: true,
+        maximumOutputTokens: input.maximumOutputTokens[tier],
+        modelCatalogId,
+        reasoningBudgetTokens: behavior.reasoningBudgetTokens,
+        reasoningEffort: behavior.reasoningEffort,
+        revision: 1,
+        temperaturePreset: behavior.temperaturePreset,
+        tier,
+        workspaceId: workspace.id,
+      });
+    }
+
     await transaction.insert(workspaceCostPolicies).values({
       defaultTier: "balanced",
       employeeActiveGenerationLimit: input.employeeActiveGenerationLimit,
@@ -593,6 +754,7 @@ export function createModelPolicyService(
       createdAt: bootstrapAt,
       updatedAt: bootstrapAt,
       workspaceId: workspace.id,
+      revision: 1,
     });
 
     for (const tier of modelTiers) {
@@ -601,6 +763,7 @@ export function createModelPolicyService(
         throw new Error("Catalog mapping disappeared during bootstrap");
       }
       await transaction.insert(workspaceModelPolicies).values({
+        ...INITIAL_TIER_BEHAVIOR_DEFAULTS[tier],
         enabled: true,
         maximumOutputTokens: input.maximumOutputTokens[tier],
         modelCatalogId,
@@ -819,6 +982,7 @@ export function createModelPolicyService(
         await transaction
           .update(modelCatalog)
           .set({
+            ...catalogCapabilityColumns(snapshot),
             available: snapshot.available,
             canonicalSlug: snapshot.canonicalSlug,
             completionPricePerToken: snapshot.completionPricePerToken,
@@ -919,6 +1083,18 @@ export function createModelPolicyService(
       ),
       resolved_tiers AS MATERIALIZED (
         ${generationPolicyRowsQuery(workspaceId, requestedTiers, { lockRows: true })}
+      ),
+      prompt_snapshot AS MATERIALIZED (
+        SELECT
+          prompt_head.revision AS "workspacePromptRevision",
+          prompt_revision.workspace_text AS "workspaceText"
+        FROM workspace_assistant_prompts AS prompt_head
+        INNER JOIN workspace_assistant_prompt_revisions AS prompt_revision
+          ON prompt_revision.workspace_id = prompt_head.workspace_id
+          AND prompt_revision.revision = prompt_head.revision
+        WHERE prompt_head.workspace_id = ${workspaceId}::uuid
+          AND EXISTS (SELECT 1 FROM resolved_tiers)
+        FOR SHARE OF prompt_head, prompt_revision
       )
       SELECT
         admission_state."activeGenerationCount",
@@ -937,13 +1113,28 @@ export function createModelPolicyService(
         resolved_tiers."maximumOutputTokens",
         resolved_tiers."metadataSource",
         resolved_tiers."monthlyBudgetUsd",
+        resolved_tiers."policyRevision",
         resolved_tiers."promptPricePerToken",
+        resolved_tiers."reasoningBudgetTokens",
+        resolved_tiers."reasoningDefaultEffort",
+        resolved_tiers."reasoningDefaultEnabled",
+        resolved_tiers."reasoningEffort",
+        resolved_tiers."reasoningEffortSupportKind",
+        resolved_tiers."reasoningEfforts",
+        resolved_tiers."reasoningMaxTokensAccepted",
+        resolved_tiers."reasoningMode",
+        resolved_tiers."reasoningTraceSafety",
         resolved_tiers."requestPriceUsd",
         resolved_tiers."reservationMarginBasisPoints",
         resolved_tiers."resolvedModel",
-        resolved_tiers.tier
+        resolved_tiers."temperaturePreset",
+        resolved_tiers."temperatureSupported",
+        resolved_tiers.tier,
+        prompt_snapshot."workspacePromptRevision",
+        prompt_snapshot."workspaceText"
       FROM admission_state
       LEFT JOIN resolved_tiers ON true
+      LEFT JOIN prompt_snapshot ON true
     `);
     const first = rows.rows[0];
     if (first === undefined) {
@@ -954,7 +1145,19 @@ export function createModelPolicyService(
     );
     const admission = budgetAdmissionFromState(first, workspaceId, userId);
     const policies = resolveGenerationPolicyRows(policyRows, tier, mode);
-    return Object.freeze({ admission, policies });
+    if (
+      first.workspacePromptRevision === null ||
+      !Number.isSafeInteger(first.workspacePromptRevision) ||
+      first.workspacePromptRevision <= 0 ||
+      first.workspaceText === null
+    ) {
+      throw new AssistantRulesConflictError("Workspace assistant rules are not initialized");
+    }
+    const promptSnapshot = createSystemPromptSnapshot(
+      first.workspacePromptRevision,
+      first.workspaceText,
+    );
+    return Object.freeze({ admission, policies, promptSnapshot });
   }
 
   /**
@@ -993,10 +1196,22 @@ export function createModelPolicyService(
         resolved_tiers."maximumOutputTokens",
         resolved_tiers."metadataSource",
         resolved_tiers."monthlyBudgetUsd",
+        resolved_tiers."policyRevision",
         resolved_tiers."promptPricePerToken",
+        resolved_tiers."reasoningBudgetTokens",
+        resolved_tiers."reasoningDefaultEffort",
+        resolved_tiers."reasoningDefaultEnabled",
+        resolved_tiers."reasoningEffort",
+        resolved_tiers."reasoningEffortSupportKind",
+        resolved_tiers."reasoningEfforts",
+        resolved_tiers."reasoningMaxTokensAccepted",
+        resolved_tiers."reasoningMode",
+        resolved_tiers."reasoningTraceSafety",
         resolved_tiers."requestPriceUsd",
         resolved_tiers."reservationMarginBasisPoints",
         resolved_tiers."resolvedModel",
+        resolved_tiers."temperaturePreset",
+        resolved_tiers."temperatureSupported",
         resolved_tiers.tier
       FROM admission_state
       LEFT JOIN resolved_tiers ON true

@@ -1,3 +1,4 @@
+import { bootstrapAssistantRulesInTransaction } from "../assistant-rules/service.js";
 import type { AppDatabase } from "../database/database.js";
 import { createDatabase } from "../database/database.js";
 import { migrateDatabase } from "../database/migrate.js";
@@ -132,6 +133,12 @@ async function initializeWithCatalog(
     }
     const modelPolicy = createModelPolicyService(database);
     await latch.completeWith(input.document.documentSha256, async (transaction) => {
+      const workspace = await createIdentityService(database).bootstrapInTransaction(transaction, {
+        adminEmail: input.document.administratorEmail,
+        displayName: input.document.workspaceDisplayName,
+        workspaceIdentity: input.document.workspaceIdentity,
+      });
+      await bootstrapAssistantRulesInTransaction(transaction, workspace.workspaceId, new Date());
       await modelPolicy.bootstrapInTransaction(transaction, {
         catalog,
         employeeActiveGenerationLimit: input.document.employeeActiveGenerationLimit,

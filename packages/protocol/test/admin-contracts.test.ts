@@ -31,6 +31,18 @@ const fastCatalogId = "166b3dde-6308-4126-a312-0a83c6c006af";
 const balancedCatalogId = "240a43c1-aab5-49ea-b105-6d21f6abfbe6";
 const proCatalogId = "fa02d905-9b0f-46c6-933f-fd722d16f2d7";
 const cursor = "eyJrIjoiZW1wbG95ZWUifQ.signature_1";
+const capability = {
+  temperatureSupported: true,
+  reasoning: {
+    kind: "optional",
+    effortSupport: { kind: "all" },
+    maxTokensAccepted: true,
+    defaultEffort: "medium",
+    defaultEnabled: true,
+    traceSafety: "provider_excluded",
+  },
+} as const;
+const supportedStatus = { kind: "exact", reason: "supported" } as const;
 
 const pendingEmployee = {
   approvalId,
@@ -58,6 +70,7 @@ const catalogItems = [
     available: true,
     contextLength: 131_072,
     maximumOutputTokens: 32_768,
+    capability,
     validatedAt: "2026-08-08T00:00:00.000Z",
   },
   {
@@ -67,6 +80,7 @@ const catalogItems = [
     available: true,
     contextLength: 131_072,
     maximumOutputTokens: 32_768,
+    capability,
     validatedAt: "2026-08-08T00:00:00.000Z",
   },
   {
@@ -76,15 +90,20 @@ const catalogItems = [
     available: false,
     contextLength: 131_072,
     maximumOutputTokens: 32_768,
+    capability,
     validatedAt: "2026-08-08T00:00:00.000Z",
   },
 ] as const;
 
 const policyResponse = {
+  actor: { kind: "user", userId: "better-auth-user-1", displayName: "Andrea Pérez" },
+  changeKind: "update",
   revision: 2,
   currency: "USD",
   defaultTier: "balanced",
   monthlyBudgetUsd: "100.000000000000000000",
+  revertedFromRevision: null,
+  updatedAt: "2026-08-08T00:00:00.000Z",
   tiers: [
     {
       tier: "fast",
@@ -92,12 +111,19 @@ const policyResponse = {
       enabled: true,
       available: true,
       maximumOutputTokens: 4_096,
+      reasoningEffort: "off",
+      reasoningBudgetTokens: 0,
+      temperaturePreset: "precise",
+      temperatureStatus: supportedStatus,
+      effortStatus: { kind: "exact", reason: "reasoning_disabled" },
+      budgetStatus: { kind: "exact", reason: "reasoning_disabled" },
       catalog: {
         modelId: catalogItems[0].modelId,
         displayName: catalogItems[0].displayName,
         available: catalogItems[0].available,
         contextLength: catalogItems[0].contextLength,
         maximumOutputTokens: catalogItems[0].maximumOutputTokens,
+        capability,
         validatedAt: catalogItems[0].validatedAt,
       },
     },
@@ -107,12 +133,19 @@ const policyResponse = {
       enabled: true,
       available: true,
       maximumOutputTokens: 8_192,
+      reasoningEffort: "off",
+      reasoningBudgetTokens: 0,
+      temperaturePreset: "balanced",
+      temperatureStatus: supportedStatus,
+      effortStatus: { kind: "exact", reason: "reasoning_disabled" },
+      budgetStatus: { kind: "exact", reason: "reasoning_disabled" },
       catalog: {
         modelId: catalogItems[1].modelId,
         displayName: catalogItems[1].displayName,
         available: catalogItems[1].available,
         contextLength: catalogItems[1].contextLength,
         maximumOutputTokens: catalogItems[1].maximumOutputTokens,
+        capability,
         validatedAt: catalogItems[1].validatedAt,
       },
     },
@@ -122,12 +155,19 @@ const policyResponse = {
       enabled: true,
       available: false,
       maximumOutputTokens: 16_384,
+      reasoningEffort: "high",
+      reasoningBudgetTokens: 8_192,
+      temperaturePreset: "balanced",
+      temperatureStatus: supportedStatus,
+      effortStatus: { kind: "translated", reason: "max_tokens_precision_unverified" },
+      budgetStatus: { kind: "translated", reason: "max_tokens_precision_unverified" },
       catalog: {
         modelId: catalogItems[2].modelId,
         displayName: catalogItems[2].displayName,
         available: catalogItems[2].available,
         contextLength: catalogItems[2].contextLength,
         maximumOutputTokens: catalogItems[2].maximumOutputTokens,
+        capability,
         validatedAt: catalogItems[2].validatedAt,
       },
     },
@@ -138,7 +178,15 @@ const policyRequest = {
   observedRevision: 2,
   defaultTier: "balanced",
   monthlyBudgetUsd: "100",
-  tiers: policyResponse.tiers.map(({ available: _available, catalog: _catalog, ...tier }) => tier),
+  tiers: policyResponse.tiers.map((tier) => ({
+    catalogId: tier.catalogId,
+    enabled: tier.enabled,
+    maximumOutputTokens: tier.maximumOutputTokens,
+    reasoningBudgetTokens: tier.reasoningBudgetTokens,
+    reasoningEffort: tier.reasoningEffort,
+    temperaturePreset: tier.temperaturePreset,
+    tier: tier.tier,
+  })),
 };
 
 const usageResponse = {
