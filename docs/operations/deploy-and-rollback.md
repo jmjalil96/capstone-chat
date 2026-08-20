@@ -12,8 +12,9 @@ already exist. App Platform autodeploy and native rollback are disabled.
 
 ## One-time GitHub setup
 
-1. Protect `app-platform-staging` and `app-platform-production` before creating them. Require linear
-   history and block force push/deletion.
+1. Protect `app-platform-staging` and `app-platform-production` before creating them. Block force
+   push and deletion, but allow merge commits because each pointer must accept the exact green
+   `main` commit.
 2. Create GitHub environments `staging` and `production`. Restrict production to `main`, require
    the owner as reviewer, and disable unreviewed bypass. Staging may run automatically from the
    `main` CI workflow.

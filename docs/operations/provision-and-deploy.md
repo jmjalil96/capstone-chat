@@ -42,9 +42,9 @@ and provider resources are never reused across environments.
 ## One-time provisioning
 
 1. Record one exact green `main` commit. Under separate Git authorization, create each protected
-   release pointer once at that commit. Block deletion and force pushes, require linear history,
-   disable App Platform autodeploy, and connect only the matching pointer. Routine workflows cannot
-   create an absent pointer.
+   release pointer once at that commit. Block deletion and force pushes, but allow merge commits so
+   the pointer can accept the exact `main` commit. Disable App Platform autodeploy and connect only
+   the matching pointer. Routine workflows cannot create an absent pointer.
 2. Create the fixed App and database topology. Production obtains exactly two stable Dedicated
    Egress IPv4 addresses before any database URL is installed; allowlist each as a separate `/32`.
    Staging uses public connectivity with direct port 5432, `sslmode=verify-full`, distinct
