@@ -114,6 +114,9 @@ V1 user messages contain exactly one text block. Fastify validates Unicode, norm
 - Archived conversations remain searchable and are labeled **Archivada** in search results.
 - Opening an archived search result does not unarchive the conversation; the employee must explicitly choose **Desarchivar** to return it to the normal history list.
 - Deletion requires confirmation and immediately, irreversibly removes messages, compactions, titles, answer reports, and other conversation content from the active application. A report also disappears when its reported answer is removed.
+- Employee-initiated clipboard contents, downloaded Markdown or text files, print spools, and saved
+  PDFs leave the active application at the employee's explicit direction. Later conversation
+  deletion cannot recall those operating-system or destination-application copies.
 - There is no recycle bin or administrator restore in v1.
 - Deleting a conversation with an active generation cancels that generation first.
 - Non-content generation metadata remains available for workspace cost accounting after content deletion.
@@ -176,11 +179,25 @@ Continue creates an ordinary visible user message asking the model to continue f
 - Horizontally scrollable tables on narrow screens.
 - Inline code and horizontally scrollable fenced code blocks with syntax highlighting for recognized languages.
 - LaTeX-style inline and block mathematics.
-- Copy a complete answer as its original Markdown.
+- For a stable nonblank assistant answer, **Copiar respuesta** writes safe semantic HTML together
+  with a deterministic readable plain-text representation. A browser without rich clipboard
+  capability copies readable text and says **Copiado sin formato**; a denied rich write fails
+  without a second clipboard attempt.
+- **Copiar Markdown** writes the complete answer's exact original Markdown.
+- **Copiar tabla** writes one rendered table as safe TSV for spreadsheet paste.
+- **Descargar Markdown** and **Descargar texto** create answer-only UTF-8 browser downloads with
+  content-free filenames. **Imprimir o guardar como PDF** invokes the native print dialog with one
+  generic Capstone answer sheet.
 - Copy an individual code block without its fence markers.
 - Responsive behavior, accessible interaction, reliable scrolling, and keyboard-friendly operation.
 
 Raw HTML, scripts, iframes, and embedded web content are never rendered. External links accept only safe protocols and open separately. Stream deltas are accumulated and rendered in animation-frame batches rather than causing one React render per token.
+
+Phase 12A handoff is available after content becomes stable, including archived conversations and
+terminal partial answers. It is unavailable during streaming and does not export prompts,
+conversation titles, surrounding messages, account data, identifiers, report state, model
+metadata, or cost. Rich copy and print serialize only the established safe renderer; local
+handoff makes no API, provider, storage, analytics, or telemetry request.
 
 ### Model selection
 

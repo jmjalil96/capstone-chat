@@ -1,9 +1,10 @@
 # Capstone Chat
 
-Capstone Chat is Capstone's internal AI workspace. The current Phase 11 application provides
+Capstone Chat is Capstone's internal AI workspace. The current Phase 12A application provides
 approved employee identity, private branching conversations, durable streaming and reconnection,
 Fast/Balanced/Pro model policy, workspace behavior controls, administration, usage controls, and
-content-free operational telemetry.
+content-free operational telemetry. Stable assistant answers also support explicit browser-local
+formatted copy, Markdown and text downloads, table handoff, and native print/PDF output.
 
 The product is a TypeScript modular monolith:
 

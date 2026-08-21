@@ -10,7 +10,16 @@ import sql from "highlight.js/lib/languages/sql";
 import typescript from "highlight.js/lib/languages/typescript";
 import xml from "highlight.js/lib/languages/xml";
 import yaml from "highlight.js/lib/languages/yaml";
-import { Component, createContext, memo, type ReactNode, useContext, useMemo } from "react";
+import {
+  Component,
+  createContext,
+  memo,
+  type ReactNode,
+  type RefObject,
+  useContext,
+  useMemo,
+  useRef,
+} from "react";
 import ReactMarkdown, {
   type Components,
   type Options as ReactMarkdownOptions,
@@ -22,9 +31,8 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 
 import { copy } from "../copy";
+import { isSafeMessageDestination } from "./link-safety";
 import styles from "./message-content.module.css";
-
-const APPROVED_PROTOCOLS = new Set(["http:", "https:", "mailto:"]);
 
 const LANGUAGE_ALIASES = new Map<string, string>([
   ["bash", "bash"],
@@ -172,20 +180,8 @@ function prepareMathOutput() {
   };
 }
 
-function isSafeDestination(value: string | undefined): value is string {
-  if (!value) {
-    return false;
-  }
-
-  try {
-    return APPROVED_PROTOCOLS.has(new URL(value).protocol.toLowerCase());
-  } catch {
-    return false;
-  }
-}
-
 const safeUrlTransform: UrlTransform = (url, key) =>
-  key === "href" && isSafeDestination(url) ? url : "";
+  key === "href" && isSafeMessageDestination(url) ? url : "";
 
 function rendererText(value: unknown): string {
   const node = rendererNode(value);
@@ -213,11 +209,15 @@ function fencedCodeNode(node: unknown): RendererNode | undefined {
 interface RendererContextValue {
   readonly overflowLabel: string | undefined;
   readonly renderCodeAction: ((source: string) => ReactNode) | undefined;
+  readonly renderTableAction:
+    | ((tableRef: RefObject<HTMLTableElement | null>) => ReactNode)
+    | undefined;
 }
 
 const RendererContext = createContext<RendererContextValue>({
   overflowLabel: undefined,
   renderCodeAction: undefined,
+  renderTableAction: undefined,
 });
 
 interface MarkdownNode {
@@ -275,19 +275,43 @@ function insertSoftBreaks(parent: MarkdownNode): void {
 
 const markdownComponents: Components = {
   a: ({ children, href }) =>
-    isSafeDestination(href) ? (
+    isSafeMessageDestination(href) ? (
       <a className={styles.link} href={href} rel="noopener noreferrer" target="_blank">
         {children}
       </a>
     ) : (
       <span className={styles.invalidLink}>{children}</span>
     ),
-  h1: ({ children }) => <h2 className={styles.headingOne}>{children}</h2>,
-  h2: ({ children }) => <h3 className={styles.headingTwo}>{children}</h3>,
-  h3: ({ children }) => <h4 className={styles.headingThree}>{children}</h4>,
-  h4: ({ children }) => <h5 className={styles.headingFour}>{children}</h5>,
-  h5: ({ children }) => <h6 className={styles.headingFive}>{children}</h6>,
-  h6: ({ children }) => <h6 className={styles.headingSix}>{children}</h6>,
+  h1: ({ children }) => (
+    <h2 className={styles.headingOne} data-message-heading-level="1">
+      {children}
+    </h2>
+  ),
+  h2: ({ children }) => (
+    <h3 className={styles.headingTwo} data-message-heading-level="2">
+      {children}
+    </h3>
+  ),
+  h3: ({ children }) => (
+    <h4 className={styles.headingThree} data-message-heading-level="3">
+      {children}
+    </h4>
+  ),
+  h4: ({ children }) => (
+    <h5 className={styles.headingFour} data-message-heading-level="4">
+      {children}
+    </h5>
+  ),
+  h5: ({ children }) => (
+    <h6 className={styles.headingFive} data-message-heading-level="5">
+      {children}
+    </h6>
+  ),
+  h6: ({ children }) => (
+    <h6 className={styles.headingSix} data-message-heading-level="6">
+      {children}
+    </h6>
+  ),
   img: ({ alt }) => (alt ? <span className={styles.suppressedMedia}>{alt}</span> : null),
   input: ({ checked }) => (
     <input
@@ -317,7 +341,9 @@ const markdownComponents: Components = {
     return (
       <div className={styles.codeBlock} data-message-overflow="code">
         {renderCodeAction ? (
-          <div className={styles.codeAction}>{renderCodeAction(source)}</div>
+          <div className={styles.codeAction} data-message-handoff-excluded="">
+            {renderCodeAction(source)}
+          </div>
         ) : null}
         <div
           {...accessibility}
@@ -350,19 +376,27 @@ const markdownComponents: Components = {
     );
   },
   table: ({ children }) => {
-    const { overflowLabel } = useContext(RendererContext);
+    const { overflowLabel, renderTableAction } = useContext(RendererContext);
+    const tableRef = useRef<HTMLTableElement>(null);
     const accessibility = overflowLabel
       ? ({ "aria-label": overflowLabel, role: "region" } as const)
       : {};
 
     return (
-      <div
-        {...accessibility}
-        className={styles.tableScroll}
-        data-message-overflow="table"
-        tabIndex={0}
-      >
-        <table>{children}</table>
+      <div className={styles.tableBlock}>
+        {renderTableAction ? (
+          <div className={styles.tableAction} data-message-handoff-excluded="">
+            {renderTableAction(tableRef)}
+          </div>
+        ) : null}
+        <div
+          {...accessibility}
+          className={styles.tableScroll}
+          data-message-overflow="table"
+          tabIndex={0}
+        >
+          <table ref={tableRef}>{children}</table>
+        </div>
       </div>
     );
   },
@@ -435,6 +469,7 @@ export interface MessageContentProps {
   readonly fallback: ReactNode;
   readonly overflowLabel?: string;
   readonly renderCodeAction?: (source: string) => ReactNode;
+  readonly renderTableAction?: (tableRef: RefObject<HTMLTableElement | null>) => ReactNode;
   readonly source: string;
 }
 
@@ -442,11 +477,12 @@ export const MessageContent = memo(function MessageContent({
   fallback,
   overflowLabel,
   renderCodeAction,
+  renderTableAction,
   source,
 }: MessageContentProps) {
   const rendererContext = useMemo<RendererContextValue>(
-    () => ({ overflowLabel, renderCodeAction }),
-    [overflowLabel, renderCodeAction],
+    () => ({ overflowLabel, renderCodeAction, renderTableAction }),
+    [overflowLabel, renderCodeAction, renderTableAction],
   );
 
   return (

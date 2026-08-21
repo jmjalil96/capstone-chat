@@ -169,7 +169,7 @@ describe("message actions", () => {
     release();
   });
 
-  it("copies the exact raw source and keeps clipboard failure local", async () => {
+  it("keeps user-message copying exact and clipboard failure local", async () => {
     const user = userEvent.setup();
     let rejectClipboard!: (error: unknown) => void;
     const rejectedClipboard = new Promise<void>((_resolve, reject) => {
@@ -183,13 +183,13 @@ describe("message actions", () => {
       configurable: true,
       value: { writeText },
     });
-    actions(assistantMessage);
+    actions(userMessage);
     const copyButton = screen.getByRole("button", {
-      name: copy.conversations.messages.copyAnswer,
+      name: copy.conversations.messages.copyUser,
     });
 
     await user.click(copyButton);
-    expect(writeText).toHaveBeenCalledWith("Respuesta `exacta`");
+    expect(writeText).toHaveBeenCalledWith("Texto **original**");
     expect(await screen.findByRole("status")).toHaveTextContent(copy.conversations.messages.copied);
     await user.click(copyButton);
     expect(copyButton).toHaveAttribute("aria-disabled", "true");

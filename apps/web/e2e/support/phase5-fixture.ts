@@ -17,7 +17,12 @@ export {
 };
 
 interface ClipboardCaptureState {
-  readonly writes: string[];
+  readonly writes: ClipboardCapture[];
+}
+
+export interface ClipboardCapture {
+  readonly html?: string;
+  readonly text: string;
 }
 
 const clipboardCaptures = new WeakMap<Page, ClipboardCaptureState>();
@@ -25,10 +30,32 @@ const clipboardCaptures = new WeakMap<Page, ClipboardCaptureState>();
 export async function installClipboardCapture(page: Page): Promise<void> {
   const state: ClipboardCaptureState = { writes: [] };
   clipboardCaptures.set(page, state);
-  await page.exposeFunction("__capstoneE2eWriteClipboard", (text: string) => {
-    state.writes.push(text);
+  await page.exposeFunction("__capstoneE2eWriteClipboard", (capture: ClipboardCapture) => {
+    state.writes.push(capture);
   });
   await page.addInitScript(() => {
+    class CapturedClipboardItem {
+      static supports(type: string) {
+        return type === "text/html" || type === "text/plain";
+      }
+
+      readonly items: Record<string, Blob>;
+      readonly types: string[];
+
+      constructor(items: Record<string, Blob>) {
+        this.items = items;
+        this.types = Object.keys(items);
+      }
+
+      getType(type: string) {
+        const item = this.items[type];
+        return item ? Promise.resolve(item) : Promise.reject(new DOMException("Type unavailable"));
+      }
+    }
+    Object.defineProperty(window, "ClipboardItem", {
+      configurable: true,
+      value: CapturedClipboardItem,
+    });
     Object.defineProperty(window, "__capstoneE2eRejectClipboard", {
       configurable: true,
       value: false,
@@ -40,11 +67,29 @@ export async function installClipboardCapture(page: Page): Promise<void> {
         writeText(text: string) {
           const bridge = window as unknown as {
             __capstoneE2eRejectClipboard: boolean;
-            __capstoneE2eWriteClipboard(value: string): Promise<void>;
+            __capstoneE2eWriteClipboard(value: ClipboardCapture): Promise<void>;
           };
           return bridge.__capstoneE2eRejectClipboard
             ? Promise.reject(new DOMException("Clipboard denied", "NotAllowedError"))
-            : bridge.__capstoneE2eWriteClipboard(text);
+            : bridge.__capstoneE2eWriteClipboard({ text });
+        },
+        async write(items: ClipboardItem[]) {
+          const bridge = window as unknown as {
+            __capstoneE2eRejectClipboard: boolean;
+            __capstoneE2eWriteClipboard(value: ClipboardCapture): Promise<void>;
+          };
+          if (bridge.__capstoneE2eRejectClipboard) {
+            throw new DOMException("Clipboard denied", "NotAllowedError");
+          }
+          const item = items[0];
+          if (!item) {
+            throw new DOMException("Clipboard item required", "DataError");
+          }
+          const text = await (await item.getType("text/plain")).text();
+          const html = item.types.includes("text/html")
+            ? await (await item.getType("text/html")).text()
+            : undefined;
+          return bridge.__capstoneE2eWriteClipboard({ ...(html ? { html } : {}), text });
         },
       },
     });
@@ -52,6 +97,10 @@ export async function installClipboardCapture(page: Page): Promise<void> {
 }
 
 export async function clipboardWrites(page: Page): Promise<string[]> {
+  return (clipboardCaptures.get(page)?.writes ?? []).map(({ text }) => text);
+}
+
+export async function clipboardCapturesFor(page: Page): Promise<ClipboardCapture[]> {
   return [...(clipboardCaptures.get(page)?.writes ?? [])];
 }
 

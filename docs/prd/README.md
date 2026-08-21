@@ -85,6 +85,17 @@ require a separately approved contract release. The exact product decisions, lim
 values, corrected release choreography, prior failed attempt, and verification gates are recorded in
 [the Phase 11 workspace behavior controls plan](../implementation/11-workspace-behavior-controls-plan.md).
 
+The August 21, 2026 better-output-handoff decision (Phase 12A) amends response presentation and
+the browser privacy boundary without changing messages, providers, persistence, or hosted
+infrastructure. For one stable nonblank assistant answer, the primary copy action writes safe
+semantic HTML with a deterministic readable-text representation; exact Markdown remains
+available separately. Employees may also copy individual tables as TSV, download exact Markdown
+or readable text through an in-memory browser file, and invoke the native print dialog for an
+answer-only Capstone sheet. These actions are explicit local disclosures to the operating system
+or destination application, make no network request, and cannot be recalled by later conversation
+deletion. The exact behavior and verification boundary are recorded in
+[the Phase 12A better output handoff plan](../implementation/12-better-output-handoff-plan.md).
+
 The production-hosting decisions approved on 2026-08-11 replace the active raw-Droplet path with
 one DigitalOcean App Platform dynamic service in managed region `ric`, Dedicated Egress, and the
 already selected PlanetScale Postgres PS-5 Single Node cluster in AWS `us-east-1`. They amend the

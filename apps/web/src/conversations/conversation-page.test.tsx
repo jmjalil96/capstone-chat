@@ -1666,6 +1666,9 @@ describe("conversation page", () => {
       screen.queryByRole("button", { name: copy.conversations.messages.copyAnswer }),
     ).not.toBeInTheDocument();
     expect(
+      screen.queryByRole("button", { name: copy.conversations.messages.export }),
+    ).not.toBeInTheDocument();
+    expect(
       screen.queryByRole("button", { name: copy.conversations.messages.copyCode }),
     ).not.toBeInTheDocument();
   });

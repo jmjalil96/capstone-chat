@@ -9,6 +9,7 @@ import { type InfiniteData, useQueryClient } from "@tanstack/react-query";
 import {
   type ComponentType,
   lazy,
+  type RefObject,
   Suspense,
   useCallback,
   useEffect,
@@ -22,6 +23,7 @@ import Value from "typebox/value";
 
 import { copy } from "../copy";
 import { useConversationAlternativeContexts } from "./alternative-contexts";
+import { TableCopyAction } from "./answer-handoff-actions";
 import { AnswerReportDialog, type AnswerReportTarget } from "./answer-report-dialog";
 import { useConversationAnswerReports } from "./answer-reports";
 import {
@@ -150,6 +152,10 @@ function matchedMessageIdFromRouteState(state: unknown): string | undefined {
 
 function renderCodeCopyAction(source: string) {
   return <CodeCopyAction source={source} />;
+}
+
+function renderTableCopyAction(tableRef: RefObject<HTMLTableElement | null>) {
+  return <TableCopyAction tableRef={tableRef} />;
 }
 
 export function branchPresentationMessages(
@@ -1267,7 +1273,7 @@ export function ConversationPage() {
                       !conversation.isArchived &&
                       !composerIncoherent
                     }
-                    canCopy={contentStable}
+                    canCopy={contentStable && /\S/u.test(source)}
                     canReport={
                       message.role === "assistant" &&
                       !runtimeMatches &&
@@ -1306,6 +1312,7 @@ export function ConversationPage() {
                       void selectAlternative(message.id, selectionTargetMessageId, trigger)
                     }
                     onUndo={(trigger) => void undoSelectedTurn(message.id, trigger)}
+                    {...(terminalLabel ? { terminalLabel } : {})}
                   >
                     <Suspense fallback={null}>
                       <DeferredMessageContent
@@ -1314,6 +1321,9 @@ export function ConversationPage() {
                         onReady={markMessageContentReady}
                         overflowLabel={copy.conversations.messages.overflowLabel}
                         {...(contentStable ? { renderCodeAction: renderCodeCopyAction } : {})}
+                        {...(contentStable && message.role === "assistant"
+                          ? { renderTableAction: renderTableCopyAction }
+                          : {})}
                       />
                     </Suspense>
                   </MessageActions>

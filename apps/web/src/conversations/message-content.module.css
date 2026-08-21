@@ -22,7 +22,7 @@
 .root ol,
 .root blockquote,
 .root hr,
-.tableScroll,
+.tableBlock,
 .codeBlock {
   margin-block: var(--capstone-space-4);
 }
@@ -119,6 +119,21 @@
   max-width: 100%;
   overflow-x: auto;
   overscroll-behavior-inline: contain;
+}
+
+.tableBlock {
+  max-width: 100%;
+}
+
+.tableAction {
+  display: flex;
+  justify-content: flex-end;
+  padding: var(--capstone-space-1) var(--capstone-space-3);
+  border: 1px solid var(--app-border);
+  border-block-end: 0;
+  border-start-start-radius: var(--capstone-radius-sm);
+  border-start-end-radius: var(--capstone-radius-sm);
+  background: var(--app-panel-soft);
 }
 
 .tableScroll:focus-visible,

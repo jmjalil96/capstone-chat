@@ -234,6 +234,9 @@ The web application is a UI client. It is responsible for:
 - Starting and aborting API requests
 - Reading normalized stream events
 - Rendering Markdown and providing copy interactions
+- Serializing a stable assistant answer into safe semantic HTML, readable text, exact Markdown,
+  table TSV, in-memory downloads, and an ephemeral answer-only print sheet after an explicit
+  employee action
 
 The browser does not hold provider credentials, construct authoritative model prompts, calculate billing, enforce permissions, or resend conversation history to the model.
 
@@ -319,6 +322,8 @@ Better Auth rate limiting uses PostgreSQL storage so it applies across replicas.
 - Requests that bypass the configured same-origin boundary are rejected.
 - Fastify applies strict request-body size limits.
 - Security headers include a restrictive Content Security Policy, `frame-ancestors 'none'`, `object-src 'none'`, and `base-uri 'self'`.
+- Browser-local handoff starts only from a direct employee action, serializes the established safe
+  renderer rather than raw model HTML, and issues no network request or browser-storage write.
 - The edge enables HTTP Strict Transport Security.
 - Model-produced HTML is not executable.
 - V1 does not add a separate CSRF-token lifecycle; same-origin cookies, strict Origin validation, JSON-only mutations, and CORS enforcement protect Capstone endpoints.
@@ -504,7 +509,9 @@ Message content is stored as typed JSON blocks. V1 supports a text block whose c
 - Fastify's in-process injection covers ordinary HTTP routes.
 - Streaming, disconnect, cancellation, and backpressure tests use a real local HTTP listener.
 - Database tests cover branching, workspace isolation, idempotency, concurrent budget reservations, search, deletion, and reconciliation.
-- Browser tests cover sending, stopping, editing, trying again, branch switching, Markdown, copying, scrolling, connection recovery, and admin authorization.
+- Browser tests cover sending, stopping, editing, trying again, branch switching, Markdown,
+  formatted/plain/TSV copying, local downloads, print isolation, scrolling, connection recovery,
+  and admin authorization.
 - Critical streaming, cancellation, composer-keyboard, scrolling, and Markdown-overflow flows run across Chromium, Firefox, and WebKit. The broader browser suite may run primarily in Chromium to keep CI practical.
 - A fixed response-format gallery supports Playwright visual checks.
 - V1 avoids broad snapshot tests and mocked database behavior.

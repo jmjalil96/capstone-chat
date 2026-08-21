@@ -98,6 +98,14 @@ intentional; a future compatibility-removal migration requires separate approval
 release boundary and failed prior attempt are recorded in the
 [implementation plan](../implementation/11-workspace-behavior-controls-plan.md).
 
+Phase 12A (better output handoff, approved and implementation-authorized 2026-08-21) is a
+browser-only post-roadmap amendment. It adds formatted answer copy with readable-text fallback,
+exact Markdown copy and download, readable text download, per-table TSV copy, and native
+answer-only print/PDF handoff. It adds no message type, public API, database migration, provider,
+storage service, telemetry event, dependency, or hosted component. Stable terminal partial answers
+remain eligible and carry their existing warning into print output. The exact contract is recorded
+in the [Phase 12A implementation plan](../implementation/12-better-output-handoff-plan.md).
+
 ## Production launch baseline
 
 **Locked for Milestone 8**
@@ -153,7 +161,9 @@ release boundary and failed prior attempt are recorded in the
   an explicit content-free Pino field allowlist. App Platform Insights/alerts own native component
   signals, one DigitalOcean Uptime check owns independent public readiness/TLS/latency, and
   PlanetScale's protected dashboard owns database signals. V1 adds no proprietary backend or
-  browser agent, infrastructure collector, second telemetry backend, or employee content export.
+  browser agent, infrastructure collector, second telemetry backend, or automatic employee-content
+  export to telemetry or another service. Phase 12A employee-directed clipboard, download, and
+  print handoff stays local to the browser and operating system.
 - Production secret source copies live in the Capstone Bitwarden Teams organization. Runtime copies
   are component-scoped App Platform encrypted environment variables; migration, service,
   initialization, source-integration, and recovery authority remain distinct. The initial

@@ -1578,6 +1578,10 @@ select:focus-visible,
   border: 0;
 }
 
+.message-body {
+  min-width: 0;
+}
+
 .message-actions .message-action {
   min-block-size: 2.75rem;
   display: inline-flex;
@@ -1601,6 +1605,70 @@ select:focus-visible,
   gap: var(--capstone-space-2);
 }
 
+.answer-export-disclosure {
+  position: relative;
+}
+
+.answer-export-trigger::after {
+  content: "⌄";
+  margin-inline-start: var(--capstone-space-1);
+  font-size: 0.9em;
+}
+
+.answer-export-panel {
+  position: absolute;
+  z-index: 12;
+  inset-block-end: calc(100% + var(--capstone-space-1));
+  inset-inline-start: 0;
+  width: min(17rem, calc(100vw - 2rem));
+  display: grid;
+  gap: var(--capstone-space-1);
+  padding: var(--capstone-space-2);
+  background: var(--app-panel);
+  border: 1px solid var(--app-border);
+  border-radius: var(--capstone-radius-sm);
+  box-shadow: var(--capstone-shadow-lift);
+}
+
+.answer-export-option {
+  min-height: 2.75rem;
+  padding: var(--capstone-space-2) var(--capstone-space-3);
+  background: transparent;
+  border: 0;
+  border-radius: var(--capstone-radius-xs);
+  color: var(--app-text);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.answer-export-option:hover,
+.answer-export-option:focus-visible {
+  background: var(--app-panel-soft);
+}
+
+.answer-export-option[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.answer-handoff-feedback {
+  flex-basis: 100%;
+  color: var(--app-text-muted);
+  font-size: var(--capstone-type-small);
+  font-weight: var(--capstone-weight-medium);
+}
+
+.answer-handoff-feedback[role="alert"] {
+  color: var(--app-danger);
+}
+
+.table-copy-action .message-action {
+  min-block-size: 2.75rem;
+  display: inline-flex;
+  align-items: center;
+}
+
 .message-alternative-controls {
   color: var(--app-text-muted);
   font-family: var(--capstone-font-data);
@@ -1611,6 +1679,10 @@ select:focus-visible,
   color: var(--app-danger);
   font-size: var(--capstone-type-small);
   font-weight: var(--capstone-weight-medium);
+}
+
+.answer-print-root {
+  display: none;
 }
 
 .message-inline-edit {
@@ -3086,5 +3158,101 @@ select:focus-visible,
 
   .admin-catalog-list .admin-capability-list {
     grid-template-columns: 1fr;
+  }
+}
+
+@media print {
+  @page {
+    margin: 18mm;
+  }
+
+  body[data-answer-printing] > :not(.answer-print-root) {
+    display: none;
+  }
+
+  body[data-answer-printing] .answer-print-root {
+    display: block;
+    color: #17212b;
+    background: #fff;
+    font-family: Arial, sans-serif;
+    font-size: 11pt;
+    line-height: 1.5;
+  }
+
+  .answer-print-sheet {
+    max-width: 48rem;
+    margin: 0 auto;
+  }
+
+  .answer-print-brand,
+  .answer-print-label {
+    margin: 0;
+  }
+
+  .answer-print-brand {
+    color: #00577a;
+    font-size: 10pt;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .answer-print-label {
+    margin-block: 0.2rem 1.5rem;
+    padding-block-end: 0.65rem;
+    border-block-end: 1px solid #b9c4cc;
+    color: #4c5a64;
+    font-size: 9pt;
+  }
+
+  .answer-print-content h1,
+  .answer-print-content h2,
+  .answer-print-content h3,
+  .answer-print-content h4,
+  .answer-print-content h5,
+  .answer-print-content h6 {
+    break-after: avoid;
+    color: #17212b;
+  }
+
+  .answer-print-content pre,
+  .answer-print-content table,
+  .answer-print-content blockquote {
+    break-inside: avoid;
+  }
+
+  .answer-print-content pre {
+    padding: 0.75rem;
+    background: #f2f5f7;
+    border: 1px solid #d4dce1;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  .answer-print-content table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+
+  .answer-print-content th,
+  .answer-print-content td {
+    padding: 0.4rem;
+    border: 1px solid #aab6be;
+    text-align: start;
+    vertical-align: top;
+  }
+
+  .answer-print-content a {
+    color: #00577a;
+    overflow-wrap: anywhere;
+  }
+
+  .answer-print-warning {
+    margin-block-start: 1.5rem;
+    padding: 0.7rem 0.85rem;
+    background: #fff7df;
+    border-inline-start: 0.22rem solid #c77a00;
+    color: #563400;
+    font-weight: 600;
   }
 }

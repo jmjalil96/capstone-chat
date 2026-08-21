@@ -3,6 +3,7 @@ import { expect, type Locator, type Page, test } from "@playwright/test";
 import { copy } from "../src/copy";
 import { exerciseConversationControls } from "./support/phase5-controls-flow";
 import {
+  clipboardCapturesFor,
   clipboardWrites,
   conversationRegion,
   followConversationSidebarLink,
@@ -15,7 +16,7 @@ import {
   responseGalleryTypeScriptCode,
 } from "./support/phase5-fixture";
 
-test("@critical-stream renders the fixed response gallery safely and copies original source", async ({
+test("@critical-stream renders the fixed response gallery and hands off stable answers safely", async ({
   isMobile,
   page,
 }, testInfo) => {
@@ -127,14 +128,122 @@ test("@critical-stream renders the fixed response gallery safely and copies orig
   );
   expect((await clipboardWrites(page)).at(-1)).toBe(phaseFiveBrowserFixtures.galleryUser);
 
+  const handoffRequestCount = requests.length;
   const answerCopy = galleryMessage.getByRole("button", {
     name: copy.conversations.messages.copyAnswer,
   });
   await answerCopy.click();
-  await expect(galleryMessage.locator(".message-actions .copy-action button")).toHaveText(
+  await expect(galleryMessage.locator('.answer-handoff-feedback[role="status"]')).toHaveText(
     copy.conversations.messages.copied,
   );
+  const richAnswer = (await clipboardCapturesFor(page)).at(-1);
+  expect(richAnswer?.text).toContain("Encabezado de nivel uno");
+  expect(richAnswer?.text).toContain("Campo\tValor\nEstado\tEstable\nMotor\tLocal");
+  expect(richAnswer?.text).not.toContain("# Encabezado");
+  expect(richAnswer?.html).toContain("<h1>Encabezado de nivel uno</h1>");
+  expect(richAnswer?.html).toContain('<a href="https://example.com/seguro">sitio seguro</a>');
+  expect(richAnswer?.html).not.toMatch(/class=|target=|data-message|javascript:|<button/u);
+
+  const exportButton = galleryMessage.getByRole("button", {
+    name: copy.conversations.messages.export,
+  });
+  await exportButton.click();
+  await galleryMessage
+    .getByRole("button", { name: copy.conversations.messages.copyMarkdown })
+    .click();
   expect((await clipboardWrites(page)).at(-1)).toBe(responseGalleryAssistantMarkdown);
+  await expect(exportButton).toBeFocused();
+
+  const tableCopy = galleryContent
+    .getByRole("button", { name: copy.conversations.messages.copyTable })
+    .first();
+  await tableCopy.click();
+  expect((await clipboardWrites(page)).at(-1)).toBe("Campo\tValor\nEstado\tEstable\nMotor\tLocal");
+
+  await exportButton.click();
+  const markdownDownloadPromise = page.waitForEvent("download");
+  await galleryMessage
+    .getByRole("button", { name: copy.conversations.messages.downloadMarkdown })
+    .click();
+  const markdownDownload = await markdownDownloadPromise;
+  expect(markdownDownload.suggestedFilename()).toBe("respuesta-capstone-chat.md");
+  const markdownStream = await markdownDownload.createReadStream();
+  const markdownChunks: Buffer[] = [];
+  for await (const chunk of markdownStream) markdownChunks.push(Buffer.from(chunk));
+  expect(Buffer.concat(markdownChunks).toString("utf8")).toBe(responseGalleryAssistantMarkdown);
+
+  await exportButton.click();
+  const textDownloadPromise = page.waitForEvent("download");
+  await galleryMessage
+    .getByRole("button", { name: copy.conversations.messages.downloadText })
+    .click();
+  const textDownload = await textDownloadPromise;
+  expect(textDownload.suggestedFilename()).toBe("respuesta-capstone-chat.txt");
+  const textStream = await textDownload.createReadStream();
+  const textChunks: Buffer[] = [];
+  for await (const chunk of textStream) textChunks.push(Buffer.from(chunk));
+  const downloadedText = Buffer.concat(textChunks).toString("utf8");
+  expect(downloadedText).toContain("Encabezado de nivel uno");
+  expect(downloadedText).not.toContain("# Encabezado");
+
+  await page.evaluate(() => {
+    Object.defineProperty(window, "__capstonePrintSnapshot", {
+      configurable: true,
+      value: undefined,
+      writable: true,
+    });
+    window.print = () => {
+      (
+        window as unknown as {
+          __capstonePrintSnapshot: string | undefined;
+        }
+      ).__capstonePrintSnapshot = document.querySelector(".answer-print-root")?.outerHTML;
+    };
+  });
+  await exportButton.click();
+  await galleryMessage
+    .getByRole("button", { name: copy.conversations.messages.printAnswer })
+    .click();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (
+            window as unknown as {
+              __capstonePrintSnapshot: string | undefined;
+            }
+          ).__capstonePrintSnapshot,
+      ),
+    )
+    .not.toBeUndefined();
+
+  const capturedPrint = await page.evaluate(
+    () =>
+      (
+        window as unknown as {
+          __capstonePrintSnapshot: string | undefined;
+        }
+      ).__capstonePrintSnapshot,
+  );
+  expect(capturedPrint).toContain("Capstone Chat");
+  expect(capturedPrint).toContain("Encabezado de nivel uno");
+  expect(capturedPrint).not.toContain(phaseFiveBrowserFixtures.galleryTitle);
+  expect(capturedPrint).not.toContain(phaseFiveBrowserFixtures.galleryUser);
+  await page.emulateMedia({ media: "print" });
+  expect(
+    await page.evaluate(() => {
+      const printRoot = document.querySelector<HTMLElement>(".answer-print-root");
+      return {
+        applicationHidden: [...document.body.children]
+          .filter((child) => child !== printRoot)
+          .every((child) => getComputedStyle(child).display === "none"),
+        printDisplay: printRoot ? getComputedStyle(printRoot).display : undefined,
+      };
+    }),
+  ).toEqual({ applicationHidden: true, printDisplay: "block" });
+  await page.emulateMedia({ media: "screen" });
+  await expect(page.locator(".answer-print-root")).toHaveCount(0);
+  expect(requests).toHaveLength(handoffRequestCount);
 
   const codeCopy = galleryMessage
     .getByRole("button", { name: copy.conversations.messages.copyCode })
@@ -155,7 +264,7 @@ test("@critical-stream renders the fixed response gallery safely and copies orig
   await rejectedCopy.focus();
   await rejectedCopy.press("Enter");
   await expect(partialMessage.getByRole("alert")).toHaveText(
-    copy.conversations.messages.copyFailed,
+    copy.conversations.messages.copyFormattedFailed,
   );
   await expect(rejectedCopy).toBeFocused();
   await expect(
@@ -275,7 +384,9 @@ async function expectGalleryRhythm(content: Locator): Promise<void> {
     const looseSecond = element("Segundo párrafo de la tarea", "p").getBoundingClientRect().top;
     const footnotes = root.querySelector<HTMLElement>("[data-footnotes]");
     const footnoteList = footnotes?.querySelector<HTMLElement>(":scope > ol");
-    const actions = root.parentElement?.querySelector<HTMLElement>(":scope > .message-actions");
+    const actions = root
+      .closest<HTMLElement>(".message")
+      ?.querySelector<HTMLElement>(":scope > .message-actions");
     if (!quoteParagraph || !footnotes || !footnoteList || !actions)
       throw new Error("Missing response-gallery quote, footnote, or actions");
 

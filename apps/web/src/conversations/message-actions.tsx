@@ -2,6 +2,7 @@ import type { AlternativeContext, ConversationMessage } from "@capstone/protocol
 import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
 
 import { copy } from "../copy";
+import { AnswerHandoffActions } from "./answer-handoff-actions";
 import { writeClipboardText } from "./clipboard";
 import { userMessageContentValidationIssue } from "./content-validation";
 
@@ -72,6 +73,7 @@ interface MessageActionsProps {
   readonly children: ReactNode;
   readonly message: ConversationMessage;
   readonly pending: boolean;
+  readonly terminalLabel?: string;
   readonly onEdit: (content: string, onCommitted: () => void) => Promise<void>;
   readonly onContinue: () => void;
   readonly onRetry: () => void;
@@ -102,6 +104,7 @@ export function MessageActions({
   onSelectAlternative,
   onUndo,
   reported = false,
+  terminalLabel,
 }: MessageActionsProps) {
   const originalSource = message.content[0]?.text ?? "";
   const editorId = useId();
@@ -109,6 +112,7 @@ export function MessageActions({
   const committedRef = useRef(false);
   const editButtonRef = useRef<HTMLButtonElement>(null);
   const editorRef = useRef<HTMLTextAreaElement>(null);
+  const contentRootRef = useRef<HTMLDivElement>(null);
   const restoreEditFocusRef = useRef(false);
   const [editing, setEditing] = useState(false);
   const [editSource, setEditSource] = useState(originalSource);
@@ -233,19 +237,22 @@ export function MessageActions({
 
   return (
     <>
-      {children}
+      <div className="message-body" ref={contentRootRef}>
+        {children}
+      </div>
       {hasActions ? (
         <fieldset className="message-actions">
           <legend className="visually-hidden">{copy.conversations.messages.actions}</legend>
           {canCopy ? (
-            <CopyAction
-              label={
-                message.role === "user"
-                  ? copy.conversations.messages.copyUser
-                  : copy.conversations.messages.copyAnswer
-              }
-              source={originalSource}
-            />
+            message.role === "assistant" ? (
+              <AnswerHandoffActions
+                contentRootRef={contentRootRef}
+                source={originalSource}
+                {...(terminalLabel ? { terminalLabel } : {})}
+              />
+            ) : (
+              <CopyAction label={copy.conversations.messages.copyUser} source={originalSource} />
+            )
           ) : null}
           {message.role === "user" && canEdit ? (
             <button
