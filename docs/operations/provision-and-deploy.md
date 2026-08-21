@@ -38,16 +38,8 @@ The steady migration job receives only its separate migration `DATABASE_URL` plu
 authority is absent from steady components. Staging and production keys, roles, GitHub
 environments, Apps, and provider resources are never reused across environments.
 
-Production temporarily retains the predecessor's exact, non-secret deployment sentinels in its
-App spec. Before the first cleanup-aware promotion, a separately authorized production spec change
-must add `CAPSTONE_ENVIRONMENT=production` to the service and migration job while predecessor code
-is still active, then verify that deployment at the unchanged source revision. The cleanup-aware
-runtime ignores the sentinels; staging has already removed them. Do not remove the production
-entries until that runtime is active and ready there. Then freeze promotions and first merge a
-separately reviewed strict-contract follow-up that deletes the production compatibility overlay.
-With the production source pointer still fixed, remove exactly the six App-spec entries and
-validate the resulting deployment at the unchanged cleanup-aware revision using that accepted
-strict contract. These are separate production changes, not part of staging cleanup.
+Both environments require their fixed `CAPSTONE_ENVIRONMENT` value on the service and migration
+job. Neither App spec contains predecessor deployment sentinels.
 
 ## One-time provisioning
 

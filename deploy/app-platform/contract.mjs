@@ -134,25 +134,13 @@ const environmentOverlays = deeplyFreeze({
     branch: "app-platform-production",
     dedicatedEgress: true,
     domain: "chat.capstone.com.ec",
-    // Production remains on predecessor code that requires these values. They are inert in the
-    // cleanup-aware release and can be removed from the App spec only after that release is live.
-    jobEnvironment: {
-      general: {
-        CAPSTONE_SECRET_SOURCE: "platform-environment",
-        DEPLOYMENT_TARGET: "digitalocean-app-platform",
-      },
-    },
     jobSizeSlug: "apps-s-1vcpu-0.5gb",
     name: "capstone-chat-production",
     serviceEnvironment: {
       general: {
         CAPSTONE_ENVIRONMENT: "production",
-        CAPSTONE_SECRET_SOURCE: "platform-environment",
-        CLIENT_ADDRESS_SOURCE: "digitalocean-app-platform",
-        DEPLOYMENT_TARGET: "digitalocean-app-platform",
         EMAIL_FROM: "Capstone Chat <no-reply@mail.capstone.com.ec>",
         PUBLIC_ORIGIN: "https://chat.capstone.com.ec",
-        WEB_ASSETS: "production-build",
       },
       secret_keys: [],
     },
