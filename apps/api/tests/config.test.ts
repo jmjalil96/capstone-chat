@@ -14,11 +14,8 @@ import {
 
 const hostedCommon = {
   BETTER_AUTH_SECRET: "hosted-auth-secret-with-at-least-thirty-two-characters",
-  CAPSTONE_SECRET_SOURCE: "platform-environment",
-  CLIENT_ADDRESS_SOURCE: "digitalocean-app-platform",
   DATABASE_URL: "postgresql://app:secret@database.internal:5432/capstone?sslmode=verify-full",
   DEPLOYMENT_REVISION: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-  DEPLOYMENT_TARGET: "digitalocean-app-platform",
   EMAIL_DELIVERY: "resend",
   HOST: "0.0.0.0",
   MODEL_GATEWAY: "openrouter",
@@ -51,9 +48,7 @@ const initializationCommon = {
     "postgresql://initializer_migrate:migrate@database.internal:5432/capstone?sslmode=verify-full",
   CAPSTONE_INITIALIZATION_DOCUMENT: '{"schemaVersion":1}',
   CAPSTONE_INITIALIZATION_SCHEMA_VERSION: "1",
-  CAPSTONE_SECRET_SOURCE: "platform-environment",
   DEPLOYMENT_REVISION: hostedCommon.DEPLOYMENT_REVISION,
-  DEPLOYMENT_TARGET: "digitalocean-app-platform",
   MODEL_GATEWAY: "openrouter",
   NODE_ENV: "production",
   OPENROUTER_API_KEY: "temporary-catalog-key",
@@ -68,7 +63,6 @@ describe("application configuration", () => {
       clientAddressSource: "socket",
       databaseUrl: "postgresql://capstone:capstone@127.0.0.1:5432/capstone_chat",
       deploymentRevision: "development",
-      deploymentTarget: null,
       emailDelivery: "fake",
       emailFrom: null,
       host: "127.0.0.1",
@@ -81,7 +75,6 @@ describe("application configuration", () => {
       port: 3000,
       publicOrigin: "http://localhost:5173",
       resendApiKey: null,
-      secretSource: null,
       stagingEmailRecipients: [],
       trustProxy: false,
       webAssetsDirectory: null,
@@ -138,8 +131,6 @@ describe("application configuration", () => {
     });
     for (const config of [staging, production]) {
       expect(config.clientAddressSource).toBe("digitalocean-app-platform");
-      expect(config.deploymentTarget).toBe("digitalocean-app-platform");
-      expect(config.secretSource).toBe("platform-environment");
       expect(config.modelGateway).toBe("openrouter");
       expect(config.emailDelivery).toBe("resend");
       expect(config.webAssetsDirectory).toMatch(/\/apps\/web\/dist\/?$/u);
@@ -157,9 +148,6 @@ describe("application configuration", () => {
       ).toThrow("verify-full");
       expect(() => loadConfig({ ...environment, MODEL_GATEWAY: "fake" })).toThrow(
         "must be openrouter",
-      );
-      expect(() => loadConfig({ ...environment, WEB_ASSETS: "development" })).toThrow(
-        "production-build",
       );
     }
   });
@@ -225,11 +213,6 @@ describe("application configuration", () => {
   it.each([
     [{ ...productionEnvironment, BETTER_AUTH_SECRET: undefined }, "BETTER_AUTH_SECRET"],
     [{ ...productionEnvironment, BETTER_AUTH_SECRET: "short" }, "32 characters"],
-    [{ ...productionEnvironment, CAPSTONE_SECRET_SOURCE: undefined }, "CAPSTONE_SECRET_SOURCE"],
-    [{ ...productionEnvironment, CAPSTONE_SECRET_SOURCE: "file" }, "platform-environment"],
-    [{ ...productionEnvironment, CLIENT_ADDRESS_SOURCE: undefined }, "CLIENT_ADDRESS_SOURCE"],
-    [{ ...productionEnvironment, CLIENT_ADDRESS_SOURCE: "socket" }, "digitalocean-app-platform"],
-    [{ ...productionEnvironment, DEPLOYMENT_TARGET: undefined }, "DEPLOYMENT_TARGET"],
     [{ ...productionEnvironment, DEPLOYMENT_REVISION: "short" }, "full Git commit"],
     [{ ...productionEnvironment, EMAIL_DELIVERY: "fake" }, "must be resend"],
     [{ ...productionEnvironment, EMAIL_FROM: undefined }, "approved production sender"],
@@ -265,7 +248,6 @@ describe("application configuration", () => {
       { ...productionEnvironment, PUBLIC_ORIGIN: "http://chat.capstone.com.ec" },
       "approved production origin",
     ],
-    [{ ...productionEnvironment, WEB_ASSETS: "other" }, "production-build"],
     [{ ...productionEnvironment, CAPSTONE_SECRET_FILE: "/run/secrets/runtime.json" }, "prohibited"],
     [
       { ...productionEnvironment, CAPSTONE_INITIALIZATION_DOCUMENT: "{}" },
@@ -281,9 +263,7 @@ describe("application configuration", () => {
   it("keeps database, identity, recovery, and OpenRouter operator boundaries explicit", () => {
     const operatorAuthority = {
       CAPSTONE_ENVIRONMENT: "production",
-      CAPSTONE_SECRET_SOURCE: "platform-environment",
       DATABASE_URL: productionEnvironment.DATABASE_URL,
-      DEPLOYMENT_TARGET: "digitalocean-app-platform",
       NODE_ENV: "production",
     } satisfies NodeJS.ProcessEnv;
     expect(loadDatabaseConfig(operatorAuthority)).toEqual({
@@ -296,9 +276,7 @@ describe("application configuration", () => {
     const identity = loadIdentityOperatorConfig({
       BETTER_AUTH_SECRET: productionEnvironment.BETTER_AUTH_SECRET,
       CAPSTONE_ENVIRONMENT: "production",
-      CAPSTONE_SECRET_SOURCE: "platform-environment",
       DATABASE_URL: productionEnvironment.DATABASE_URL,
-      DEPLOYMENT_TARGET: "digitalocean-app-platform",
       EMAIL_DELIVERY: "resend",
       EMAIL_FROM: productionEnvironment.EMAIL_FROM,
       NODE_ENV: "production",
@@ -327,15 +305,36 @@ describe("application configuration", () => {
     });
   });
 
+  it("reserves secret-file authority exclusively for recovery preparation", () => {
+    const source = {
+      CAPSTONE_ENVIRONMENT: "production",
+      CAPSTONE_SECRET_FILE: "/run/capstone-secrets/recovery.json",
+      NODE_ENV: "production",
+    };
+    for (const load of [
+      loadConfig,
+      loadDatabaseConfig,
+      loadHealthBootstrapConfig,
+      loadIdentityOperatorConfig,
+      loadInitializationOperatorConfig,
+      loadMigrationConfig,
+      loadOpenRouterOperatorConfig,
+    ]) {
+      expect(() => load(source)).toThrow("prohibited in hosted components");
+    }
+    expect(loadConfig({ CAPSTONE_SECRET_FILE: source.CAPSTONE_SECRET_FILE })).toMatchObject({
+      applicationEnvironment: "development",
+      databaseUrl: "postgresql://capstone:capstone@127.0.0.1:5432/capstone_chat",
+    });
+  });
+
   it.each(["staging", "production"] as const)(
     "accepts only migration credentials and non-secret metadata for %s",
     (applicationEnvironment) => {
       const migration = {
         CAPSTONE_ENVIRONMENT: applicationEnvironment,
-        CAPSTONE_SECRET_SOURCE: "platform-environment",
         DATABASE_URL: hostedCommon.DATABASE_URL,
         DEPLOYMENT_REVISION: hostedCommon.DEPLOYMENT_REVISION,
-        DEPLOYMENT_TARGET: "digitalocean-app-platform",
         NODE_ENV: "production",
       } satisfies NodeJS.ProcessEnv;
       expect(loadMigrationConfig(migration)).toEqual({ databaseUrl: hostedCommon.DATABASE_URL });
@@ -381,10 +380,7 @@ describe("application configuration", () => {
     for (const applicationEnvironment of ["staging", "production"] as const) {
       const environment = {
         CAPSTONE_ENVIRONMENT: applicationEnvironment,
-        CAPSTONE_SECRET_SOURCE: "platform-environment",
-        CLIENT_ADDRESS_SOURCE: "digitalocean-app-platform",
         DEPLOYMENT_REVISION: hostedCommon.DEPLOYMENT_REVISION,
-        DEPLOYMENT_TARGET: "digitalocean-app-platform",
         HOST: "0.0.0.0",
         NODE_ENV: "production",
         PORT: "3000",

@@ -15,8 +15,6 @@ export type LogLevel = (typeof logLevels)[number];
 export type EmailDelivery = "disabled" | "fake" | "resend";
 export type ModelGatewayMode = "fake" | "openrouter";
 export type ClientAddressSource = "digitalocean-app-platform" | "socket";
-export type DeploymentTarget = "digitalocean-app-platform";
-export type SecretSource = "platform-environment";
 
 const configurationKeys = [
   "BETTER_AUTH_SECRET",
@@ -26,12 +24,9 @@ const configurationKeys = [
   "CAPSTONE_INITIALIZATION_DOCUMENT",
   "CAPSTONE_INITIALIZATION_SCHEMA_VERSION",
   "CAPSTONE_SECRET_FILE",
-  "CAPSTONE_SECRET_SOURCE",
   "CAPSTONE_STAGING_EMAIL_RECIPIENTS",
-  "CLIENT_ADDRESS_SOURCE",
   "DATABASE_URL",
   "DEPLOYMENT_REVISION",
-  "DEPLOYMENT_TARGET",
   "EMAIL_DELIVERY",
   "EMAIL_FROM",
   "HOST",
@@ -44,7 +39,6 @@ const configurationKeys = [
   "PORT",
   "PUBLIC_ORIGIN",
   "RESEND_API_KEY",
-  "WEB_ASSETS",
 ] as const;
 const configurationKeySet = new Set<string>(configurationKeys);
 export type ConfigurationKey = (typeof configurationKeys)[number];
@@ -88,27 +82,22 @@ export interface RecoveryPreparationOperatorConfig extends DatabaseConfig {
 
 export interface HealthBootstrapConfig {
   readonly applicationEnvironment: "staging" | "production";
-  readonly clientAddressSource: "digitalocean-app-platform";
   readonly deploymentRevision: string;
-  readonly deploymentTarget: DeploymentTarget;
   readonly host: "0.0.0.0";
   readonly nodeEnv: "production";
   readonly port: 3000;
-  readonly secretSource: SecretSource;
 }
 
 export interface InitializationOperatorConfig {
   readonly applicationDatabaseUrl: string;
   readonly applicationEnvironment: "staging" | "production";
   readonly deploymentRevision: string;
-  readonly deploymentTarget: DeploymentTarget;
   readonly initializationDocument: string;
   readonly initializationSchemaVersion: 1;
   readonly migrationDatabaseUrl: string;
   readonly modelGateway: "openrouter";
   readonly nodeEnv: "production";
   readonly openRouterApiKey: string;
-  readonly secretSource: SecretSource;
 }
 
 export interface ApiConfig {
@@ -117,7 +106,6 @@ export interface ApiConfig {
   readonly clientAddressSource: ClientAddressSource;
   readonly databaseUrl: string;
   readonly deploymentRevision: string;
-  readonly deploymentTarget: DeploymentTarget | null;
   readonly emailDelivery: EmailDelivery;
   readonly emailFrom: string | null;
   readonly host: string;
@@ -130,20 +118,16 @@ export interface ApiConfig {
   readonly port: number;
   readonly publicOrigin: string;
   readonly resendApiKey: string | null;
-  readonly secretSource: SecretSource | null;
   readonly stagingEmailRecipients: readonly string[];
   readonly trustProxy: false;
   readonly webAssetsDirectory: string | null;
 }
 
-export const stagingOrigin = "https://staging.chat.capstone.com.ec";
+const stagingOrigin = "https://staging.chat.capstone.com.ec";
 const productionOrigin = "https://chat.capstone.com.ec";
 const stagingSender = "Capstone Chat Staging <no-reply@staging.mail.capstone.com.ec>";
 const productionSender = "Capstone Chat <no-reply@mail.capstone.com.ec>";
 const productionWebAssetsDirectory = fileURLToPath(new URL("../../web/dist/", import.meta.url));
-const productionWebAssetsMode = "production-build";
-const appPlatformDeploymentTarget = "digitalocean-app-platform";
-const platformEnvironmentSecretSource = "platform-environment";
 const initializationDocumentMaximumBytes = 32 * 1_024;
 
 const developmentDefaults = {
@@ -210,6 +194,20 @@ function readEnvironment(source: NodeJS.ProcessEnv): Readonly<{
   });
 }
 
+function readNormalEnvironment(source: NodeJS.ProcessEnv): Readonly<{
+  applicationEnvironment: ApplicationEnvironment;
+  nodeEnv: RuntimeMode;
+}> {
+  const environment = readEnvironment(source);
+  if (hosted(environment.applicationEnvironment) && source.CAPSTONE_SECRET_FILE?.trim()) {
+    throw new ConfigurationError(
+      "CAPSTONE_SECRET_FILE",
+      "CAPSTONE_SECRET_FILE is prohibited in hosted components outside recovery preparation",
+    );
+  }
+  return environment;
+}
+
 function hosted(environment: ApplicationEnvironment): environment is "staging" | "production" {
   return environment !== "development";
 }
@@ -229,71 +227,6 @@ function readRequired(
     throw new ConfigurationError(key, `${key} is required for hosted operation`);
   }
   return value;
-}
-
-function readDeploymentTarget(
-  value: string | undefined,
-  environment: ApplicationEnvironment,
-): DeploymentTarget | null {
-  const target = value?.trim();
-  if (!target) {
-    if (hosted(environment)) {
-      throw new ConfigurationError(
-        "DEPLOYMENT_TARGET",
-        "DEPLOYMENT_TARGET is required when hosted",
-      );
-    }
-    return null;
-  }
-  if (target !== appPlatformDeploymentTarget) {
-    throw new ConfigurationError(
-      "DEPLOYMENT_TARGET",
-      `DEPLOYMENT_TARGET must be ${appPlatformDeploymentTarget}`,
-    );
-  }
-  return target;
-}
-
-function readSecretSource(
-  value: string | undefined,
-  environment: ApplicationEnvironment,
-): SecretSource | null {
-  const source = value?.trim();
-  if (!source) {
-    if (hosted(environment)) {
-      throw new ConfigurationError(
-        "CAPSTONE_SECRET_SOURCE",
-        "CAPSTONE_SECRET_SOURCE is required when hosted",
-      );
-    }
-    return null;
-  }
-  if (source !== platformEnvironmentSecretSource) {
-    throw new ConfigurationError(
-      "CAPSTONE_SECRET_SOURCE",
-      `CAPSTONE_SECRET_SOURCE must be ${platformEnvironmentSecretSource}`,
-    );
-  }
-  return source;
-}
-
-function readPlatformAuthority(
-  source: NodeJS.ProcessEnv,
-  environment: ApplicationEnvironment,
-): Readonly<{
-  deploymentTarget: DeploymentTarget | null;
-  secretSource: SecretSource | null;
-}> {
-  if (hosted(environment) && source.CAPSTONE_SECRET_FILE !== undefined) {
-    throw new ConfigurationError(
-      "CAPSTONE_SECRET_FILE",
-      "CAPSTONE_SECRET_FILE is prohibited for hosted application and migration components",
-    );
-  }
-  return Object.freeze({
-    deploymentTarget: readDeploymentTarget(source.DEPLOYMENT_TARGET, environment),
-    secretSource: readSecretSource(source.CAPSTONE_SECRET_SOURCE, environment),
-  });
 }
 
 function readAuthSecret(source: NodeJS.ProcessEnv, environment: ApplicationEnvironment): string {
@@ -412,26 +345,6 @@ function readHost(value: string | undefined, environment: ApplicationEnvironment
     throw new ConfigurationError("HOST", "HOST must be 0.0.0.0 when hosted");
   }
   return selected;
-}
-
-function readClientAddressSource(
-  value: string | undefined,
-  environment: ApplicationEnvironment,
-): ClientAddressSource {
-  const source = value?.trim() || (environment === "development" ? "socket" : undefined);
-  if (source !== "digitalocean-app-platform" && source !== "socket") {
-    throw new ConfigurationError(
-      "CLIENT_ADDRESS_SOURCE",
-      "CLIENT_ADDRESS_SOURCE must be digitalocean-app-platform or socket",
-    );
-  }
-  if (hosted(environment) && source !== "digitalocean-app-platform") {
-    throw new ConfigurationError(
-      "CLIENT_ADDRESS_SOURCE",
-      "CLIENT_ADDRESS_SOURCE must be digitalocean-app-platform when hosted",
-    );
-  }
-  return source;
 }
 
 function readPort(value: string | undefined, environment: ApplicationEnvironment): number {
@@ -653,25 +566,6 @@ function readOpenRouterApiKey(value: string | undefined, gateway: ModelGatewayMo
   return apiKey;
 }
 
-function readWebAssetsDirectory(
-  value: string | undefined,
-  environment: ApplicationEnvironment,
-): string | null {
-  if (hosted(environment)) {
-    if (value !== undefined && value.trim() !== productionWebAssetsMode) {
-      throw new ConfigurationError(
-        "WEB_ASSETS",
-        `WEB_ASSETS must be ${productionWebAssetsMode} when hosted`,
-      );
-    }
-    return productionWebAssetsDirectory;
-  }
-  if (value !== undefined) {
-    throw new ConfigurationError("WEB_ASSETS", "WEB_ASSETS is reserved for hosted builds");
-  }
-  return null;
-}
-
 function rejectConfiguredKeys(
   source: NodeJS.ProcessEnv,
   keys: readonly ConfigurationKey[],
@@ -708,8 +602,7 @@ function requireOfflineRecoverySecretFile(source: NodeJS.ProcessEnv, nodeEnv: Ru
 export function loadDatabaseConfig(
   source: NodeJS.ProcessEnv = process.env,
 ): Readonly<DatabaseConfig> {
-  const environment = readEnvironment(source);
-  readPlatformAuthority(source, environment.applicationEnvironment);
+  const environment = readNormalEnvironment(source);
   if (hosted(environment.applicationEnvironment)) {
     rejectConfiguredKeys(
       source,
@@ -732,8 +625,7 @@ export function loadDatabaseConfig(
 export function loadOpenRouterOperatorConfig(
   source: NodeJS.ProcessEnv = process.env,
 ): Readonly<OpenRouterOperatorConfig> {
-  const environment = readEnvironment(source);
-  readPlatformAuthority(source, environment.applicationEnvironment);
+  readNormalEnvironment(source);
   const apiKey = readOpenRouterApiKey(source.OPENROUTER_API_KEY, "openrouter");
   if (apiKey === null) {
     throw new ConfigurationError(
@@ -747,8 +639,7 @@ export function loadOpenRouterOperatorConfig(
 export function loadIdentityOperatorConfig(
   source: NodeJS.ProcessEnv = process.env,
 ): Readonly<IdentityOperatorConfig> {
-  const environment = readEnvironment(source);
-  readPlatformAuthority(source, environment.applicationEnvironment);
+  const environment = readNormalEnvironment(source);
   const emailDelivery = readEmailDelivery(
     source.EMAIL_DELIVERY,
     environment.applicationEnvironment,
@@ -799,18 +690,15 @@ export function loadRecoveryPreparationOperatorConfig(
 
 const migrationConfigurationKeys = new Set<ConfigurationKey>([
   "CAPSTONE_ENVIRONMENT",
-  "CAPSTONE_SECRET_SOURCE",
   "DATABASE_URL",
   "DEPLOYMENT_REVISION",
-  "DEPLOYMENT_TARGET",
   "NODE_ENV",
 ]);
 
 export function loadMigrationConfig(
   source: NodeJS.ProcessEnv = process.env,
 ): Readonly<DatabaseConfig> {
-  const environment = readEnvironment(source);
-  readPlatformAuthority(source, environment.applicationEnvironment);
+  const environment = readNormalEnvironment(source);
   if (hosted(environment.applicationEnvironment)) {
     rejectConfigurationOutside(
       source,
@@ -825,7 +713,7 @@ export function loadMigrationConfig(
 export function loadHealthBootstrapConfig(
   source: NodeJS.ProcessEnv = process.env,
 ): Readonly<HealthBootstrapConfig> {
-  const environment = readEnvironment(source);
+  const environment = readNormalEnvironment(source);
   if (!hosted(environment.applicationEnvironment)) {
     throw new ConfigurationError(
       "CAPSTONE_ENVIRONMENT",
@@ -836,52 +724,34 @@ export function loadHealthBootstrapConfig(
     source,
     new Set<ConfigurationKey>([
       "CAPSTONE_ENVIRONMENT",
-      "CAPSTONE_SECRET_SOURCE",
-      "CLIENT_ADDRESS_SOURCE",
       "DEPLOYMENT_REVISION",
-      "DEPLOYMENT_TARGET",
       "HOST",
       "NODE_ENV",
       "PORT",
     ]),
     "The health bootstrap cannot receive runtime secrets or unrelated configuration",
   );
-  const platform = readPlatformAuthority(source, environment.applicationEnvironment);
-  const clientAddressSource = readClientAddressSource(
-    source.CLIENT_ADDRESS_SOURCE,
-    environment.applicationEnvironment,
-  );
   const host = readHost(source.HOST, environment.applicationEnvironment);
   const port = readPort(source.PORT, environment.applicationEnvironment);
-  if (
-    platform.deploymentTarget === null ||
-    platform.secretSource === null ||
-    environment.nodeEnv !== "production" ||
-    clientAddressSource !== "digitalocean-app-platform" ||
-    host !== "0.0.0.0" ||
-    port !== 3_000
-  ) {
+  if (environment.nodeEnv !== "production" || host !== "0.0.0.0" || port !== 3_000) {
     throw new ConfigurationError(
-      "DEPLOYMENT_TARGET",
-      "The health bootstrap requires App Platform authority",
+      "CAPSTONE_ENVIRONMENT",
+      "The health bootstrap requires exact hosted runtime policy",
     );
   }
   return Object.freeze({
     applicationEnvironment: environment.applicationEnvironment,
-    clientAddressSource,
     deploymentRevision: readDeploymentRevision(source, environment.applicationEnvironment),
-    deploymentTarget: platform.deploymentTarget,
     host,
     nodeEnv: environment.nodeEnv,
     port,
-    secretSource: platform.secretSource,
   });
 }
 
 export function loadInitializationOperatorConfig(
   source: NodeJS.ProcessEnv = process.env,
 ): Readonly<InitializationOperatorConfig> {
-  const environment = readEnvironment(source);
+  const environment = readNormalEnvironment(source);
   if (!hosted(environment.applicationEnvironment)) {
     throw new ConfigurationError(
       "CAPSTONE_ENVIRONMENT",
@@ -896,16 +766,13 @@ export function loadInitializationOperatorConfig(
       "CAPSTONE_ENVIRONMENT",
       "CAPSTONE_INITIALIZATION_DOCUMENT",
       "CAPSTONE_INITIALIZATION_SCHEMA_VERSION",
-      "CAPSTONE_SECRET_SOURCE",
       "DEPLOYMENT_REVISION",
-      "DEPLOYMENT_TARGET",
       "MODEL_GATEWAY",
       "NODE_ENV",
       "OPENROUTER_API_KEY",
     ]),
     "The initialization job cannot receive steady application credentials or configuration",
   );
-  const platform = readPlatformAuthority(source, environment.applicationEnvironment);
   const schemaVersion = source.CAPSTONE_INITIALIZATION_SCHEMA_VERSION?.trim();
   if (schemaVersion !== "1") {
     throw new ConfigurationError(
@@ -934,36 +801,28 @@ export function loadInitializationOperatorConfig(
   assertProductionDatabaseCredentialBoundary(migrationDatabaseUrl, applicationDatabaseUrl);
   const modelGateway = readModelGateway(source.MODEL_GATEWAY, environment.applicationEnvironment);
   const openRouterApiKey = readOpenRouterApiKey(source.OPENROUTER_API_KEY, modelGateway);
-  if (
-    modelGateway !== "openrouter" ||
-    openRouterApiKey === null ||
-    platform.deploymentTarget === null ||
-    platform.secretSource === null
-  ) {
+  if (modelGateway !== "openrouter" || openRouterApiKey === null) {
     throw new ConfigurationError(
-      "DEPLOYMENT_TARGET",
-      "The initialization job requires hosted App Platform authority",
+      "MODEL_GATEWAY",
+      "The initialization job requires the hosted OpenRouter gateway",
     );
   }
   return Object.freeze({
     applicationDatabaseUrl,
     applicationEnvironment: environment.applicationEnvironment,
     deploymentRevision: readDeploymentRevision(source, environment.applicationEnvironment),
-    deploymentTarget: platform.deploymentTarget,
     initializationDocument,
     initializationSchemaVersion: 1,
     migrationDatabaseUrl,
     modelGateway,
     nodeEnv: environment.nodeEnv as "production",
     openRouterApiKey,
-    secretSource: platform.secretSource,
   });
 }
 
 export function loadConfig(source: NodeJS.ProcessEnv = process.env): Readonly<ApiConfig> {
-  const environment = readEnvironment(source);
+  const environment = readNormalEnvironment(source);
   const applicationEnvironment = environment.applicationEnvironment;
-  const platform = readPlatformAuthority(source, applicationEnvironment);
   if (hosted(applicationEnvironment)) {
     rejectConfiguredKeys(
       source,
@@ -983,13 +842,9 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): Readonly<Ap
   return Object.freeze({
     applicationEnvironment,
     authSecret: readAuthSecret(source, applicationEnvironment),
-    clientAddressSource: readClientAddressSource(
-      source.CLIENT_ADDRESS_SOURCE,
-      applicationEnvironment,
-    ),
+    clientAddressSource: hosted(applicationEnvironment) ? "digitalocean-app-platform" : "socket",
     ...readDatabaseConfig(source, applicationEnvironment),
     deploymentRevision: readDeploymentRevision(source, applicationEnvironment),
-    deploymentTarget: platform.deploymentTarget,
     emailDelivery,
     emailFrom: resend.emailFrom,
     host: readHost(source.HOST, applicationEnvironment),
@@ -1009,13 +864,12 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): Readonly<Ap
       applicationEnvironment,
     ),
     resendApiKey: resend.resendApiKey,
-    secretSource: platform.secretSource,
     stagingEmailRecipients: readStagingEmailRecipients(
       source.CAPSTONE_STAGING_EMAIL_RECIPIENTS,
       applicationEnvironment,
     ),
     trustProxy: false,
-    webAssetsDirectory: readWebAssetsDirectory(source.WEB_ASSETS, applicationEnvironment),
+    webAssetsDirectory: hosted(applicationEnvironment) ? productionWebAssetsDirectory : null,
   });
 }
 
@@ -1024,7 +878,6 @@ export function publicConfigMetadata(config: ApiConfig): Readonly<Record<string,
     applicationEnvironment: config.applicationEnvironment,
     clientAddressSource: config.clientAddressSource,
     deploymentRevision: config.deploymentRevision,
-    deploymentTarget: config.deploymentTarget,
     emailDelivery: config.emailDelivery,
     host: config.host,
     logLevel: config.logLevel,

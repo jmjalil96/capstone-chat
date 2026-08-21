@@ -1,5 +1,5 @@
 import { loadEntrypoint } from "./entrypoint-loader.js";
-import { loadEnvironmentFile } from "./environment.js";
+import { loadEnvironmentFile, loadRecoveryEnvironmentFile } from "./environment.js";
 
 const targets = Object.freeze({
   "health-bootstrap": () => import("./health-bootstrap.js"),
@@ -18,4 +18,7 @@ if (targetName === undefined || !Object.hasOwn(targets, targetName)) {
   throw new Error("A supported Capstone API entrypoint is required");
 }
 process.argv.splice(2, 1);
-await loadEntrypoint(loadEnvironmentFile, targets[targetName as keyof typeof targets]);
+await loadEntrypoint(
+  targetName === "recovery-prepare" ? loadRecoveryEnvironmentFile : loadEnvironmentFile,
+  targets[targetName as keyof typeof targets],
+);

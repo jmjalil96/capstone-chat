@@ -6,5 +6,9 @@ const environmentFile = fileURLToPath(new URL("../../../.env", import.meta.url))
 
 export function loadEnvironmentFile(): void {
   loadDotenv({ path: environmentFile, quiet: true });
+}
+
+export function loadRecoveryEnvironmentFile(): void {
+  loadEnvironmentFile();
   loadSecretEnvironment(process.env);
 }

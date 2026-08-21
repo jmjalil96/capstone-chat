@@ -41,19 +41,6 @@ describe("production secret environment", () => {
     expect(hasLoadedSecretEnvironment(source)).toBe(false);
   });
 
-  it("leaves App Platform encrypted environment variables in place without file authority", () => {
-    const source: NodeJS.ProcessEnv = {
-      BETTER_AUTH_SECRET: "platform-encrypted-secret",
-      CAPSTONE_SECRET_SOURCE: "platform-environment",
-      DEPLOYMENT_TARGET: "digitalocean-app-platform",
-    };
-
-    load(source);
-
-    expect(source.BETTER_AUTH_SECRET).toBe("platform-encrypted-secret");
-    expect(hasLoadedSecretEnvironment(source)).toBe(false);
-  });
-
   it("loads only the approved keys from a strict regular file", () => {
     const path = secretFile(
       JSON.stringify({
@@ -81,13 +68,9 @@ describe("production secret environment", () => {
     expect(hasLoadedSecretEnvironment(source)).toBe(false);
   });
 
-  it("permits explicit empty overrides of image-owned platform defaults for offline recovery", () => {
+  it("loads an offline recovery database credential without deployment sentinels", () => {
     const path = secretFile('{"DATABASE_URL":"postgresql://recovery@database/capstone"}');
-    const source: NodeJS.ProcessEnv = {
-      CAPSTONE_SECRET_FILE: path,
-      CAPSTONE_SECRET_SOURCE: "",
-      DEPLOYMENT_TARGET: "",
-    };
+    const source: NodeJS.ProcessEnv = { CAPSTONE_SECRET_FILE: path };
 
     load(source);
 
@@ -158,20 +141,5 @@ describe("production secret environment", () => {
     expect(() => load(source)).toThrow(SecretEnvironmentError);
     expect(source.DATABASE_URL).toBe("postgresql://environment-secret@database/capstone");
     expect(source.OPENROUTER_API_KEY).toBeUndefined();
-  });
-
-  it("rejects file authority for the App Platform target", () => {
-    const path = secretFile('{"DATABASE_URL":"postgresql://database/capstone"}');
-
-    expect(() =>
-      load({
-        CAPSTONE_SECRET_FILE: path,
-        CAPSTONE_SECRET_SOURCE: "platform-environment",
-        DEPLOYMENT_TARGET: "digitalocean-app-platform",
-      }),
-    ).toThrow(SecretEnvironmentError);
-    expect(() =>
-      load({ CAPSTONE_SECRET_FILE: path, DEPLOYMENT_TARGET: "digitalocean-app-platform" }),
-    ).toThrow(SecretEnvironmentError);
   });
 });
