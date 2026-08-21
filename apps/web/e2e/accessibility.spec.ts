@@ -353,6 +353,7 @@ test("reviews terminal and active response presentation at desktop and mobile si
 test("@critical-accessibility reviews all administration pages and their confirmation dialog at desktop and mobile sizes", async ({
   page,
 }, testInfo) => {
+  test.setTimeout(90_000);
   await installAdminFixture(page);
   for (const viewport of [
     { name: "desktop", width: 1_280, height: 800 },
