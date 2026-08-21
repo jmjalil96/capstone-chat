@@ -96,18 +96,19 @@ binding recovery objective; that exception does not weaken any controlled recove
   continuously accessible hours of point-in-time recovery after the schedule has aged fully.
 - V1 does not build a custom backup service.
 - Database restoration is an operational disaster-recovery procedure, not an employee or administrator conversation-restore feature.
-- A documented restore procedure must be successfully exercised before production acceptance and
-  the first employee invitation. Persistent staging is the normal pre-production application
-  environment, but it never substitutes for isolated recovery validation of the authoritative
-  production database. An unaccepted production stack receives no real employee data.
+- A documented restore procedure must be successfully exercised before the first employee
+  invitation or any real employee data enters production. Persistent staging is the normal
+  pre-production application environment, but it never substitutes for isolated recovery
+  validation of the authoritative production database. Owner acceptance of an application release
+  does not substitute for that recovery evidence.
 - Conversation deletion is immediate and irreversible in the active application. Deleted content
   may remain inaccessible in encrypted database backups until the approved 84-hour retention
   window expires; that operating window does not assert an undocumented physical-media schedule.
 - The production recovery-point objective is at most 15 minutes and the recovery-time objective is
   at most four hours.
-- The restore procedure is rehearsed against an isolated restored database before production
-  acceptance and the first employee invitation. The original production database remains
-  untouched during the rehearsal.
+- The restore procedure is rehearsed against an isolated restored database before the first
+  employee invitation or any real employee data enters production. The original production
+  database remains untouched during the rehearsal.
 
 ## Repository shape
 
@@ -218,8 +219,9 @@ Shared executable TypeScript is limited to transport contracts. The brand packag
 
 Phase 11 follows this expand/contract rule. Migration `0009` is additive, preserves the
 authoritative Phase 10 database, and keeps predecessor version-1 generation inserts valid while
-the replacement runs. Phase 11 code writes behavior contract version 2 explicitly. A later `0010`
-contract release may remove predecessor-compatible defaults only after production acceptance.
+the replacement runs. Phase 11 code writes behavior contract version 2 explicitly. No migration
+`0010` exists or is pending; schema-1 initialization and version-1 predecessor compatibility remain
+intentional. Removing them would require a separately approved contract release.
 
 ## Browser responsibilities
 

@@ -70,8 +70,9 @@ The production overlay is strict: both components require
 `CAPSTONE_ENVIRONMENT=production`, predecessor deployment sentinels are absent, and the migration
 job receives only its migration `DATABASE_URL` plus non-secret deployment metadata.
 API startup never applies migrations. Additive `0009`, schema-1 initialization, version-1
-predecessor writes, and Phase 11 version-2 writes remain compatible; `0010` is deferred until
-production acceptance. There is no quiesce, database copy/replacement, or deployment cutover step.
+predecessor writes, and Phase 11 version-2 writes remain compatible. No migration `0010` exists or
+is pending; a future compatibility-removal migration requires separate approval. There is no
+quiesce, database copy/replacement, or deployment cutover step.
 
 ## Failure and forward revert
 

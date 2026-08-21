@@ -84,9 +84,10 @@ job. Neither App spec contains predecessor deployment sentinels.
     [Deploy and rollback](./deploy-and-rollback.md). Thereafter all releases use the short steady
     path; configuration/provisioning changes remain separately reviewed.
 
-Production is not accepted for employee data until staging, bounded production smokes, TLS,
-database authority, telemetry, failure preservation, forward revert, Ecuador/browser/accessibility,
-aged isolated PITR, controlled cold recreation, and the first controlled email gate pass.
+Owner acceptance of a source release does not authorize real employee data. Production receives no
+real employee data until staging, bounded production smokes, TLS, database authority, telemetry,
+failure preservation, forward revert, Ecuador/browser/accessibility, aged isolated PITR,
+controlled cold recreation, and the first controlled email gate pass.
 
 ## Recovery is separate
 

@@ -1,7 +1,7 @@
 # Capstone Chat v1 PRD
 
 Status: locked decision baseline  
-Last updated: 2026-08-20
+Last updated: 2026-08-21
 
 This directory records only the Capstone Chat decisions explicitly approved during product discovery. It is the baseline for continued design and implementation.
 
@@ -78,9 +78,11 @@ Phase 11 preserves the authoritative Phase 10 database and follows the ordinary 
 deployment rule. Additive migration `0009` backfills truthful `migration` snapshots while retaining
 schema-1 initialization and predecessor version-1 writes; Phase 11 application code explicitly
 writes version 2. It does not quiesce the application, replace the database, expose initialization
-credentials to deployment components, or add a custom workflow operation. A later `0010` contract
-migration remains reserved until production acceptance. The exact product decisions, limits,
-initial values, corrected release choreography, prior failed attempt, and verification gates are recorded in
+credentials to deployment components, or add a custom workflow operation. The owner accepted
+Phase 11 in production on August 21, 2026. No migration `0010` exists or is pending; schema-1
+initialization and version-1 predecessor compatibility remain intentional, and removing them would
+require a separately approved contract release. The exact product decisions, limits, initial
+values, corrected release choreography, prior failed attempt, and verification gates are recorded in
 [the Phase 11 workspace behavior controls plan](../implementation/11-workspace-behavior-controls-plan.md).
 
 The production-hosting decisions approved on 2026-08-11 replace the active raw-Droplet path with
@@ -89,7 +91,7 @@ already selected PlanetScale Postgres PS-5 Single Node cluster in AWS `us-east-1
 Phase 8 hosting, managed edge/privacy boundary, trusted client-address source, secret delivery,
 deployment, observability routing, recovery procedure, and associated operating cost while leaving
 the product, workload, latency, budget, data, and backup contracts locked. The source-controlled
-design and the external gates that still block acceptance are recorded in
+design and its historical external-gate record are recorded in
 [the App Platform and PlanetScale amendment](../implementation/08-digitalocean-app-platform-planetscale-amendment-plan.md).
 
 The August 12, 2026 source-build decision further replaces the published but production-unused

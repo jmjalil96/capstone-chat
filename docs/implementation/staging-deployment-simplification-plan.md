@@ -47,3 +47,11 @@ No repository change creates a pointer, GitHub environment, App, database, role,
 provider request, deployment, or production mutation. Separate provider resources and roles enforce
 opaque-secret separation; repository tests can validate only explicit environment/origin/sender/key
 placement, not cryptographically identify a reused opaque secret.
+
+## Production follow-up — August 21, 2026
+
+Production later accepted the cleanup-aware source revision
+`9df207f1ddd762e66c0e6528f66c3bd2ca1faf0a` under the strict hosted contract. The owner also
+accepted Phase 11 in production. No migration `0010` exists or is pending; schema-1 initialization
+and version-1 predecessor compatibility remain intentional, and removing them would require a
+separately approved contract release. Recovery exercises remain independently governed.

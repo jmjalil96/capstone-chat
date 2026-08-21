@@ -1,6 +1,6 @@
 # Phase 11 — Workspace behavior controls
 
-Status: implementation complete locally; production, provider, and manual acceptance pending.
+Status: implemented and owner-accepted in production on 2026-08-21; recovery exercises remain separately governed.
 
 ## Authority and corrected release boundary
 
@@ -14,8 +14,8 @@ The Phase 10 database is authoritative. Phase 11 uses the ordinary expand/contra
 1. the existing migration-only PRE_DEPLOY job applies additive migration 0009;
 2. the Phase 10 service remains schema-compatible during replacement;
 3. Phase 11 code writes the new behavior contract explicitly; and
-4. a later 0010 contract release may remove predecessor-compatible defaults only after production
-   acceptance.
+4. predecessor-compatible defaults remain intentional after acceptance. No migration 0010 exists
+   or is pending; removing those defaults requires a separately approved contract release.
 
 There is no quiesce operation, health-only product stage, database replacement, data copy,
 initialization schema 2, temporary initialization credential, or cutover-stage workflow operation.
@@ -178,7 +178,7 @@ Required local verification is pnpm check, pnpm typecheck, pnpm test, pnpm build
 migration integration, production-container smoke, Playwright, deterministic load, bundle,
 repository/operations audit, and recovery verification.
 
-## Completion status — 2026-08-19
+## Local completion record — 2026-08-19
 
 Implementation and local verification are complete:
 
@@ -202,3 +202,22 @@ This delivery ends with implementation and complete local verification. It does 
 commit, push, pull request, production change, replacement database, data copy, or paid/live
 provider call. Production deployment, live OpenRouter capability confirmation, and manual product
 acceptance remain explicitly pending.
+
+## Production acceptance — 2026-08-21
+
+Phase 11 is live in production at `9df207f1ddd762e66c0e6528f66c3bd2ca1faf0a`, which contains
+boundary commit `2cf563a309abb332533ad301d1f8b2a55d2d2875` and additive migration `0009`. The
+owner's explicit full acceptance closes the production, provider-integration, and manual-product
+acceptance items recorded as pending in the August 19 local completion record.
+
+Active production deployment `97fa1818-4f04-4a0d-93e9-ccc2dd1084af` reports that exact source for
+both components, has matching desired and active strict contracts with no deployment in progress,
+and returns public readiness `200` with the exact revision.
+
+The accepted release retains schema-1 initialization and version-1 predecessor compatibility while
+Phase 11 writes behavior contract version 2. No migration `0010` exists or is pending; any future
+compatibility-removal migration requires a separately approved contract release.
+
+Owner acceptance does not manufacture a PITR or cold-App-recreation result. Recovery exercises
+remain independently authorized, executed, and evidenced under the active recovery runbooks and
+remain required before any real employee data or first employee invitation.

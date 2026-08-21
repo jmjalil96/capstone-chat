@@ -199,8 +199,10 @@ forward-revert rollback, recovery, domains, secrets, providers, and incidents ar
 
 Phase 11 preserves ordinary expand/contract deployment: additive migration `0009` upgrades any
 valid Phase 10 database, initialization remains schema 1, predecessor writes remain version 1
-compatible, and Phase 11 writes version 2. Migration `0010` is deferred. There is no startup
-migration, quiesce stage, database copy/replacement, schema-2 initializer, or custom cutover path.
+compatible, and Phase 11 writes version 2. No migration `0010` exists or is pending; removing the
+intentional compatibility boundary would require a separately approved contract release. There is
+no startup migration, quiesce stage, database copy/replacement, schema-2 initializer, or custom
+cutover path.
 
 The minimal `health-bootstrap` entrypoint is for first provisioning or controlled recovery only.
 It exposes health endpoints without product or database authority and is not part of routine
