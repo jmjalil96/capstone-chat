@@ -73,11 +73,11 @@ releases: release A adds protocol and web acceptance of the `title` usage purpos
 `conversation.naming` event; release B adds migration `0008`, the `finalizing` lifecycle,
 automatic titles, durable reattachment, and answer reports.
 
-Phase 11 (workspace behavior controls, approved and implementation-authorized 2026-08-17) is a
-post-roadmap amendment that adds one administrator-owned workspace-rules layer, immutable prompt
-and policy history, and bounded per-tier reasoning and temperature controls. It does not reopen the
-eight milestones or introduce personal instructions, reasoning traces, queues, services, caches, or
-new infrastructure.
+Phase 11 (workspace behavior controls, approved and implementation-authorized 2026-08-17,
+implemented, and owner-accepted in production 2026-08-21) is a post-roadmap amendment that adds one
+administrator-owned workspace-rules layer, immutable prompt and policy history, and bounded
+per-tier reasoning and temperature controls. It does not reopen the eight milestones or introduce
+personal instructions, reasoning traces, queues, services, caches, or new infrastructure.
 
 Implementation remains dependency ordered:
 
@@ -92,9 +92,10 @@ Implementation remains dependency ordered:
 
 The foundation may not expose tier behavior early. Phase 11 uses the ordinary migration-only
 `PRE_DEPLOY` job and the locked expand/contract sequence: additive `0009`, predecessor-compatible
-replacement, and no destructive contract migration in the release candidate. A later `0010` is
-reserved until production acceptance. The corrected release boundary and failed prior attempt are
-recorded in the
+replacement, and no destructive contract migration in the release candidate. No migration `0010`
+exists or is pending. Schema-1 initialization and version-1 predecessor compatibility remain
+intentional; a future compatibility-removal migration requires separate approval. The corrected
+release boundary and failed prior attempt are recorded in the
 [implementation plan](../implementation/11-workspace-behavior-controls-plan.md).
 
 ## Production launch baseline
@@ -118,8 +119,8 @@ recorded in the
   failure-preservation, and forward-revert checks. Production additionally proves Dedicated
   Egress and its database IP restrictions.
   The initial owner invitation is the final controlled email gate. No second employee is invited
-  until invitation, verification, and password-reset delivery pass and final acceptance is
-  recorded.
+  until invitation, verification, and password-reset delivery pass and final employee-launch
+  authorization is recorded.
 - The public origin remains `https://chat.capstone.com.ec`. Hostinger publishes a DNS-only CNAME to
   the provider-displayed `.ondigitalocean.app` target. App Platform's Cloudflare-backed edge owns
   managed TLS, the custom domain is primary, and the starter domain redirects with HTTPS 308 while

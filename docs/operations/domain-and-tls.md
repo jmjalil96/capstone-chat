@@ -91,4 +91,4 @@ before proceeding.
    the final controlled email gate. Verify invitation, verification, and reset delivery,
    production-origin fragment links, Spanish HTML, plain text, expiry, and current desktop/mobile
    rendering without retaining recipients or action URLs in evidence. Do not invite a second
-   employee until final acceptance is recorded.
+   employee until final employee-launch authorization is recorded.
