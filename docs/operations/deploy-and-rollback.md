@@ -66,19 +66,9 @@ Production is manual and never infers a moving target:
 5. Record UTC time, commit, CI run, deployment ID, migration, readiness, duration, and safe resource
    peaks. Do not claim the staging and production builds are byte-identical.
 
-The production overlay temporarily pins six inert predecessor sentinels: four on the service and
-two on the migration job. Production also predates explicit `CAPSTONE_ENVIRONMENT`; before the
-first cleanup-aware promotion, a separately authorized spec change must add its fixed `production`
-value to both components and prove the predecessor revision remains ready. Then deploy and verify
-the new runtime before any later spec change removes the sentinels. Once that runtime is active,
-freeze production promotions and merge a separately reviewed follow-up that removes the six
-compatibility entries from the production contract. Keep the production source pointer fixed,
-then remove exactly those six entries from the App spec. Validate the resulting deployment at the
-unchanged cleanup-aware source revision with the accepted strict contract before promotions resume.
-Never remove the entries while predecessor code is active or before the strict validator is ready.
-
-Apart from that bounded production transition, the migration job receives only its migration
-`DATABASE_URL` plus non-secret deployment metadata.
+The production overlay is strict: both components require
+`CAPSTONE_ENVIRONMENT=production`, predecessor deployment sentinels are absent, and the migration
+job receives only its migration `DATABASE_URL` plus non-secret deployment metadata.
 API startup never applies migrations. Additive `0009`, schema-1 initialization, version-1
 predecessor writes, and Phase 11 version-2 writes remain compatible; `0010` is deferred until
 production acceptance. There is no quiesce, database copy/replacement, or deployment cutover step.

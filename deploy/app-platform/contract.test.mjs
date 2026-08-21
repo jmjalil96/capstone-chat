@@ -208,9 +208,7 @@ test("locks overlays to fixed branches, sizes, domains, email, and egress", () =
   ]);
   assert.deepEqual(Object.keys(production.job.environment.general).sort(), [
     "CAPSTONE_ENVIRONMENT",
-    "CAPSTONE_SECRET_SOURCE",
     "DEPLOYMENT_REVISION",
-    "DEPLOYMENT_TARGET",
     "NODE_ENV",
   ]);
   assert.deepEqual(Object.keys(staging.service.environment.general).sort(), [
@@ -227,10 +225,7 @@ test("locks overlays to fixed branches, sizes, domains, email, and egress", () =
   ]);
   assert.deepEqual(Object.keys(production.service.environment.general).sort(), [
     "CAPSTONE_ENVIRONMENT",
-    "CAPSTONE_SECRET_SOURCE",
-    "CLIENT_ADDRESS_SOURCE",
     "DEPLOYMENT_REVISION",
-    "DEPLOYMENT_TARGET",
     "EMAIL_DELIVERY",
     "EMAIL_FROM",
     "HOST",
@@ -239,7 +234,6 @@ test("locks overlays to fixed branches, sizes, domains, email, and egress", () =
     "NODE_ENV",
     "PORT",
     "PUBLIC_ORIGIN",
-    "WEB_ASSETS",
   ]);
   assert.deepEqual(staging.job.environment.secret_keys, ["DATABASE_URL"]);
   assert.deepEqual(production.job.environment.secret_keys, ["DATABASE_URL"]);
