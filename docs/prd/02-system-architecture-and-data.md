@@ -41,10 +41,10 @@ The initial system does not introduce microservices, Redis, or a separate queue.
   retains useful partial content as incomplete, while an answer-durable `finalizing` chat completes
   and its hidden title work is cancelled. A stream whose browser disconnected keeps producing until
   it completes, is stopped, or the drain period ends (Phase 10).
-- Production credentials are delivered as component-scoped DigitalOcean App Platform encrypted
+- Hosted credentials are delivered as component-scoped DigitalOcean App Platform encrypted
   environment variables; recoverable source copies remain in the approved company-controlled
   password manager and never enter the image, repository, process arguments, or application logs.
-- The OCI artifact, application contracts, and PostgreSQL boundary remain portable. The production
+- The OCI artifact, application contracts, and PostgreSQL boundary remain portable. The hosted
   ingress, secret, deployment, and operations adapter is intentionally specific to DigitalOcean
   App Platform under the approved Phase 8 amendment.
 
@@ -143,11 +143,12 @@ Shared executable TypeScript is limited to transport contracts. The brand packag
 - Playwright runs in a separate CI job so browser failures and artifacts remain easy to inspect.
 - CI does not receive an OpenRouter key and never calls real models.
 - Dependency caching may improve CI speed, but generated build output is not committed.
-- GitHub Actions remains the authoritative validation gate for production deployment. It builds
-  and smokes the production Dockerfile but does not publish a registry artifact. A protected
-  named-operator workflow advances a non-force release-pointer branch to the exact green
-  protected-main commit, asks App Platform to build that source with automatic deploys disabled,
-  and accepts the release only when the service and migration job report that same source commit.
+- GitHub Actions remains the authoritative hosted validation gate. It builds and smokes the
+  production Dockerfile but does not publish a registry artifact. An exact green `main` commit is
+  automatically advanced without force through persistent staging; a protected named-operator
+  workflow may then advance production to that fixed staging-accepted commit. Each App builds with
+  automatic deploys disabled and is accepted only when its service and migration job report that
+  same source commit.
 - A task orchestrator is added only if measured build time or dependency ordering requires it.
 
 ## Local development
@@ -159,7 +160,8 @@ Shared executable TypeScript is limited to transport contracts. The brand packag
 - `pnpm dev` starts the API and web workspace scripts in parallel.
 - Vite proxies `/api` to the local Fastify process.
 - Migrations and the idempotent workspace/administrator bootstrap are explicit scripts.
-- A committed `.env.example` documents required variables without containing secrets.
+- A committed `.env.example` documents optional development overrides without containing secrets;
+  the hosted contract defines required deployment variables.
 - `FakeModelGateway` is the default local model implementation.
 - Real OpenRouter calls require an explicit development key and opt-in setting.
 - Tests use isolated Testcontainers PostgreSQL instances and never the developer database.
@@ -172,7 +174,7 @@ Shared executable TypeScript is limited to transport contracts. The brand packag
 
 - One backend configuration module reads and validates environment variables once at startup.
 - Application code receives a frozen typed configuration object and does not read `process.env` directly.
-- Missing or invalid production configuration prevents the API from becoming ready.
+- Missing or invalid hosted configuration prevents the API from becoming ready.
 - Environment variables hold infrastructure configuration: database connection, public origin, Better Auth secrets, OpenRouter key, email credentials, OTLP destination, ports, and deployment metadata.
 - Workspace behavior such as the normalized editable assistant-rules layer, budgets, enabled tiers,
   output limits, bounded reasoning/temperature intent, model mappings, and defaults lives in
@@ -182,8 +184,8 @@ Shared executable TypeScript is limited to transport contracts. The brand packag
   PostgreSQL is limited to the normalized workspace layer and is read and composed only by Fastify.
 - Secrets are not returned through APIs or written to logs.
 - Startup may log a redacted summary of non-secret configuration.
-- Fake providers are prohibited in production mode.
-- Development and test defaults live in code; production has no insecure fallback values.
+- Fake providers are prohibited in hosted mode.
+- Development and test defaults live in code; hosted environments have no insecure fallback values.
 - Frontend build configuration contains only same-origin application identity and non-secret build metadata.
 
 ## API contracts and validation
@@ -308,8 +310,8 @@ Better Auth rate limiting uses PostgreSQL storage so it applies across replicas.
 
 **Locked**
 
-- Production accepts browser requests only from the configured chat origin.
-- Authentication cookies are `HttpOnly`, `Secure`, and `SameSite=Lax`.
+- Each hosted environment accepts browser requests only from its configured chat origin.
+- Hosted authentication cookies are `HttpOnly`, `Secure`, and `SameSite=Lax`.
 - State-changing Capstone endpoints accept JSON only and require an exact trusted `Origin` match.
 - Credentialed CORS never permits a wildcard origin.
 - Requests that bypass the configured same-origin boundary are rejected.

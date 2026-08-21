@@ -92,8 +92,8 @@ the product, workload, latency, budget, data, and backup contracts locked. The s
 design and the external gates that still block acceptance are recorded in
 [the App Platform and PlanetScale amendment](../implementation/08-digitalocean-app-platform-planetscale-amendment-plan.md).
 
-The August 12, 2026 source-build decision further replaces the unlaunched private-GHCR/digest
-adapter with native App Platform GitHub/Dockerfile builds. GitHub Actions remains the validation
+The August 12, 2026 source-build decision further replaces the published but production-unused
+GHCR/digest adapter with native App Platform GitHub/Dockerfile builds. GitHub Actions remains the validation
 gate, protected release-pointer branches remove the source-fetch race, runtime/provider commit
 identity replaces digest identity, and rollback is a reviewed forward `git revert`. The same
 amendment records the explicitly accepted loss of byte-identical artifact recovery and the retained

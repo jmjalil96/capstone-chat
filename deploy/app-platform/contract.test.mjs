@@ -1,20 +1,16 @@
 import assert from "node:assert/strict";
-import path from "node:path";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { readContract, validateApp } from "./contract.mjs";
 
-const directory = path.dirname(fileURLToPath(import.meta.url));
+const liveContractPath = fileURLToPath(new URL("./live-contract.mjs", import.meta.url));
 const revision = "a".repeat(40);
 const encrypted = (name) => `EV[1:${name.repeat(8)}]`;
 const starterDomainBinding = ["$", "{STARTER_DOMAIN}"].join("");
 
 function contract(environment) {
-  return readContract(
-    path.join(directory, "common.contract.yaml"),
-    path.join(directory, `${environment}.contract.yaml`),
-    environment,
-  );
+  return readContract(environment);
 }
 
 function source(declaration) {
@@ -193,6 +189,9 @@ test("accepts provider omission of disabled enhanced threat control", () => {
 test("locks overlays to fixed branches, sizes, domains, email, and egress", () => {
   const staging = contract("staging");
   const production = contract("production");
+  assert(Object.isFrozen(staging));
+  assert(Object.isFrozen(staging.service.environment.general));
+  assert(Object.isFrozen(production));
   assert.equal(staging.source.github.branch, "app-platform-staging");
   assert.equal(production.source.github.branch, "app-platform-production");
   assert.equal(staging.service.instance_size_slug, "apps-s-1vcpu-0.5gb");
@@ -202,6 +201,46 @@ test("locks overlays to fixed branches, sizes, domains, email, and egress", () =
   assert.equal(production.domain.domain, "chat.capstone.com.ec");
   assert.equal(staging.dedicatedEgress, false);
   assert.equal(production.dedicatedEgress, true);
+  assert.deepEqual(Object.keys(staging.job.environment.general).sort(), [
+    "CAPSTONE_ENVIRONMENT",
+    "DEPLOYMENT_REVISION",
+    "NODE_ENV",
+  ]);
+  assert.deepEqual(Object.keys(production.job.environment.general).sort(), [
+    "CAPSTONE_ENVIRONMENT",
+    "CAPSTONE_SECRET_SOURCE",
+    "DEPLOYMENT_REVISION",
+    "DEPLOYMENT_TARGET",
+    "NODE_ENV",
+  ]);
+  assert.deepEqual(Object.keys(staging.service.environment.general).sort(), [
+    "CAPSTONE_ENVIRONMENT",
+    "DEPLOYMENT_REVISION",
+    "EMAIL_DELIVERY",
+    "EMAIL_FROM",
+    "HOST",
+    "LOG_LEVEL",
+    "MODEL_GATEWAY",
+    "NODE_ENV",
+    "PORT",
+    "PUBLIC_ORIGIN",
+  ]);
+  assert.deepEqual(Object.keys(production.service.environment.general).sort(), [
+    "CAPSTONE_ENVIRONMENT",
+    "CAPSTONE_SECRET_SOURCE",
+    "CLIENT_ADDRESS_SOURCE",
+    "DEPLOYMENT_REVISION",
+    "DEPLOYMENT_TARGET",
+    "EMAIL_DELIVERY",
+    "EMAIL_FROM",
+    "HOST",
+    "LOG_LEVEL",
+    "MODEL_GATEWAY",
+    "NODE_ENV",
+    "PORT",
+    "PUBLIC_ORIGIN",
+    "WEB_ASSETS",
+  ]);
   assert.deepEqual(staging.job.environment.secret_keys, ["DATABASE_URL"]);
   assert.deepEqual(production.job.environment.secret_keys, ["DATABASE_URL"]);
   assert(staging.service.environment.secret_keys.includes("CAPSTONE_STAGING_EMAIL_RECIPIENTS"));
@@ -224,6 +263,9 @@ test("rejects source, command, topology, encryption, domain, edge, and egress dr
     },
     (value) => {
       value.spec.services.push(structuredClone(value.spec.services[0]));
+    },
+    (value) => {
+      value.spec.workers = [{ name: "extra" }];
     },
     (value) => {
       value.spec.services[0].envs.find((entry) => entry.type === "SECRET").value = "plaintext";
@@ -267,4 +309,21 @@ test("rejects dedicated egress in staging", () => {
     () => validateApp({ app: value, contract: contract("staging"), expectedRevision: revision }),
     /Staging cannot own dedicated egress/u,
   );
+});
+
+test("rejects duplicated live-validator arguments", () => {
+  const result = spawnSync(process.execPath, [
+    liveContractPath,
+    "validate",
+    "--environment",
+    "staging",
+    "--environment",
+    "production",
+    "--live-file",
+    "unused",
+    "--revision",
+    revision,
+  ]);
+  assert.notEqual(result.status, 0);
+  assert.equal(JSON.parse(result.stderr.toString()).outcome, "failed");
 });

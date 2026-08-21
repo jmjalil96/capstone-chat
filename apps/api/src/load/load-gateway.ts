@@ -61,6 +61,26 @@ function completedAfter(
   return { ...completed(inputTokens, outputTokens, metadata), delayMilliseconds };
 }
 
+function contentSteps(
+  canary: string,
+  count: number,
+  options: {
+    readonly delayMilliseconds?: number;
+    readonly label?: string;
+    readonly padding?: number;
+    readonly suffix?: string;
+  } = {},
+): readonly FakeGatewayStep[] {
+  const { delayMilliseconds, label = "", padding = 2, suffix = ";" } = options;
+  return Array.from({ length: count }, (_, index) => ({
+    ...(delayMilliseconds === undefined ? {} : { delayMilliseconds }),
+    event: {
+      text: `${canary}:${label}${index.toString().padStart(padding, "0")}${suffix}`,
+      type: "content.delta" as const,
+    },
+  }));
+}
+
 export function loadFixtureSteps(
   request: GenerationRequest,
   providerAttempt = "fixture",
@@ -116,13 +136,7 @@ export function loadFixtureSteps(
   if (scenario === "failure") {
     return [
       providerStarted,
-      ...Array.from({ length: 5 }, (_, index) => ({
-        delayMilliseconds: 500,
-        event: {
-          text: `${canary}:partial-${index.toString().padStart(2, "0")};`,
-          type: "content.delta" as const,
-        },
-      })),
+      ...contentSteps(canary, 5, { delayMilliseconds: 500, label: "partial-" }),
       {
         delayMilliseconds: measuredActiveWindowMilliseconds - 5 * 500,
         event: {
@@ -133,29 +147,11 @@ export function loadFixtureSteps(
       },
     ];
   }
-  if (scenario === "cancel") {
-    return [
-      providerStarted,
-      ...Array.from({ length: 20 }, (_, index) => ({
-        delayMilliseconds: 500,
-        event: {
-          text: `${canary}:${index.toString().padStart(2, "0")};`,
-          type: "content.delta" as const,
-        },
-      })),
-      completedAfter(32, 80, metadata, measuredActiveWindowMilliseconds - 20 * 500),
-    ];
-  }
   if (scenario === "large") {
     const payload = "x".repeat(992);
     return [
       providerStarted,
-      ...Array.from({ length: 820 }, (_, index) => ({
-        event: {
-          text: `${canary}:${index.toString().padStart(3, "0")}:${payload}`,
-          type: "content.delta" as const,
-        },
-      })),
+      ...contentSteps(canary, 820, { padding: 3, suffix: `:${payload}` }),
       completed(32, 8_000, metadata),
     ];
   }
@@ -163,12 +159,7 @@ export function loadFixtureSteps(
     const payload = "x".repeat(992);
     return [
       providerStarted,
-      ...Array.from({ length: 96 }, (_, index) => ({
-        event: {
-          text: `${canary}:${index.toString().padStart(2, "0")}:${payload}`,
-          type: "content.delta" as const,
-        },
-      })),
+      ...contentSteps(canary, 96, { suffix: `:${payload}` }),
       completedAfter(32, 96, metadata, measuredActiveWindowMilliseconds),
     ];
   }
@@ -183,13 +174,7 @@ export function loadFixtureSteps(
   }
   return [
     providerStarted,
-    ...Array.from({ length: 20 }, (_, index) => ({
-      delayMilliseconds: 500,
-      event: {
-        text: `${canary}:${index.toString().padStart(2, "0")};`,
-        type: "content.delta" as const,
-      },
-    })),
+    ...contentSteps(canary, 20, { delayMilliseconds: 500 }),
     completedAfter(32, 80, metadata, measuredActiveWindowMilliseconds - 20 * 500),
   ];
 }

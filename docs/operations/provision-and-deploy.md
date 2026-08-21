@@ -33,11 +33,21 @@ The service receives encrypted component-scoped `RUN_TIME` secrets only:
 | `RESEND_API_KEY` | send-only, staging-domain-restricted | existing send-only production key |
 | `CAPSTONE_STAGING_EMAIL_RECIPIENTS` | 1–10 unique normalized addresses | absent |
 
-The migration job receives only its separate migration `DATABASE_URL`. Its remaining values are
-non-secret deployment metadata: `CAPSTONE_ENVIRONMENT`, `CAPSTONE_SECRET_SOURCE`,
-`DEPLOYMENT_REVISION`, `DEPLOYMENT_TARGET`, and `NODE_ENV`. Recovery and initialization authority
-is absent from steady components. Staging and production keys, roles, GitHub environments, Apps,
-and provider resources are never reused across environments.
+The steady migration job receives only its separate migration `DATABASE_URL` plus non-secret
+`CAPSTONE_ENVIRONMENT`, `DEPLOYMENT_REVISION`, and `NODE_ENV`. Recovery and initialization
+authority is absent from steady components. Staging and production keys, roles, GitHub
+environments, Apps, and provider resources are never reused across environments.
+
+Production temporarily retains the predecessor's exact, non-secret deployment sentinels in its
+App spec. Before the first cleanup-aware promotion, a separately authorized production spec change
+must add `CAPSTONE_ENVIRONMENT=production` to the service and migration job while predecessor code
+is still active, then verify that deployment at the unchanged source revision. The cleanup-aware
+runtime ignores the sentinels; staging has already removed them. Do not remove the production
+entries until that runtime is active and ready there. Then freeze promotions and first merge a
+separately reviewed strict-contract follow-up that deletes the production compatibility overlay.
+With the production source pointer still fixed, remove exactly the six App-spec entries and
+validate the resulting deployment at the unchanged cleanup-aware revision using that accepted
+strict contract. These are separate production changes, not part of staging cleanup.
 
 ## One-time provisioning
 
@@ -67,10 +77,11 @@ and provider resources are never reused across environments.
    conflict rejection before provider work, one workspace/pending administrator, and no invitation.
    Remove the initialization job and variables and revoke both bootstrap roles and the temporary
    key. Initialization is never repeated during deployment or recovery.
-7. Apply `common.contract.yaml` plus the matching environment overlay. Require the normal server,
-   one migration-only `PRE_DEPLOY` job, exact source/Dockerfile/branch, health and termination,
-   encrypted component variables, fixed domain/edge, and no extra component or in-progress
-   deployment. Production alone has Dedicated Egress.
+7. Apply the common contract and matching fixed environment overlay from
+   `deploy/app-platform/contract.mjs`. Require the normal server, one migration-only `PRE_DEPLOY`
+   job, exact source/Dockerfile/branch, health and termination, encrypted component variables,
+   fixed domain/edge, and no extra component or in-progress deployment. Production alone has
+   Dedicated Egress.
 8. Capture the desired and active provider state in an owner-only temporary file and run the
    focused `staging` or `production` validator. Require both service and job to report the frozen
    commit and public readiness to return the same `x-capstone-revision`.

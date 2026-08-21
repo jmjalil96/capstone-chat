@@ -12,14 +12,9 @@ import {
   workspaceCostPolicies,
   workspaceModelPolicies,
 } from "../src/database/model-policy-schema.js";
-import {
-  type CatalogModelSnapshot,
-  initialTierModels,
-  type ModelTier,
-  modelTiers,
-  verifyPrivacyAttestation,
-} from "../src/model-policy/catalog.js";
+import { verifyPrivacyAttestation } from "../src/model-policy/catalog.js";
 import { createModelPolicyService } from "../src/model-policy/service.js";
+import { tierCatalogFixture } from "./support/catalog.js";
 
 const apiRoot = fileURLToPath(new URL("..", import.meta.url));
 const operatorExecutable = fileURLToPath(new URL("../node_modules/.bin/tsx", import.meta.url));
@@ -74,48 +69,26 @@ function expectNoProviderAccess(result: OperatorResult): void {
   expect(result.stderr).not.toContain(providerAccessMarker);
 }
 
-function realCatalog(validatedAt: Date): Readonly<Record<ModelTier, CatalogModelSnapshot>> {
-  return Object.freeze(
-    Object.fromEntries(
-      modelTiers.map((tier) => [
-        tier,
-        Object.freeze({
-          available: true,
-          canonicalSlug: initialTierModels[tier],
-          capability: Object.freeze({
-            reasoning: Object.freeze({
-              contractSource: "fixture",
-              defaultEffort: null,
-              defaultEnabled: null,
-              effortSupport: Object.freeze({ kind: "all" as const }),
-              exclusionVerifiedAt: validatedAt,
-              kind: "optional" as const,
-              maxTokensAccepted: true,
-              traceSafety: "provider_excluded" as const,
-            }),
-            temperatureSupported: true,
-          }),
-          completionPricePerToken: "0.000002",
-          contextLength: 128_000,
-          displayName: `Model ${tier}`,
-          inputModalities: Object.freeze(["text"]),
-          maximumOutputTokens: 8_192,
-          metadataSource: "openrouter",
-          modelId: initialTierModels[tier],
-          outputModalities: Object.freeze(["text"]),
-          promptPricePerToken: "0.000001",
-          requestPriceUsd: "0",
-          supportedParameters: Object.freeze([
-            "max_tokens",
-            "reasoning",
-            "reasoning_effort",
-            "temperature",
-          ]),
-          validatedAt,
-        }),
-      ]),
-    ) as Record<ModelTier, CatalogModelSnapshot>,
-  );
+function realCatalog(validatedAt: Date): ReturnType<typeof tierCatalogFixture> {
+  const capability = Object.freeze({
+    reasoning: Object.freeze({
+      contractSource: "fixture",
+      defaultEffort: null,
+      defaultEnabled: null,
+      effortSupport: Object.freeze({ kind: "all" as const }),
+      exclusionVerifiedAt: validatedAt,
+      kind: "optional" as const,
+      maxTokensAccepted: true,
+      traceSafety: "provider_excluded" as const,
+    }),
+    temperatureSupported: true,
+  });
+  return tierCatalogFixture(validatedAt, (tier) => ({
+    capability,
+    displayName: `Model ${tier}`,
+    maximumOutputTokens: 8_192,
+    supportedParameters: ["max_tokens", "reasoning", "reasoning_effort", "temperature"],
+  }));
 }
 
 describe.sequential("model-policy operator commands", () => {

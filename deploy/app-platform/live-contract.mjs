@@ -1,9 +1,6 @@
 #!/usr/bin/env node
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { parseArgs } from "node:util";
 import { REVISION_PATTERN, readContract, readProtectedJson, validateApp } from "./contract.mjs";
-
-const directory = path.dirname(fileURLToPath(import.meta.url));
 
 function required(options, name, pattern) {
   const value = options[name];
@@ -14,39 +11,32 @@ function required(options, name, pattern) {
 }
 
 function parseArguments(values) {
-  const [operation, ...rest] = values;
-  if (operation !== "validate" || rest.length % 2 !== 0) {
+  const parsed = parseArgs({
+    allowPositionals: true,
+    args: values,
+    options: {
+      "app-id": { type: "string" },
+      environment: { type: "string" },
+      "live-file": { type: "string" },
+      revision: { type: "string" },
+    },
+    strict: true,
+    tokens: true,
+  });
+  if (parsed.positionals.length !== 1 || parsed.positionals[0] !== "validate") {
     throw new Error("App contract arguments are invalid");
   }
-  const options = {};
-  for (let index = 0; index < rest.length; index += 2) {
-    const key = rest[index];
-    const value = rest[index + 1];
-    if (!key?.startsWith("--") || value === undefined || value.startsWith("--")) {
-      throw new Error("App contract arguments are invalid");
-    }
-    const name = key.slice(2);
-    if (options[name] !== undefined) {
-      throw new Error("App contract argument is duplicated");
-    }
-    options[name] = value;
+  const names = parsed.tokens.filter((token) => token.kind === "option").map((token) => token.name);
+  if (new Set(names).size !== names.length) {
+    throw new Error("App contract argument is duplicated");
   }
-  for (const key of Object.keys(options)) {
-    if (!["app-id", "common", "environment", "live-file", "overlay", "revision"].includes(key)) {
-      throw new Error(`Unexpected --${key} argument`);
-    }
-  }
-  return options;
+  return parsed.values;
 }
 
 try {
   const options = parseArguments(process.argv.slice(2));
   const environment = required(options, "environment", /^(?:staging|production)$/u);
-  const contract = readContract(
-    options.common ?? path.join(directory, "common.contract.yaml"),
-    options.overlay ?? path.join(directory, `${environment}.contract.yaml`),
-    environment,
-  );
+  const contract = readContract(environment);
   const result = validateApp({
     app: readProtectedJson(required(options, "live-file"), "Live App input"),
     appId: options["app-id"],

@@ -309,7 +309,7 @@ describe.sequential("identity operator commands", () => {
     ]);
   });
 
-  it("bootstraps only a pending synthetic rehearsal approval when delivery is explicitly disabled", async () => {
+  it("bootstraps only a pending synthetic initialization approval when delivery is disabled", async () => {
     const result = await runOperator(
       [
         "bootstrap",
@@ -350,7 +350,7 @@ describe.sequential("identity operator commands", () => {
     expect(await database.select().from(session)).toEqual([]);
   });
 
-  it("rejects a real administrator email before mutating the rehearsal identity", async () => {
+  it("rejects a real administrator email before mutating the synthetic identity", async () => {
     const result = await runOperator(
       [
         "bootstrap",

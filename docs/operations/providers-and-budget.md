@@ -51,7 +51,7 @@
 
 ## New Relic OTLP or direct-log-mirror failure
 
-1. Valid production OTLP and direct-log-mirror configuration is required at startup. A later
+1. Valid hosted OTLP and direct-log-mirror configuration is required at startup. A later
    exporter/Log API outage does not fail readiness or block an employee request.
 2. Check the configured regional OTLP destination and its exact mirror mapping: US
    `https://otlp.nr-data.net` maps to `https://log-api.newrelic.com/log/v1`; EU
@@ -100,9 +100,9 @@ way as a reserved per-App quota. Recheck the Uptime allowance and overage before
 | **Operational base** | **USD 44–45** |
 
 Staging adds one 512 MiB App service, short-lived 512 MiB migration executions, and one independent
-PS-5 database, without Dedicated Egress. Its exact current provider estimate and maximum spend must
-be approved before provisioning; it is not included in the production base above. Staging
-OpenRouter is separately low-limited and staging email remains allowlisted.
+PS-5 database, without Dedicated Egress. Track its approved spend separately from the production
+base above and reapprove any increase. Staging OpenRouter is separately low-limited and staging
+email remains allowlisted.
 
 At the approved 15 GB database ceiling, the prior estimate is approximately USD 44.63–45.63.
 Migration and one-time initialization jobs are billed only while running and require recorded live

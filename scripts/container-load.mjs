@@ -1,170 +1,103 @@
 import { spawnSync } from "node:child_process";
+import {
+  assert,
+  docker,
+  forceRemove,
+  loopbackDatabaseUrl,
+  printContainerLogs,
+  runContainer,
+  validateImage,
+  validatePort,
+  waitUntil,
+} from "./container-tools.mjs";
 
-const [image] = process.argv.slice(2).filter((argument) => argument !== "--");
-const databaseUrl = process.env.CAPSTONE_LOAD_DATABASE_URL;
+const [imageArgument] = process.argv.slice(2).filter((argument) => argument !== "--");
+const image = validateImage(imageArgument);
+const port = validatePort(process.env.CAPSTONE_LOAD_PORT ?? "3015", "CAPSTONE_LOAD_PORT");
 const authSecret = process.env.CAPSTONE_LOAD_AUTH_SECRET;
-const portValue = process.env.CAPSTONE_LOAD_PORT ?? "3015";
-const port = Number(portValue);
-const candidateCpu = "1";
-const candidateMemory = "512m";
-
-function assert(condition, message) {
-  if (!condition) {
-    throw new Error(message);
-  }
-}
-
-function containerDatabaseUrl(value) {
-  let parsed;
-  try {
-    parsed = new URL(value);
-  } catch {
-    throw new Error("CAPSTONE_LOAD_DATABASE_URL must be a valid loopback PostgreSQL URL");
-  }
-  assert(
-    parsed.protocol === "postgresql:" || parsed.protocol === "postgres:",
-    "CAPSTONE_LOAD_DATABASE_URL must use PostgreSQL",
-  );
-  assert(
-    parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost",
-    "The container load check accepts only a loopback disposable database",
-  );
-  parsed.hostname = "host.docker.internal";
-  return parsed.toString();
-}
-
-assert(
-  image !== undefined && /^[a-z0-9][a-z0-9./:_-]{0,255}$/u.test(image),
-  "A safe built-image tag is required",
-);
-assert(
-  databaseUrl !== undefined && databaseUrl.length > 0,
-  "CAPSTONE_LOAD_DATABASE_URL is required",
+const databaseUrl = loopbackDatabaseUrl(
+  process.env.CAPSTONE_LOAD_DATABASE_URL,
+  "CAPSTONE_LOAD_DATABASE_URL",
+  "The container load check",
 );
 assert(
   authSecret !== undefined && authSecret.length >= 32,
   "CAPSTONE_LOAD_AUTH_SECRET must contain at least 32 characters",
 );
-assert(
-  Number.isInteger(port) && port >= 1024 && port <= 65_535,
-  "CAPSTONE_LOAD_PORT must be a non-privileged port",
-);
 
 const containerName = `capstone-chat-load-${process.pid}`;
 const baseUrl = `http://127.0.0.1:${port}`;
-const targetDatabaseUrl = containerDatabaseUrl(databaseUrl);
-
-function docker(arguments_, options = {}) {
-  const result = spawnSync("docker", arguments_, { encoding: "utf8", ...options });
-  if (result.status !== 0) {
-    const detail = result.stderr.trim() || result.stdout.trim() || "docker command failed";
-    throw new Error(detail);
-  }
-  return result.stdout.trim();
-}
-
-function cleanup() {
-  spawnSync("docker", ["rm", "--force", containerName], { encoding: "utf8" });
-}
-
-async function waitForReadiness() {
-  const deadline = Date.now() + 30_000;
-  while (Date.now() < deadline) {
-    try {
-      const response = await fetch(`${baseUrl}/api/health/ready`, {
-        redirect: "error",
-        signal: AbortSignal.timeout(2_000),
-      });
-      if (response.status === 200) {
-        return;
-      }
-    } catch {
-      // The built process is expected to refuse connections briefly during startup.
-    }
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-  throw new Error("The constrained load container did not become ready within 30 seconds");
-}
-
+const limits = Object.freeze({ cpu: "1", memory: "512m", inspection: "1000000000 536870912" });
 let containerStarted = false;
+
 try {
-  docker(
-    [
-      "run",
-      "--detach",
-      "--init",
-      "--name",
-      containerName,
-      "--add-host",
-      "host.docker.internal:host-gateway",
+  runContainer({
+    image,
+    name: containerName,
+    detach: true,
+    hostDatabase: true,
+    publish: `127.0.0.1:${port}:${port}`,
+    dockerArguments: [
       "--cpus",
-      candidateCpu,
+      limits.cpu,
       "--memory",
-      candidateMemory,
+      limits.memory,
       "--memory-swap",
-      candidateMemory,
+      limits.memory,
       "--pids-limit",
       "256",
-      "--publish",
-      `127.0.0.1:${port}:${port}`,
-      "--env",
-      "DATABASE_URL",
-      "--env",
-      "BETTER_AUTH_SECRET",
-      "--env",
-      "NODE_ENV=test",
-      "--env",
-      "HOST=0.0.0.0",
-      "--env",
-      "CLIENT_ADDRESS_SOURCE=socket",
-      "--env",
-      `PORT=${port}`,
-      "--env",
-      `PUBLIC_ORIGIN=${baseUrl}`,
-      "--env",
-      "MODEL_GATEWAY=openrouter",
-      "--env",
-      "OPENROUTER_API_KEY=local-load-placeholder",
-      "--env",
-      "EMAIL_DELIVERY=fake",
-      "--env",
-      "LOG_LEVEL=warn",
-      "--env",
-      "DEPLOYMENT_REVISION=phase8-container-load",
-      "--entrypoint",
-      "node",
-      image,
+    ],
+    environment: {
+      DATABASE_URL: undefined,
+      BETTER_AUTH_SECRET: undefined,
+      NODE_ENV: "test",
+      HOST: "0.0.0.0",
+      PORT: String(port),
+      PUBLIC_ORIGIN: baseUrl,
+      MODEL_GATEWAY: "openrouter",
+      OPENROUTER_API_KEY: "local-load-placeholder",
+      EMAIL_DELIVERY: "fake",
+      LOG_LEVEL: "warn",
+      DEPLOYMENT_REVISION: "local-container-load",
+    },
+    entrypoint: "node",
+    command: [
       "--expose-gc",
       "apps/api/dist/load/local-load-server.js",
       "--confirm-isolated-local-load",
     ],
-    {
-      env: {
-        ...process.env,
-        BETTER_AUTH_SECRET: authSecret,
-        DATABASE_URL: targetDatabaseUrl,
-      },
+    processEnvironment: {
+      ...process.env,
+      BETTER_AUTH_SECRET: authSecret,
+      DATABASE_URL: databaseUrl,
     },
-  );
+  });
   containerStarted = true;
-  const limits = docker([
+
+  const appliedLimits = docker([
     "inspect",
     "--format",
     "{{.HostConfig.NanoCpus}} {{.HostConfig.Memory}} {{.HostConfig.MemorySwap}} {{.HostConfig.PidsLimit}} {{.Config.User}}",
     containerName,
   ]);
   assert(
-    limits === "1000000000 536870912 536870912 256 node",
+    appliedLimits === `${limits.inspection} 536870912 256 node`,
     "Docker did not apply the selected App Platform candidate limits",
   );
-  await waitForReadiness();
+  await waitUntil(async () => {
+    const response = await fetch(`${baseUrl}/api/health/ready`, {
+      redirect: "error",
+      signal: AbortSignal.timeout(2_000),
+    });
+    return response.status === 200;
+  }, "The constrained load container did not become ready within 30 seconds");
 
   const loadRun = spawnSync(
     "pnpm",
     [
       "--filter",
       "@capstone/api",
-      "load:test",
+      "load:driver",
       "--target",
       baseUrl,
       "--waves",
@@ -178,30 +111,15 @@ try {
       timeout: 10 * 60 * 1_000,
     },
   );
-  if (loadRun.stdout.length > 0) {
-    process.stdout.write(loadRun.stdout);
-  }
-  if (loadRun.stderr.length > 0) {
-    process.stderr.write(loadRun.stderr);
-  }
-  if (loadRun.status !== 0) {
-    throw new Error("The constrained built-container load check failed");
-  }
+  process.stdout.write(loadRun.stdout ?? "");
+  process.stderr.write(loadRun.stderr ?? "");
+  assert(loadRun.status === 0, "The constrained built-container load check failed");
   process.stdout.write(
-    `Built-container load check passed at ${candidateCpu} CPU and ${candidateMemory} RAM.\n`,
+    `Built-container load check passed at ${limits.cpu} CPU and ${limits.memory} RAM.\n`,
   );
 } catch (error) {
-  if (containerStarted) {
-    const logs = spawnSync("docker", ["logs", "--tail", "100", containerName], {
-      encoding: "utf8",
-    });
-    if (logs.status === 0 && logs.stdout.trim().length > 0) {
-      process.stderr.write(`${logs.stdout.trim()}\n`);
-    }
-  }
+  if (containerStarted) printContainerLogs(containerName);
   throw error;
 } finally {
-  if (containerStarted) {
-    cleanup();
-  }
+  if (containerStarted) forceRemove(containerName);
 }

@@ -21,7 +21,7 @@
     "identity:bootstrap": "tsx src/entrypoint.ts identity bootstrap",
     "identity:deactivate": "tsx src/entrypoint.ts identity deactivate",
     "identity:invite-initial": "tsx src/entrypoint.ts invite-initial",
-    "load:test": "tsx tests/load-harness.ts",
+    "load:driver": "tsx tests/load-harness.ts",
     "load:server": "node --expose-gc --import tsx src/load/local-load-server.ts --confirm-isolated-local-load",
     "model-catalog:refresh": "tsx src/entrypoint.ts model refresh",
     "model-policy:attest": "tsx src/entrypoint.ts model attest",

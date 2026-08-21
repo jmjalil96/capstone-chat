@@ -1,26 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
-import type { CatalogModelSnapshot } from "../src/model-policy/catalog.js";
 import { refreshClaimedCatalog } from "../src/model-policy/catalog-refresh.js";
 import type { ModelPolicyService } from "../src/model-policy/service.js";
-import { testCatalogCapability } from "./support/generation.js";
+import { catalogSnapshotFixture } from "./support/catalog.js";
 
 const ownerId = "00000000-0000-4000-8000-000000000061";
 const claim = Object.freeze({ modelIds: Object.freeze(["approved/model"]), ownerId });
-const snapshot: CatalogModelSnapshot = Object.freeze({
-  available: true,
-  canonicalSlug: "approved/model",
-  capability: testCatalogCapability,
-  completionPricePerToken: "0.000002",
-  contextLength: 128_000,
+const snapshot = catalogSnapshotFixture({
   displayName: "Approved model",
-  inputModalities: Object.freeze(["text"]),
   maximumOutputTokens: 8_192,
-  metadataSource: "openrouter",
   modelId: "approved/model",
-  outputModalities: Object.freeze(["text"]),
-  promptPricePerToken: "0.000001",
-  requestPriceUsd: "0",
-  supportedParameters: Object.freeze(["max_tokens", "reasoning"]),
   validatedAt: new Date("2026-08-08T12:00:00.000Z"),
 });
 

@@ -10,28 +10,46 @@ inputs:
   environment:
     description: staging or production
     required: true
-  origin:
-    description: Fixed public origin
-    required: true
-  release-branch:
-    description: Protected App Platform source branch
-    required: true
   revision:
     description: Exact green main commit
     required: true
 runs:
   using: composite
   steps:
+    - name: Set up Node.js
+      uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+      with:
+        node-version: 24.13.0
+
+    - name: Install doctl
+      uses: digitalocean/action-doctl@3cb3953159719656269e044e0e24ca16dd2a690f # v2.5.2
+      with:
+        no_auth: true
+        version: 1.166.0
+
     - name: Verify exact doctl version
       shell: bash
       run: test "$(doctl version | sed -n '1p')" = "doctl version 1.166.0-release"
+
+    - name: Resolve fixed environment overlay
+      id: contract
+      shell: bash
+      env:
+        CAPSTONE_ENVIRONMENT: ${{ inputs.environment }}
+      run: |
+        node --input-type=module --eval '
+          import { readContract } from "./deploy/app-platform/contract.mjs";
+          const contract = readContract(process.env.CAPSTONE_ENVIRONMENT);
+          process.stdout.write(`branch=${contract.source.github.branch}\n`);
+          process.stdout.write(`origin=https://${contract.domain.domain}\n`);
+        ' >> "$GITHUB_OUTPUT"
 
     - name: Validate current authority and fast-forward source pointer
       shell: bash
       env:
         CAPSTONE_APP_ID: ${{ inputs.app-id }}
         CAPSTONE_ENVIRONMENT: ${{ inputs.environment }}
-        CAPSTONE_RELEASE_BRANCH: ${{ inputs.release-branch }}
+        CAPSTONE_RELEASE_BRANCH: ${{ steps.contract.outputs.branch }}
         CAPSTONE_REVISION: ${{ inputs.revision }}
         DIGITALOCEAN_ACCESS_TOKEN: ${{ inputs.access-token }}
       run: |
@@ -111,7 +129,7 @@ runs:
         CAPSTONE_APP_ID: ${{ inputs.app-id }}
         CAPSTONE_DEPLOYMENT_ID: ${{ steps.deploy.outputs.deployment_id }}
         CAPSTONE_ENVIRONMENT: ${{ inputs.environment }}
-        CAPSTONE_ORIGIN: ${{ inputs.origin }}
+        CAPSTONE_ORIGIN: ${{ steps.contract.outputs.origin }}
         CAPSTONE_REVISION: ${{ inputs.revision }}
         DIGITALOCEAN_ACCESS_TOKEN: ${{ inputs.access-token }}
       run: |

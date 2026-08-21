@@ -13,8 +13,9 @@ readiness revision, verify the new authority, then revoke the old one.
 The service has `BETTER_AUTH_SECRET`, `DATABASE_URL`, `OPENROUTER_API_KEY`,
 `OTEL_EXPORTER_OTLP_HEADERS`, and `RESEND_API_KEY`. Staging alone also has
 `CAPSTONE_STAGING_EMAIL_RECIPIENTS`. `OTEL_EXPORTER_OTLP_ENDPOINT` is non-secret. The migration job
-has only its distinct migration `DATABASE_URL`; recovery and initialization credentials are absent.
-The validator rejects extra, plaintext, wrongly scoped, App-level, or build-time secrets.
+has only its distinct migration `DATABASE_URL` as a secret; recovery and initialization
+credentials are absent. The validator rejects extra, plaintext, wrongly scoped, App-level, or
+build-time secrets.
 
 - **Better Auth:** update the service only; rotation invalidates cookies and cursors.
 - **Application database role:** replace the environment's least-privilege role, force new
