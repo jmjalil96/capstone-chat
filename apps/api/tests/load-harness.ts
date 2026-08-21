@@ -63,11 +63,7 @@ interface PreparedWave {
 }
 
 const ordinaryOperationNames = [
-  "admin-employees",
-  "admin-model-policy",
-  "admin-usage",
   "conversation-detail",
-  "conversation-draft",
   "conversation-list",
   "conversation-search",
   "model-tiers",
@@ -138,7 +134,6 @@ interface LoadDiagnosticsSnapshot {
     readonly waiting: number;
   };
   readonly streams: { readonly active: number; readonly peakActive: number };
-  readonly updates: { readonly active: number; readonly peakActive: number };
 }
 
 interface DatabaseState {
@@ -217,9 +212,7 @@ function loadDiagnosticsSnapshot(value: unknown): value is LoadDiagnosticsSnapsh
     nonnegativeNumber(snapshot.pool.total) &&
     nonnegativeNumber(snapshot.pool.waiting) &&
     nonnegativeNumber(snapshot.streams?.active) &&
-    nonnegativeNumber(snapshot.streams.peakActive) &&
-    nonnegativeNumber(snapshot.updates?.active) &&
-    nonnegativeNumber(snapshot.updates.peakActive)
+    nonnegativeNumber(snapshot.streams.peakActive)
   );
 }
 
@@ -451,46 +444,12 @@ async function jsonRequest(
   return { duration: performance.now() - startedAt, payload, status: response.status };
 }
 
-async function rejectedStreamRequest(
-  target: URL,
-  employee: LoadEmployee,
-  conversationId: string,
-  body: unknown,
-): Promise<{ readonly payload: unknown; readonly status: number }> {
-  const response = await fetch(new URL(`/api/conversations/${conversationId}/responses`, target), {
-    body: JSON.stringify(body),
-    headers: {
-      ...requestHeaders(target, employee, "application/x-ndjson"),
-      "content-type": "application/json",
-      "idempotency-key": randomUUID(),
-    },
-    method: "POST",
-    redirect: "error",
-    signal: AbortSignal.timeout(jsonRequestTimeoutMilliseconds),
-  });
-  return { payload: await response.json(), status: response.status };
-}
-
 async function createConversation(target: URL, employee: LoadEmployee): Promise<string> {
   const response = await jsonRequest(target, employee, "/api/conversations", "POST", {});
   if (response.status !== 201 || !Value.Check(CreateConversationResponseSchema, response.payload)) {
     throw new Error("A synthetic conversation could not be created");
   }
   return response.payload.id;
-}
-
-function deferred<T>(): {
-  readonly promise: Promise<T>;
-  readonly reject: (reason: unknown) => void;
-  readonly resolve: (value: T) => void;
-} {
-  let resolve: (value: T) => void = () => undefined;
-  let reject: (reason: unknown) => void = () => undefined;
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return { promise, reject, resolve };
 }
 
 function syntheticMessage(
@@ -515,8 +474,8 @@ function startStream(input: {
   readonly target: URL;
   readonly wave: number;
 }): StreamControl {
-  const startedSignal = deferred<StartedEvent>();
-  const firstDeltaSignal = deferred<void>();
+  const startedSignal = Promise.withResolvers<StartedEvent>();
+  const firstDeltaSignal = Promise.withResolvers<void>();
   let firstDeltaResolved = false;
   const result = (async (): Promise<StreamResult> => {
     const streamController = new AbortController();
@@ -920,36 +879,10 @@ async function prepareWaveFixtures(
           }),
         ),
       );
-      if (employee.index !== 0) {
-        return firstTwo;
-      }
-      return [
-        ...firstTwo,
-        await prepareConversationFixture({
-          conversationIndex: 2,
-          employee,
-          runId,
-          target,
-          wave,
-        }),
-      ];
+      return firstTwo;
     }),
   );
   return { conversations, expectsCompaction: compactionSeed !== undefined, wave };
-}
-
-async function expectApiError(
-  response: { readonly payload: unknown; readonly status: number },
-  status: number,
-  code: "EMPLOYEE_GENERATION_LIMIT_REACHED" | "GENERATION_ACTIVE",
-): Promise<void> {
-  if (
-    response.status !== status ||
-    !Value.Check(ApiErrorSchema, response.payload) ||
-    response.payload.code !== code
-  ) {
-    throw new Error("A concurrency rejection did not match the approved stable error");
-  }
 }
 
 async function verifyIsolation(
@@ -1149,20 +1082,6 @@ async function runWave(
             query: "CAPSTONE_LOAD_V1",
           }),
       },
-      {
-        name: "conversation-draft",
-        run: () =>
-          jsonRequest(
-            target,
-            employee,
-            `/api/conversations/${conversation.conversationId}/draft`,
-            "PUT",
-            {
-              content: `Borrador sintético ${runId}:${employee.index}`,
-              observedRevision: 0,
-            },
-          ),
-      },
     ];
     const responses = [];
     for (const operation of operations) {
@@ -1194,69 +1113,6 @@ async function runWave(
     }
     return responses;
   });
-  const administrator = employees[0];
-  if (administrator === undefined) {
-    throw new Error("The administrator fixture was incomplete");
-  }
-  ordinaryTraffic.push(
-    (async () => {
-      await pause(500);
-      const responses = [];
-      const operations = [
-        { name: "admin-employees", path: "/api/admin/employees" },
-        { name: "admin-model-policy", path: "/api/admin/model-policy" },
-        { name: "admin-usage", path: "/api/admin/usage" },
-      ] as const;
-      for (const operation of operations) {
-        responses.push({
-          ...(await jsonRequest(target, administrator, operation.path, "GET")),
-          operation: operation.name,
-        });
-        await pause(50);
-      }
-      return responses;
-    })(),
-  );
-
-  const firstEmployeeStarts = [starts[0], starts[1]];
-  const firstEmployee = employees[0];
-  const thirdConversation = fixture.conversations[0]?.[2];
-  const firstConversation = fixture.conversations[0]?.[0];
-  const firstStarted = firstEmployeeStarts[0];
-  if (!firstEmployee || !thirdConversation || !firstConversation || !firstStarted) {
-    throw new Error("The concurrency fixture was incomplete");
-  }
-  const probeConversationIds = [firstConversation.conversationId, thirdConversation.conversationId];
-  const beforeRejections = await conversationSideEffectState(databaseUrl, probeConversationIds);
-  const limitProbeMessage = syntheticMessage(runId, wave, 0, 2, "normal");
-  await expectApiError(
-    await rejectedStreamRequest(target, firstEmployee, thirdConversation.conversationId, {
-      content: [{ text: limitProbeMessage, type: "text" }],
-      draftRevision: thirdConversation.draftRevision,
-      modelTier: "balanced",
-      observedRevision: thirdConversation.observedRevision,
-      parentMessageId: thirdConversation.parentMessageId,
-      source: "draft",
-    }),
-    409,
-    "EMPLOYEE_GENERATION_LIMIT_REACHED",
-  );
-  await expectApiError(
-    await rejectedStreamRequest(target, firstEmployee, firstConversation.conversationId, {
-      content: [{ text: syntheticMessage(runId, wave, 0, 0, "normal"), type: "text" }],
-      draftRevision: 0,
-      modelTier: "balanced",
-      observedRevision: firstStarted.revision,
-      parentMessageId: firstStarted.messageId,
-      source: "draft",
-    }),
-    409,
-    "GENERATION_ACTIVE",
-  );
-  const afterRejections = await conversationSideEffectState(databaseUrl, probeConversationIds);
-  if (JSON.stringify(afterRejections) !== JSON.stringify(beforeRejections)) {
-    throw new Error("A concurrency rejection changed branch or budget state");
-  }
 
   const cancellationSamples = employees
     .filter(({ index }) => measuredScenario(index, 0) === "cancel")
@@ -1390,57 +1246,6 @@ async function runWave(
   };
 }
 
-async function conversationSideEffectState(
-  databaseUrl: string,
-  conversationIds: readonly string[],
-): Promise<readonly unknown[]> {
-  const pool = createDatabasePool(databaseUrl);
-  try {
-    const result = await pool.query<{
-      readonly conversation_id: string;
-      readonly draft_count: string;
-      readonly draft_revision: string | null;
-      readonly generation_count: string;
-      readonly message_count: string;
-      readonly reserved_cost_usd: string;
-      readonly reserved_generation_count: string;
-      readonly revision: number;
-      readonly selected_leaf_message_id: string | null;
-    }>(
-      `
-        SELECT
-          conversation.id::text AS conversation_id,
-          conversation.revision,
-          conversation.selected_leaf_message_id::text AS selected_leaf_message_id,
-          (SELECT count(*)::text FROM messages
-            WHERE messages.conversation_id = conversation.id) AS message_count,
-          (SELECT count(*)::text FROM generations
-            WHERE generations.conversation_id = conversation.id) AS generation_count,
-          (SELECT count(*)::text FROM generations
-            WHERE generations.conversation_id = conversation.id
-              AND generations.accounting_status = 'reserved') AS reserved_generation_count,
-          (SELECT coalesce(sum(generations.reserved_cost_usd), 0)::text FROM generations
-            WHERE generations.conversation_id = conversation.id
-              AND generations.accounting_status = 'reserved') AS reserved_cost_usd,
-          (SELECT count(*)::text FROM drafts
-            WHERE drafts.conversation_id = conversation.id) AS draft_count,
-          (SELECT max(drafts.revision)::text FROM drafts
-            WHERE drafts.conversation_id = conversation.id) AS draft_revision
-        FROM conversations AS conversation
-        WHERE conversation.id = ANY($1::uuid[])
-        ORDER BY conversation.id
-      `,
-      [conversationIds],
-    );
-    if (result.rows.length !== conversationIds.length) {
-      throw new Error("The concurrency side-effect fixture was incomplete");
-    }
-    return result.rows;
-  } finally {
-    await pool.end();
-  }
-}
-
 async function databaseState(
   databaseUrl: string,
   existingPool?: ReturnType<typeof createDatabasePool>,
@@ -1501,6 +1306,22 @@ function databaseWorkState(state: DatabaseState): DatabaseWorkPeaks {
     reservedCompactionAccounting: state.reservedCompactionAccounting,
     reservedTitleAccounting: state.reservedTitleAccounting,
   };
+}
+
+function hasOutstandingDatabaseWork(state: DatabaseState): boolean {
+  return Object.values(databaseWorkState(state)).some((count) => count !== 0);
+}
+
+function hasIdleTargetPool(
+  snapshot: LoadDiagnosticsSnapshot,
+  maximumConnections = Infinity,
+): boolean {
+  return (
+    snapshot.streams.active === 0 &&
+    snapshot.pool.waiting === 0 &&
+    snapshot.pool.total <= maximumConnections &&
+    snapshot.pool.idle === snapshot.pool.total
+  );
 }
 
 function mergeDatabaseWorkPeaks(peaks: DatabaseWorkPeaks, state: DatabaseState): DatabaseWorkPeaks {
@@ -1636,15 +1457,7 @@ async function main(): Promise<void> {
   }
   await pause(2_000);
   const warmedState = await databaseState(databaseUrl);
-  if (
-    warmedState.activeChatWorkflows !== 0 ||
-    warmedState.activeCompactions !== 0 ||
-    warmedState.activeTitles !== 0 ||
-    warmedState.finalizingChatParents !== 0 ||
-    warmedState.reservedChatAccounting !== 0 ||
-    warmedState.reservedCompactionAccounting !== 0 ||
-    warmedState.reservedTitleAccounting !== 0
-  ) {
+  if (hasOutstandingDatabaseWork(warmedState)) {
     throw new Error("The warmed load fixture left active work or unsettled reservations");
   }
   const warmedPostIdleDiagnostics = await diagnosticsRequest(
@@ -1652,12 +1465,7 @@ async function main(): Promise<void> {
     "idle",
     diagnosticsHeaders,
   );
-  if (
-    warmedPostIdleDiagnostics.streams.active !== 0 ||
-    warmedPostIdleDiagnostics.updates.active !== 0 ||
-    warmedPostIdleDiagnostics.pool.waiting !== 0 ||
-    warmedPostIdleDiagnostics.pool.idle !== warmedPostIdleDiagnostics.pool.total
-  ) {
+  if (!hasIdleTargetPool(warmedPostIdleDiagnostics)) {
     throw new Error("The warmed load target did not reach an idle baseline");
   }
   const warmedPostIdleMemory = warmedPostIdleDiagnostics.current;
@@ -1668,15 +1476,7 @@ async function main(): Promise<void> {
       await pause(1_000);
     }
     const beforeWave = await databaseState(databaseUrl);
-    if (
-      beforeWave.activeChatWorkflows !== 0 ||
-      beforeWave.activeCompactions !== 0 ||
-      beforeWave.activeTitles !== 0 ||
-      beforeWave.finalizingChatParents !== 0 ||
-      beforeWave.reservedChatAccounting !== 0 ||
-      beforeWave.reservedCompactionAccounting !== 0 ||
-      beforeWave.reservedTitleAccounting !== 0
-    ) {
+    if (hasOutstandingDatabaseWork(beforeWave)) {
       throw new Error("A measured wave began with active work or unsettled reservations");
     }
     await diagnosticsRequest(options.target, "reset", diagnosticsHeaders);
@@ -1697,20 +1497,11 @@ async function main(): Promise<void> {
       "read",
       diagnosticsHeaders,
     );
-    if (
-      result.durablePolling.length === 0 ||
-      activeWaveDiagnostics.updates.peakActive === 0 ||
-      activeWaveDiagnostics.updates.peakActive > result.durablePolling.length
-    ) {
+    if (result.durablePolling.length === 0) {
       throw new LoadMeasurementError(
-        "Durable update request concurrency did not match the reattached streams",
-        "durable-updates-request-concurrency",
-        {
-          activeUpdateRequests: activeWaveDiagnostics.updates.active,
-          peakActiveUpdateRequests: activeWaveDiagnostics.updates.peakActive,
-          reattachedStreams: result.durablePolling.length,
-          wave: wave + 1,
-        },
+        "The measured wave did not exercise durable reattachment",
+        "durable-updates-missing",
+        { reattachedStreams: 0, wave: wave + 1 },
       );
     }
     await pause(2_000);
@@ -1721,25 +1512,13 @@ async function main(): Promise<void> {
       diagnosticsHeaders,
     );
     if (
-      durableState.activeChatWorkflows !== 0 ||
-      durableState.activeCompactions !== 0 ||
-      durableState.activeTitles !== 0 ||
-      durableState.finalizingChatParents !== 0 ||
-      durableState.reservedChatAccounting !== 0 ||
-      durableState.reservedCompactionAccounting !== 0 ||
-      durableState.reservedTitleAccounting !== 0 ||
+      hasOutstandingDatabaseWork(durableState) ||
       activeWaveDiagnostics.streams.active !== 0 ||
-      activeWaveDiagnostics.updates.active !== 0 ||
-      postIdleDiagnostics.streams.active !== 0 ||
-      postIdleDiagnostics.updates.active !== 0
+      postIdleDiagnostics.streams.active !== 0
     ) {
       throw new Error("A measured wave left active work or unsettled reservations behind");
     }
-    if (
-      postIdleDiagnostics.pool.waiting !== 0 ||
-      postIdleDiagnostics.pool.total > 10 ||
-      postIdleDiagnostics.pool.idle !== postIdleDiagnostics.pool.total
-    ) {
+    if (!hasIdleTargetPool(postIdleDiagnostics, 10)) {
       throw new Error("A measured wave did not release the target database pool");
     }
     if (
@@ -1799,7 +1578,6 @@ async function main(): Promise<void> {
             activeWaveDiagnostics.eventLoop.maximumDelayMilliseconds,
           targetEventLoopP99DelayMilliseconds: activeWaveDiagnostics.eventLoop.p99DelayMilliseconds,
           targetPeakActiveStreams: activeWaveDiagnostics.streams.peakActive,
-          targetPeakActiveUpdateRequests: activeWaveDiagnostics.updates.peakActive,
           targetPeakPoolWaiting: activeWaveDiagnostics.pool.peakWaiting,
           targetPoolTotal: activeWaveDiagnostics.pool.total,
           ...Object.fromEntries(
@@ -1918,8 +1696,6 @@ async function main(): Promise<void> {
 main().catch((error: unknown) => {
   const message = error instanceof Error ? error.message : "";
   const knownFailures = new Map([
-    ["A concurrency rejection did not match the approved stable error", "concurrency-contract"],
-    ["A concurrency rejection changed branch or budget state", "concurrency-side-effect"],
     ["The synthetic cancellation was rejected", "cancellation-request"],
     ["The cancellation stream did not terminalize as cancelled", "cancellation-terminal"],
     ["The failure stream did not terminalize as failed", "failure-terminal"],

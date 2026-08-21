@@ -9,7 +9,6 @@ import Fastify from "fastify";
 import { describe, expect, it, vi } from "vitest";
 import { registerErrorHandling } from "../src/errors.js";
 import type { ActorResolver, RequestActor } from "../src/identity/authorization.js";
-import type { CatalogModelSnapshot } from "../src/model-policy/catalog.js";
 import type { CatalogSnapshotLoader } from "../src/model-policy/catalog-refresh.js";
 import {
   CatalogRefreshActiveError,
@@ -21,7 +20,7 @@ import {
   type AdminModelRoutesDependencies,
   registerAdminModelRoutes,
 } from "../src/routes/admin-models.js";
-import { testCatalogCapability } from "./support/generation.js";
+import { catalogSnapshotFixture } from "./support/catalog.js";
 
 const workspaceId = "11111111-1111-4111-8111-111111111111";
 const catalogIds = [
@@ -50,21 +49,10 @@ const supportedTemperatureStatus = Object.freeze({
   reason: "supported" as const,
 });
 
-const snapshot: CatalogModelSnapshot = Object.freeze({
-  available: true,
-  canonicalSlug: "approved/exact-model",
-  capability: testCatalogCapability,
-  completionPricePerToken: "0.000002",
-  contextLength: 128_000,
+const snapshot = catalogSnapshotFixture({
   displayName: "Approved exact model",
-  inputModalities: Object.freeze(["text"]),
   maximumOutputTokens: 8_192,
-  metadataSource: "openrouter",
   modelId: "approved/exact-model",
-  outputModalities: Object.freeze(["text"]),
-  promptPricePerToken: "0.000001",
-  requestPriceUsd: "0",
-  supportedParameters: Object.freeze(["max_tokens", "reasoning"]),
   validatedAt: new Date("2026-08-08T12:00:00.000Z"),
 });
 

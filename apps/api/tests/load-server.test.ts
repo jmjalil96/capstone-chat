@@ -23,7 +23,7 @@ function request(
   return { ...base, modelTier: "fast", purpose };
 }
 
-describe("load rehearsal gateway", () => {
+describe("local load gateway", () => {
   it("publishes the provider-header boundary before a synthetic load script", async () => {
     const gateway = new LoadModelGateway();
     const iterator = gateway

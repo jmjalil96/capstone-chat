@@ -5,42 +5,16 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { type AppDatabase, createDatabase } from "../src/database/database.js";
 import { workspaces } from "../src/database/identity-schema.js";
 import { migrateDatabase } from "../src/database/migrate.js";
-import {
-  type CatalogModelSnapshot,
-  initialTierModels,
-  type ModelTier,
-  modelTiers,
-  verifyPrivacyAttestation,
-} from "../src/model-policy/catalog.js";
+import { initialTierModels, verifyPrivacyAttestation } from "../src/model-policy/catalog.js";
 import { createModelPolicyService } from "../src/model-policy/service.js";
 import { costControlTuning } from "../src/model-policy/settings.js";
-import { testCatalogCapability } from "./support/generation.js";
+import { tierCatalogFixture } from "./support/catalog.js";
 
-function catalog(validatedAt: Date): Readonly<Record<ModelTier, CatalogModelSnapshot>> {
-  return Object.freeze(
-    Object.fromEntries(
-      modelTiers.map((tier) => [
-        tier,
-        Object.freeze({
-          available: true,
-          canonicalSlug: initialTierModels[tier],
-          capability: testCatalogCapability,
-          completionPricePerToken: "0.000002",
-          contextLength: 128_000,
-          displayName: `Model ${tier}`,
-          inputModalities: Object.freeze(["text"]),
-          maximumOutputTokens: 16_384,
-          metadataSource: "openrouter",
-          modelId: initialTierModels[tier],
-          outputModalities: Object.freeze(["text"]),
-          promptPricePerToken: "0.000001",
-          requestPriceUsd: "0",
-          supportedParameters: Object.freeze(["max_tokens", "reasoning"]),
-          validatedAt,
-        }),
-      ]),
-    ) as Record<ModelTier, CatalogModelSnapshot>,
-  );
+function catalog(validatedAt: Date): ReturnType<typeof tierCatalogFixture> {
+  return tierCatalogFixture(validatedAt, (tier) => ({
+    displayName: `Model ${tier}`,
+    maximumOutputTokens: 16_384,
+  }));
 }
 
 describe.sequential("catalog refresh lease cadence", () => {

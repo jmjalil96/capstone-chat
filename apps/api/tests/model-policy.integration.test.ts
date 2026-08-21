@@ -41,7 +41,7 @@ import {
   ModelPolicyUnavailableError,
 } from "../src/model-policy/service.js";
 import { costControlTuning } from "../src/model-policy/settings.js";
-import { testCatalogCapability } from "./support/generation.js";
+import { catalogSnapshotFixture, tierCatalogFixture } from "./support/catalog.js";
 import {
   bootstrapTestAssistantRules,
   seedTestPolicyRevision,
@@ -49,30 +49,10 @@ import {
 } from "./support/workspace-behavior.js";
 
 function realCatalog(validatedAt: Date): Readonly<Record<ModelTier, CatalogModelSnapshot>> {
-  return Object.freeze(
-    Object.fromEntries(
-      modelTiers.map((tier) => [
-        tier,
-        Object.freeze({
-          available: true,
-          canonicalSlug: initialTierModels[tier],
-          capability: testCatalogCapability,
-          completionPricePerToken: "0.000002",
-          contextLength: 128_000,
-          displayName: `Model ${tier}`,
-          inputModalities: Object.freeze(["text"]),
-          maximumOutputTokens: 32_768,
-          metadataSource: "openrouter",
-          modelId: initialTierModels[tier],
-          outputModalities: Object.freeze(["text"]),
-          promptPricePerToken: "0.000001",
-          requestPriceUsd: "0",
-          supportedParameters: Object.freeze(["max_tokens", "reasoning"]),
-          validatedAt,
-        }),
-      ]),
-    ) as Record<ModelTier, CatalogModelSnapshot>,
-  );
+  return tierCatalogFixture(validatedAt, (tier) => ({
+    displayName: `Model ${tier}`,
+    maximumOutputTokens: 32_768,
+  }));
 }
 
 const limits = Object.freeze({ balanced: 2_000, fast: 1_000, pro: 16_384 });
@@ -158,21 +138,12 @@ describe.sequential("model policy and budget persistence", () => {
     modelId: string,
     source: "openrouter" | "simulated" = "openrouter",
   ): CatalogModelSnapshot {
-    return Object.freeze({
-      available: true,
-      canonicalSlug: modelId,
-      capability: testCatalogCapability,
+    return catalogSnapshotFixture({
       completionPricePerToken: source === "simulated" ? "0" : "0.000002",
-      contextLength: 128_000,
-      displayName: `Model ${modelId}`,
-      inputModalities: Object.freeze(["text"]),
       maximumOutputTokens: 32_768,
       metadataSource: source,
       modelId,
-      outputModalities: Object.freeze(["text"]),
       promptPricePerToken: source === "simulated" ? "0" : "0.000001",
-      requestPriceUsd: "0",
-      supportedParameters: Object.freeze(["max_tokens", "reasoning"]),
       validatedAt: new Date("2026-08-08T12:00:00.000Z"),
     });
   }

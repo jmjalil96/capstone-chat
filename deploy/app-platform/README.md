@@ -7,10 +7,10 @@ has one protected source pointer:
 - staging: `app-platform-staging`;
 - production: `app-platform-production`.
 
-`common.contract.yaml` defines the normal server, one migration-only `PRE_DEPLOY` job, source,
-health, termination, alerts, edge policy, and component secret scopes. The staging and production
-overlays fix their branch, domain, size, environment, sender, and Dedicated Egress policy.
-Contracts contain secret names only.
+`contract.mjs` is the sole desired-contract authority. Its common contract defines the normal
+server, one migration-only `PRE_DEPLOY` job, source, health, termination, alerts, edge policy, and
+component secret scopes; fixed staging and production overlays supply branch, domain, size,
+environment, sender, and Dedicated Egress policy. It contains secret names only.
 
 Both source builds receive `DEPLOYMENT_REVISION=${_self.COMMIT_HASH}` at runtime. The validator
 requires the desired and active specs, service and job source hashes, encrypted variables, domain,

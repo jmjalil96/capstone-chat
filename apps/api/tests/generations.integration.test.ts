@@ -35,14 +35,12 @@ import type { RequestActor } from "../src/identity/authorization.js";
 import type { IdentityService } from "../src/identity/service.js";
 import { createBudgetService } from "../src/model-policy/budget-service.js";
 import {
-  type CatalogModelSnapshot,
   initialTierModels,
   type ModelTier,
-  modelTiers,
   verifyPrivacyAttestation,
 } from "../src/model-policy/catalog.js";
 import { createModelPolicyService } from "../src/model-policy/service.js";
-import { testCatalogCapability } from "./support/generation.js";
+import { tierCatalogFixture } from "./support/catalog.js";
 import { bootstrapSimulatedModelPolicy } from "./support/model-policy.js";
 import { bootstrapTestAssistantRules } from "./support/workspace-behavior.js";
 
@@ -74,31 +72,14 @@ async function expectCode(operation: Promise<unknown>, code: string): Promise<vo
 function openRouterCatalog(
   completionPricePerToken: string,
   validatedAt: Date,
-): Readonly<Record<ModelTier, CatalogModelSnapshot>> {
-  return Object.freeze(
-    Object.fromEntries(
-      modelTiers.map((tier) => [
-        tier,
-        Object.freeze({
-          available: true,
-          canonicalSlug: initialTierModels[tier],
-          capability: testCatalogCapability,
-          completionPricePerToken,
-          contextLength: 1_000_000,
-          displayName: `Synthetic ${tier}`,
-          inputModalities: Object.freeze(["text"]),
-          maximumOutputTokens: tier === "pro" ? 16_384 : 1,
-          metadataSource: "openrouter",
-          modelId: initialTierModels[tier],
-          outputModalities: Object.freeze(["text"]),
-          promptPricePerToken: "0",
-          requestPriceUsd: "0",
-          supportedParameters: Object.freeze(["max_tokens", "reasoning"]),
-          validatedAt,
-        }),
-      ]),
-    ) as Record<ModelTier, CatalogModelSnapshot>,
-  );
+): ReturnType<typeof tierCatalogFixture> {
+  return tierCatalogFixture(validatedAt, (tier) => ({
+    completionPricePerToken,
+    contextLength: 1_000_000,
+    displayName: `Synthetic ${tier}`,
+    maximumOutputTokens: tier === "pro" ? 16_384 : 1,
+    promptPricePerToken: "0",
+  }));
 }
 
 describe.sequential("generation lifecycle integration", () => {

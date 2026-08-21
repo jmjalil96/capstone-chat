@@ -1,7 +1,7 @@
 # Staging and deployment simplification
 
-Status: repository implementation complete; external provisioning and deployment are not
-authorized or accepted.
+Status: implemented and accepted in persistent staging. Production promotion remains a separate,
+protected manual operation.
 
 Date: August 20, 2026.
 

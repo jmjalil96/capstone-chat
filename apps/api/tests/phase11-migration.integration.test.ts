@@ -7,9 +7,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { DEFAULT_WORKSPACE_ASSISTANT_RULES } from "../src/assistant-rules/defaults.js";
 import { createDatabase } from "../src/database/database.js";
 import { migrateDatabase, migrationsFolder } from "../src/database/migrate.js";
-import type { CatalogModelSnapshot } from "../src/model-policy/catalog.js";
 import { refreshClaimedCatalog } from "../src/model-policy/catalog-refresh.js";
 import { createModelPolicyService } from "../src/model-policy/service.js";
+import { catalogSnapshotFixture } from "./support/catalog.js";
 
 const workspaceId = "11000000-0000-4000-8000-000000000001";
 const userId = "phase-eleven-upgrade-user";
@@ -23,10 +23,11 @@ const catalogIds = {
   pro: "11000000-0000-4000-8000-000000000013",
 } as const;
 
-function refreshedCatalogSnapshot(modelId: string, validatedAt: Date): CatalogModelSnapshot {
-  return Object.freeze({
-    available: true,
-    canonicalSlug: modelId,
+function refreshedCatalogSnapshot(
+  modelId: string,
+  validatedAt: Date,
+): ReturnType<typeof catalogSnapshotFixture> {
+  return catalogSnapshotFixture({
     capability: Object.freeze({
       reasoning: Object.freeze({
         contractSource: "phase-eleven-upgrade-fixture",
@@ -40,22 +41,10 @@ function refreshedCatalogSnapshot(modelId: string, validatedAt: Date): CatalogMo
       }),
       temperatureSupported: true,
     }),
-    completionPricePerToken: "0.000002",
-    contextLength: 128_000,
     displayName: `Refreshed ${modelId}`,
-    inputModalities: Object.freeze(["text"]),
     maximumOutputTokens: 16_384,
-    metadataSource: "openrouter",
     modelId,
-    outputModalities: Object.freeze(["text"]),
-    promptPricePerToken: "0.000001",
-    requestPriceUsd: "0",
-    supportedParameters: Object.freeze([
-      "max_tokens",
-      "reasoning",
-      "reasoning_effort",
-      "temperature",
-    ]),
+    supportedParameters: ["max_tokens", "reasoning", "reasoning_effort", "temperature"],
     validatedAt,
   });
 }

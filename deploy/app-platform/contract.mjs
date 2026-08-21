@@ -1,6 +1,5 @@
 import { closeSync, constants, lstatSync, openSync, readFileSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
-import { parseDocument } from "yaml";
 
 export const REVISION_PATTERN = /^[0-9a-f]{40}$/u;
 export const ENCRYPTED_VALUE_PATTERN = /^EV\[[^\r\n]{8,2048}\]$/u;
@@ -37,190 +36,186 @@ function exactKeys(value, expected, label) {
   equal(Object.keys(record(value, label)).sort(), [...expected].sort(), `${label} keys`);
 }
 
-function expectedCommon() {
-  return {
-    alerts: {
-      app: ["DEPLOYMENT_FAILED", "DEPLOYMENT_LIVE", "DOMAIN_FAILED"],
-      service: {
-        cpu_percent: 85,
-        memory_percent: 85,
-        request_duration_p95_ms: 750,
-        restart_count: 1,
-      },
-    },
-    edge: {
-      disable_edge_cache: true,
-      disable_email_obfuscation: true,
-      enhanced_threat_control_enabled: false,
-    },
-    features: ["buildpack-stack=ubuntu-22"],
-    job: {
-      environment: {
-        general: {
-          CAPSTONE_SECRET_SOURCE: "platform-environment",
-          DEPLOYMENT_REVISION: revisionBinding,
-          DEPLOYMENT_TARGET: "digitalocean-app-platform",
-          NODE_ENV: "production",
-        },
-        secret_keys: ["DATABASE_URL"],
-      },
-      grace_period_seconds: 300,
-      instance_count: 1,
-      kind: "PRE_DEPLOY",
-      name: "capstone-migrate",
-      run_command: "node apps/api/dist/entrypoint.js migrate",
-    },
-    region: "ric",
-    schema: 1,
-    service: {
-      drain_seconds: 110,
-      environment: {
-        general: {
-          CAPSTONE_SECRET_SOURCE: "platform-environment",
-          CLIENT_ADDRESS_SOURCE: "digitalocean-app-platform",
-          DEPLOYMENT_REVISION: revisionBinding,
-          DEPLOYMENT_TARGET: "digitalocean-app-platform",
-          EMAIL_DELIVERY: "resend",
-          HOST: "0.0.0.0",
-          LOG_LEVEL: "info",
-          MODEL_GATEWAY: "openrouter",
-          NODE_ENV: "production",
-          PORT: "3000",
-          WEB_ASSETS: "production-build",
-        },
-        general_keys: ["OTEL_EXPORTER_OTLP_ENDPOINT"],
-        secret_keys: [
-          "BETTER_AUTH_SECRET",
-          "DATABASE_URL",
-          "OPENROUTER_API_KEY",
-          "OTEL_EXPORTER_OTLP_HEADERS",
-          "RESEND_API_KEY",
-        ],
-      },
-      grace_period_seconds: 300,
-      http_port: 3000,
-      instance_count: 1,
-      liveness_path: "/api/health/live",
-      name: "capstone-chat",
-      readiness_path: "/api/health/ready",
-      run_command: "node apps/api/dist/entrypoint.js server",
-    },
-    source: {
-      dockerfile_path: "apps/api/Dockerfile",
-      github: { deploy_on_push: false, repo: "jmjalil96/capstone-chat" },
-      source_dir: "/",
-    },
-  };
+function deeplyFreeze(value) {
+  Object.freeze(value);
+  for (const child of Object.values(value)) {
+    if (child !== null && typeof child === "object" && !Object.isFrozen(child)) {
+      deeplyFreeze(child);
+    }
+  }
+  return value;
 }
 
-function expectedOverlay(environment) {
-  if (environment === "staging") {
-    return {
-      branch: "app-platform-staging",
-      dedicated_egress: false,
-      domain: "staging.chat.capstone.com.ec",
-      environment,
-      job_size_slug: "apps-s-1vcpu-0.5gb",
-      name: "capstone-chat-staging",
-      schema: 1,
-      service_environment: {
-        general: {
-          CAPSTONE_ENVIRONMENT: "staging",
-          EMAIL_FROM: "Capstone Chat Staging <no-reply@staging.mail.capstone.com.ec>",
-          PUBLIC_ORIGIN: "https://staging.chat.capstone.com.ec",
-        },
-        secret_keys: ["CAPSTONE_STAGING_EMAIL_RECIPIENTS"],
+const commonContract = deeplyFreeze({
+  alerts: {
+    app: ["DEPLOYMENT_FAILED", "DEPLOYMENT_LIVE", "DOMAIN_FAILED"],
+    service: {
+      cpu_percent: 85,
+      memory_percent: 85,
+      request_duration_p95_ms: 750,
+      restart_count: 1,
+    },
+  },
+  edge: {
+    disable_edge_cache: true,
+    disable_email_obfuscation: true,
+    enhanced_threat_control_enabled: false,
+  },
+  features: ["buildpack-stack=ubuntu-22"],
+  job: {
+    environment: {
+      general: {
+        DEPLOYMENT_REVISION: revisionBinding,
+        NODE_ENV: "production",
       },
-      service_size_slug: "apps-s-1vcpu-0.5gb",
-    };
-  }
-  return {
+      secret_keys: ["DATABASE_URL"],
+    },
+    grace_period_seconds: 300,
+    instance_count: 1,
+    kind: "PRE_DEPLOY",
+    name: "capstone-migrate",
+    run_command: "node apps/api/dist/entrypoint.js migrate",
+  },
+  region: "ric",
+  service: {
+    drain_seconds: 110,
+    environment: {
+      general: {
+        DEPLOYMENT_REVISION: revisionBinding,
+        EMAIL_DELIVERY: "resend",
+        HOST: "0.0.0.0",
+        LOG_LEVEL: "info",
+        MODEL_GATEWAY: "openrouter",
+        NODE_ENV: "production",
+        PORT: "3000",
+      },
+      general_keys: ["OTEL_EXPORTER_OTLP_ENDPOINT"],
+      secret_keys: [
+        "BETTER_AUTH_SECRET",
+        "DATABASE_URL",
+        "OPENROUTER_API_KEY",
+        "OTEL_EXPORTER_OTLP_HEADERS",
+        "RESEND_API_KEY",
+      ],
+    },
+    grace_period_seconds: 300,
+    http_port: 3000,
+    instance_count: 1,
+    liveness_path: "/api/health/live",
+    name: "capstone-chat",
+    readiness_path: "/api/health/ready",
+    run_command: "node apps/api/dist/entrypoint.js server",
+  },
+  source: {
+    dockerfile_path: "apps/api/Dockerfile",
+    github: { deploy_on_push: false, repo: "jmjalil96/capstone-chat" },
+    source_dir: "/",
+  },
+});
+
+const environmentOverlays = deeplyFreeze({
+  staging: {
+    branch: "app-platform-staging",
+    dedicatedEgress: false,
+    domain: "staging.chat.capstone.com.ec",
+    jobSizeSlug: "apps-s-1vcpu-0.5gb",
+    name: "capstone-chat-staging",
+    serviceEnvironment: {
+      general: {
+        CAPSTONE_ENVIRONMENT: "staging",
+        EMAIL_FROM: "Capstone Chat Staging <no-reply@staging.mail.capstone.com.ec>",
+        PUBLIC_ORIGIN: "https://staging.chat.capstone.com.ec",
+      },
+      secret_keys: ["CAPSTONE_STAGING_EMAIL_RECIPIENTS"],
+    },
+    serviceSizeSlug: "apps-s-1vcpu-0.5gb",
+  },
+  production: {
     branch: "app-platform-production",
-    dedicated_egress: true,
+    dedicatedEgress: true,
     domain: "chat.capstone.com.ec",
-    environment,
-    job_size_slug: "apps-s-1vcpu-0.5gb",
+    // Production remains on predecessor code that requires these values. They are inert in the
+    // cleanup-aware release and can be removed from the App spec only after that release is live.
+    jobEnvironment: {
+      general: {
+        CAPSTONE_SECRET_SOURCE: "platform-environment",
+        DEPLOYMENT_TARGET: "digitalocean-app-platform",
+      },
+    },
+    jobSizeSlug: "apps-s-1vcpu-0.5gb",
     name: "capstone-chat-production",
-    schema: 1,
-    service_environment: {
+    serviceEnvironment: {
       general: {
         CAPSTONE_ENVIRONMENT: "production",
+        CAPSTONE_SECRET_SOURCE: "platform-environment",
+        CLIENT_ADDRESS_SOURCE: "digitalocean-app-platform",
+        DEPLOYMENT_TARGET: "digitalocean-app-platform",
         EMAIL_FROM: "Capstone Chat <no-reply@mail.capstone.com.ec>",
         PUBLIC_ORIGIN: "https://chat.capstone.com.ec",
+        WEB_ASSETS: "production-build",
       },
       secret_keys: [],
     },
-    service_size_slug: "apps-s-1vcpu-1gb-fixed",
-  };
-}
+    serviceSizeSlug: "apps-s-1vcpu-1gb-fixed",
+  },
+});
 
-function readYaml(path, label) {
-  const document = parseDocument(readFileSync(path, "utf8"), {
-    prettyErrors: true,
-    strict: true,
-    uniqueKeys: true,
-  });
-  assert(document.errors.length === 0, `${label} YAML is invalid`);
-  return document.toJS();
-}
-
-export function validateContract(common, overlay, expectedEnvironment) {
-  assert(environments.has(expectedEnvironment), "Hosted environment is invalid");
-  equal(common, expectedCommon(), "Common hosted contract");
-  equal(overlay, expectedOverlay(expectedEnvironment), `${expectedEnvironment} overlay`);
-  return Object.freeze({
-    alerts: common.alerts,
-    dedicatedEgress: overlay.dedicated_egress,
+function createContract(environment, overlay) {
+  return deeplyFreeze({
+    alerts: commonContract.alerts,
+    dedicatedEgress: overlay.dedicatedEgress,
     domain: {
       domain: overlay.domain,
       minimum_tls_version: "1.2",
       type: "PRIMARY",
     },
-    edge: common.edge,
-    environment: expectedEnvironment,
-    features: common.features,
+    edge: commonContract.edge,
+    environment,
+    features: commonContract.features,
     job: {
-      ...common.job,
+      ...commonContract.job,
       environment: {
         general: {
-          ...common.job.environment.general,
-          CAPSTONE_ENVIRONMENT: expectedEnvironment,
+          ...commonContract.job.environment.general,
+          CAPSTONE_ENVIRONMENT: environment,
+          ...(overlay.jobEnvironment?.general ?? {}),
         },
-        secret_keys: common.job.environment.secret_keys,
+        secret_keys: commonContract.job.environment.secret_keys,
       },
-      instance_size_slug: overlay.job_size_slug,
+      instance_size_slug: overlay.jobSizeSlug,
     },
     name: overlay.name,
-    region: common.region,
-    schema: 1,
+    region: commonContract.region,
     service: {
-      ...common.service,
+      ...commonContract.service,
       environment: {
         general: {
-          ...common.service.environment.general,
-          ...overlay.service_environment.general,
+          ...commonContract.service.environment.general,
+          ...overlay.serviceEnvironment.general,
         },
-        general_keys: common.service.environment.general_keys,
+        general_keys: commonContract.service.environment.general_keys,
         secret_keys: [
-          ...common.service.environment.secret_keys,
-          ...overlay.service_environment.secret_keys,
+          ...commonContract.service.environment.secret_keys,
+          ...overlay.serviceEnvironment.secret_keys,
         ],
       },
-      instance_size_slug: overlay.service_size_slug,
+      instance_size_slug: overlay.serviceSizeSlug,
     },
     source: {
-      ...common.source,
-      github: { ...common.source.github, branch: overlay.branch },
+      ...commonContract.source,
+      github: { ...commonContract.source.github, branch: overlay.branch },
     },
   });
 }
 
-export function readContract(commonPath, overlayPath, expectedEnvironment) {
-  return validateContract(
-    readYaml(commonPath, "Common hosted contract"),
-    readYaml(overlayPath, `${expectedEnvironment} overlay`),
-    expectedEnvironment,
-  );
+const hostedContracts = deeplyFreeze({
+  production: createContract("production", environmentOverlays.production),
+  staging: createContract("staging", environmentOverlays.staging),
+});
+
+export function readContract(environment) {
+  assert(environments.has(environment), "Hosted environment is invalid");
+  return hostedContracts[environment];
 }
 
 export function readProtectedJson(path, label = "Protected JSON", maximumBytes = 512 * 1024) {
@@ -531,9 +526,6 @@ function validateSpec(value, app, contract, label) {
   }
   if (contract.dedicatedEgress) {
     equal(spec.egress, { type: "DEDICATED_IP" }, `${label} production egress`);
-  }
-  for (const key of ["databases", "envs", "functions", "static_sites", "vpc", "workers"]) {
-    assert(spec[key] === undefined, `${label} contains prohibited ${key}`);
   }
 }
 

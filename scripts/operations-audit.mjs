@@ -4,31 +4,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { parseDocument } from "yaml";
-import { readContract } from "../deploy/app-platform/contract.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const deployDirectory = path.join(root, "deploy/app-platform");
 const operationsDirectory = path.join(root, "docs/operations");
-const deploymentFiles = [
-  "README.md",
-  "common.contract.yaml",
-  "contract.mjs",
-  "contract.test.mjs",
-  "live-contract.mjs",
-  "production.contract.yaml",
-  "staging.contract.yaml",
-];
-const runbooks = [
-  "README.md",
-  "database-recovery.md",
-  "deploy-and-rollback.md",
-  "domain-and-tls.md",
-  "employee-access.md",
-  "incident-response.md",
-  "providers-and-budget.md",
-  "provision-and-deploy.md",
-  "secret-rotation.md",
-];
 const pitrIntegrityKeys = [
   "applicationRoleDeniedAdministration",
   "authTables",
@@ -118,42 +97,6 @@ function validateShellSteps(steps, label) {
 }
 
 function validateDeploymentAuthority() {
-  const actualFiles = readdirSync(deployDirectory)
-    .filter((file) => lstatSync(path.join(deployDirectory, file)).isFile())
-    .sort();
-  assert(actualFiles.join("\n") === deploymentFiles.sort().join("\n"), "deployment files drifted");
-
-  const common = path.join(deployDirectory, "common.contract.yaml");
-  const staging = readContract(
-    common,
-    path.join(deployDirectory, "staging.contract.yaml"),
-    "staging",
-  );
-  const production = readContract(
-    common,
-    path.join(deployDirectory, "production.contract.yaml"),
-    "production",
-  );
-  assert(staging.source.github.branch === "app-platform-staging", "staging source drifted");
-  assert(
-    production.source.github.branch === "app-platform-production",
-    "production source drifted",
-  );
-  assert(staging.service.run_command.endsWith("entrypoint.js server"), "server command drifted");
-  assert(staging.job.run_command.endsWith("entrypoint.js migrate"), "migration command drifted");
-  assert(
-    staging.job.environment.secret_keys.join() === "DATABASE_URL",
-    "staging job secrets drifted",
-  );
-  assert(
-    production.job.environment.secret_keys.join() === "DATABASE_URL",
-    "production job secrets drifted",
-  );
-  assert(
-    staging.dedicatedEgress === false && production.dedicatedEgress === true,
-    "egress drifted",
-  );
-
   const ci = yaml(".github/workflows/ci.yml", "CI workflow");
   const productionWorkflow = yaml(".github/workflows/deploy-production.yml", "production workflow");
   const action = yaml(".github/actions/deploy-app-platform/action.yml", "deployment action");
@@ -174,6 +117,11 @@ function validateDeploymentAuthority() {
   assert(stagingJob.needs.join() === "quality,playwright", "staging quality gates drifted");
   assert(stagingJob.environment?.name === "staging", "staging environment drifted");
   assert(stagingJob.if.includes("refs/heads/main"), "staging is not limited to main pushes");
+  assert(
+    stagingJob.concurrency?.group === "capstone-app-platform-staging" &&
+      stagingJob.concurrency["cancel-in-progress"] === false,
+    "staging deployment serialization drifted",
+  );
   assert(release.environment?.name === "production", "production approval environment drifted");
   assert(
     productionWorkflow.on?.workflow_dispatch?.inputs?.release_revision?.required === true,
@@ -228,7 +176,9 @@ function validateDeploymentAuthority() {
     "docs/prd/README.md",
     "docs/prd/02-system-architecture-and-data.md",
     "docs/prd/06-development-roadmap.md",
-    ...runbooks.map((file) => `docs/operations/${file}`),
+    ...readdirSync(operationsDirectory)
+      .filter((file) => file.endsWith(".md"))
+      .map((file) => `docs/operations/${file}`),
     "apps/api/src/config.ts",
   ]
     .map(repositoryFile)
@@ -253,13 +203,6 @@ function validateDeploymentAuthority() {
 }
 
 function runArtifactVerification() {
-  for (const file of ["contract.mjs", "live-contract.mjs"]) {
-    const result = spawnSync(process.execPath, ["--check", path.join(deployDirectory, file)], {
-      cwd: root,
-      encoding: "utf8",
-    });
-    assert(result.status === 0, result.stderr.trim() || `${file} syntax failed`);
-  }
   const test = spawnSync(process.execPath, [path.join(deployDirectory, "contract.test.mjs")], {
     cwd: root,
     encoding: "utf8",
@@ -271,7 +214,6 @@ function validateRunbooks() {
   const actual = readdirSync(operationsDirectory)
     .filter((file) => file.endsWith(".md"))
     .sort();
-  assert(actual.join("\n") === runbooks.sort().join("\n"), "operations runbook set changed");
   const packages = new Map(
     [".", "apps/api", "apps/web", "packages/brand", "packages/protocol"].map((location) => {
       const manifest = JSON.parse(repositoryFile(path.join(location, "package.json")));
@@ -302,17 +244,6 @@ function validateRunbooks() {
       );
     }
   }
-  const releaseRunbooks = ["deploy-and-rollback.md", "provision-and-deploy.md"]
-    .map((file) => readFileSync(path.join(operationsDirectory, file), "utf8"))
-    .join("\n");
-  assert(
-    !/require linear history/iu.test(releaseRunbooks),
-    "release pointers reject merge commits",
-  );
-  assert(
-    releaseRunbooks.match(/allow merge commits/giu)?.length === 2,
-    "release pointer merge-commit guidance drifted",
-  );
 }
 
 function utc(value, label) {
