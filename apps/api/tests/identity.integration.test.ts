@@ -1170,12 +1170,9 @@ describe.sequential("identity integration", () => {
         ...loadConfig({
           BETTER_AUTH_SECRET: "capstone-chat-test-secret-with-more-than-thirty-two-characters",
           CAPSTONE_ENVIRONMENT: "production",
-          CAPSTONE_SECRET_SOURCE: "platform-environment",
-          CLIENT_ADDRESS_SOURCE: "digitalocean-app-platform",
           DATABASE_URL:
             "postgresql://app:password@database.example:5432/capstone?sslmode=verify-full",
           DEPLOYMENT_REVISION: "0123456789abcdef0123456789abcdef01234567",
-          DEPLOYMENT_TARGET: "digitalocean-app-platform",
           EMAIL_DELIVERY: "resend",
           EMAIL_FROM: "Capstone Chat <no-reply@mail.capstone.com.ec>",
           HOST: "0.0.0.0",
@@ -1188,7 +1185,6 @@ describe.sequential("identity integration", () => {
           PORT: "3000",
           PUBLIC_ORIGIN: productionOrigin,
           RESEND_API_KEY: "re_test_only",
-          WEB_ASSETS: "production-build",
         }),
         databaseUrl,
         publicOrigin: productionOrigin,

@@ -64,15 +64,12 @@ describe("Phase 4 generation configuration", () => {
         ...loadConfig({
           BETTER_AUTH_SECRET: "hosted-auth-secret-longer-than-thirty-two-characters",
           CAPSTONE_ENVIRONMENT: applicationEnvironment,
-          CAPSTONE_SECRET_SOURCE: "platform-environment",
           ...(applicationEnvironment === "staging"
             ? { CAPSTONE_STAGING_EMAIL_RECIPIENTS: "qa@capstone.com.ec" }
             : {}),
-          CLIENT_ADDRESS_SOURCE: "digitalocean-app-platform",
           DATABASE_URL:
             "postgresql://capstone:capstone@example.invalid:5432/capstone?sslmode=verify-full",
           DEPLOYMENT_REVISION: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          DEPLOYMENT_TARGET: "digitalocean-app-platform",
           EMAIL_DELIVERY: "resend",
           EMAIL_FROM:
             applicationEnvironment === "staging"

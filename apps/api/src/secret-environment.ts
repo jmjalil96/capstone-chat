@@ -121,23 +121,8 @@ export function loadSecretEnvironment(
   options: SecretEnvironmentOptions = {},
 ): void {
   const configuredPath = source.CAPSTONE_SECRET_FILE?.trim();
-  const secretSource = source.CAPSTONE_SECRET_SOURCE?.trim();
-  if (
-    configuredPath !== undefined &&
-    configuredPath.length > 0 &&
-    secretSource !== undefined &&
-    secretSource.length > 0
-  ) {
-    invalidSecretFile();
-  }
   if (configuredPath === undefined || configuredPath.length === 0) {
     return;
-  }
-
-  // File loading remains only for explicit offline recovery commands. The active App Platform
-  // service and migration job use component-scoped encrypted environment variables.
-  if (source.DEPLOYMENT_TARGET?.trim() === "digitalocean-app-platform") {
-    invalidSecretFile();
   }
 
   const secrets = readSecretEnvironmentFile(configuredPath, options);

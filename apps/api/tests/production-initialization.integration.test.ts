@@ -147,6 +147,7 @@ describe.sequential("production initialization", () => {
         cwd: apiRoot,
         env: {
           ...process.env,
+          CAPSTONE_SECRET_FILE: "",
           DATABASE_URL: databaseUrl,
           EMAIL_DELIVERY: "fake",
           NODE_ENV: "test",
