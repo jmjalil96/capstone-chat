@@ -26,6 +26,7 @@
     "model-catalog:refresh": "tsx src/entrypoint.ts model refresh",
     "model-policy:attest": "tsx src/entrypoint.ts model attest",
     "model-policy:bootstrap": "tsx src/entrypoint.ts model bootstrap",
+    "model-policy:verify": "tsx src/entrypoint.ts model verify",
     "environment:initialize": "tsx src/entrypoint.ts initialize",
     "recovery-marker": "tsx src/entrypoint.ts recovery-marker",
     "recovery:prepare": "tsx src/entrypoint.ts recovery-prepare",

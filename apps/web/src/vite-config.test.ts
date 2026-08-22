@@ -9,7 +9,7 @@ describe("Vite development configuration", () => {
     const config = createViteConfig({});
 
     expect(config.server).toMatchObject({
-      host: "localhost",
+      host: "127.0.0.1",
       port: 5173,
       proxy: {
         "/api": {
@@ -25,6 +25,15 @@ describe("Vite development configuration", () => {
           target: "http://127.0.0.1:3000",
         },
       },
+    });
+  });
+
+  it("treats blank application ports as unspecified", () => {
+    const config = createViteConfig({ CAPSTONE_WEB_PORT: "", PORT: "  " });
+
+    expect(config.server).toMatchObject({
+      port: 5173,
+      proxy: { "/api": { target: "http://127.0.0.1:3000" } },
     });
   });
 

@@ -361,6 +361,19 @@ describe("Phase 11 additive migration", () => {
         },
       ]);
 
+      await pool.query(`
+        INSERT INTO generations (
+          workspace_id, user_id, idempotency_key, requested_tier, purpose,
+          system_prompt_version, behavior_contract_version, model_policy_revision,
+          workspace_prompt_revision, effective_parameters, status, terminal_reason, completed_at
+        ) VALUES (
+          '${workspaceId}', '${userId}', '11000000-0000-4000-8000-000000000011',
+          'balanced', 'chat', 'capstone-chat-base-v2', 2, 7, 1,
+          '{}', 'completed', 'stop', now()
+        )
+      `);
+      await expect(migrateDatabase(databaseUrl)).resolves.toBeUndefined();
+
       const validatedAt = new Date("2026-08-19T12:00:00.000Z");
       const refresh = await refreshClaimedCatalog({
         force: true,

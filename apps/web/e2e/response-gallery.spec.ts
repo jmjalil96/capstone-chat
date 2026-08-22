@@ -128,7 +128,11 @@ test("@critical-stream renders the fixed response gallery and hands off stable a
   );
   expect((await clipboardWrites(page)).at(-1)).toBe(phaseFiveBrowserFixtures.galleryUser);
 
-  const handoffRequestCount = requests.length;
+  // Readiness polling is an independent shell heartbeat and may occur during this long Firefox
+  // flow. Every other request remains inside the handoff disclosure boundary.
+  const disclosureRequests = () =>
+    requests.filter((url) => new URL(url).pathname !== "/api/health/ready");
+  const handoffRequestCount = disclosureRequests().length;
   const answerCopy = galleryMessage.getByRole("button", {
     name: copy.conversations.messages.copyAnswer,
   });
@@ -243,7 +247,7 @@ test("@critical-stream renders the fixed response gallery and hands off stable a
   ).toEqual({ applicationHidden: true, printDisplay: "block" });
   await page.emulateMedia({ media: "screen" });
   await expect(page.locator(".answer-print-root")).toHaveCount(0);
-  expect(requests).toHaveLength(handoffRequestCount);
+  expect(disclosureRequests()).toHaveLength(handoffRequestCount);
 
   const codeCopy = galleryMessage
     .getByRole("button", { name: copy.conversations.messages.copyCode })

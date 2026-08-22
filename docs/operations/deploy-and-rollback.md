@@ -82,7 +82,10 @@ move a pointer backward, force-push, use native rollback, or introduce startup m
 
 Rollback is a normal descendant release:
 
-1. Identify a compatible accepted source state and create a reviewed `git revert` on `main`.
+1. Identify a compatible accepted source state and create a reviewed descendant revert of the
+   application behavior on `main`. If the reverted release introduced a migration, retain its SQL,
+   journal/snapshot entries, and migration-verification contracts in the descendant; an applied
+   migration is never removed by `git revert`.
 2. Let the revert pass the entire CI workflow and staging deployment.
 3. Promote that exact descendant through protected production approval.
 4. Re-run migration, source/readiness identity, authentication, chat/Stop, settlement,

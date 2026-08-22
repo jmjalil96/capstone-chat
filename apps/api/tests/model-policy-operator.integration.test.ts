@@ -217,6 +217,7 @@ describe.sequential("model-policy operator commands", () => {
   it("bootstraps simulated policy without a key or provider access and retries idempotently", async () => {
     const first = await runOperator(simulatedBootstrapArguments);
     const repeated = await runOperator(simulatedBootstrapArguments);
+    const verified = await runOperator(["verify", "--mode", "simulated"]);
 
     expect(first.code).toBe(0);
     expect(first.stderr).toBe("");
@@ -236,6 +237,14 @@ describe.sequential("model-policy operator commands", () => {
     });
     expectNoProviderAccess(first);
     expectNoProviderAccess(repeated);
+    expect(verified.code).toBe(0);
+    expect(verified.stderr).toBe("");
+    expect(parseOperatorOutput(verified.stdout)).toEqual({
+      command: "verify",
+      mode: "simulated",
+      outcome: "compatible",
+    });
+    expectNoProviderAccess(verified);
 
     const state = await readPolicyState();
     expect(state.catalog).toHaveLength(3);
@@ -268,6 +277,27 @@ describe.sequential("model-policy operator commands", () => {
       { maximumOutputTokens: 3, tier: "pro" },
     ]);
     expect(state.privacyAttestations).toEqual([]);
+  });
+
+  it("fails verification for missing or gateway-incompatible policy without provider access", async () => {
+    const missing = await runOperator(["verify", "--mode", "simulated"]);
+    expect(missing.code).toBe(1);
+    expect(missing.stdout).toBe("");
+    expect(parseOperatorOutput(missing.stderr)).toEqual({
+      errorName: "ModelPolicyUnavailableError",
+      outcome: "failed",
+    });
+
+    expect((await runOperator(simulatedBootstrapArguments)).code).toBe(0);
+    const incompatible = await runOperator(["verify", "--mode", "openrouter"]);
+    expect(incompatible.code).toBe(1);
+    expect(incompatible.stdout).toBe("");
+    expect(parseOperatorOutput(incompatible.stderr)).toEqual({
+      errorName: "ModelPolicyUnavailableError",
+      outcome: "failed",
+    });
+    expectNoProviderAccess(missing);
+    expectNoProviderAccess(incompatible);
   });
 
   it("rejects a conflicting retry without mutating effective policy", async () => {

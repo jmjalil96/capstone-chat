@@ -301,14 +301,21 @@ function readStagingEmailRecipients(
   value: string | undefined,
   environment: ApplicationEnvironment,
 ): readonly string[] {
+  const configured = value?.trim();
   if (environment !== "staging") {
-    if (value !== undefined) {
+    if (configured) {
       throw new ConfigurationError(
         "CAPSTONE_STAGING_EMAIL_RECIPIENTS",
         "CAPSTONE_STAGING_EMAIL_RECIPIENTS is permitted only in staging",
       );
     }
     return Object.freeze([]);
+  }
+  if (!configured) {
+    throw new ConfigurationError(
+      "CAPSTONE_STAGING_EMAIL_RECIPIENTS",
+      "CAPSTONE_STAGING_EMAIL_RECIPIENTS must contain 1 to 10 addresses",
+    );
   }
   const entries = value?.split(",") ?? [];
   if (entries.length < 1 || entries.length > 10) {
@@ -479,7 +486,7 @@ function readOtlpConfig(
 ): Readonly<{ endpoint: string | null; headers: Readonly<Record<string, string>> }> {
   const endpointValue = source.OTEL_EXPORTER_OTLP_ENDPOINT?.trim();
   const headersValue = source.OTEL_EXPORTER_OTLP_HEADERS?.trim();
-  if (!hosted(environment) && endpointValue === undefined && headersValue === undefined) {
+  if (!hosted(environment) && !endpointValue && !headersValue) {
     return Object.freeze({ endpoint: null, headers: Object.freeze({}) });
   }
   if (!endpointValue || !headersValue) {

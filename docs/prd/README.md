@@ -96,6 +96,19 @@ or destination application, make no network request, and cannot be recalled by l
 deletion. The exact behavior and verification boundary are recorded in
 [the Phase 12A better output handoff plan](../implementation/12-better-output-handoff-plan.md).
 
+The August 21, 2026 deterministic-local-development decision explicitly amends the locked local
+development contract. `pnpm dev` remains a direct Fastify-and-Vite edit/refresh loop, but a small
+repository-local pre-server orchestrator now starts the existing PostgreSQL-only Compose service
+when needed, selects atomically leased local ports, derives a persistent database from the absolute
+worktree path and selected model profile, verifies and applies migrations, and idempotently
+bootstraps local identity and model policy before starting either server. Fake and explicitly
+opted-in OpenRouter development use different logical databases. Application servers still never
+migrate, initialize, repair, reset, or delete a database on startup; destructive local reset remains
+an explicit, loopback-guarded command. The migration-history and critical-schema verifier is shared
+by development, CI, hosted migration jobs, and recovery final verification without changing the
+hosted deployment topology. The exact engineering contract is recorded in
+[the deterministic local development hardening plan](../implementation/deterministic-local-development-hardening-plan.md).
+
 The production-hosting decisions approved on 2026-08-11 replace the active raw-Droplet path with
 one DigitalOcean App Platform dynamic service in managed region `ric`, Dedicated Egress, and the
 already selected PlanetScale Postgres PS-5 Single Node cluster in AWS `us-east-1`. They amend the

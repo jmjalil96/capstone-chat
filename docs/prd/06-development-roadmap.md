@@ -106,6 +106,16 @@ storage service, telemetry event, dependency, or hosted component. Stable termin
 remain eligible and carry their existing warning into print output. The exact contract is recorded
 in the [Phase 12A implementation plan](../implementation/12-better-output-handoff-plan.md).
 
+Deterministic local development hardening (approved and implementation-authorized 2026-08-21) is
+an engineering amendment to the Foundation acceptance path, not a new product phase. `pnpm dev`
+now prepares one persistent worktree-and-profile-specific logical database, atomically leases local
+ports, runs shared fail-closed migration verification plus idempotent bootstrap, and only then
+starts the existing direct Fastify and Vite processes. The fake profile remains provider-free;
+OpenRouter is a separate explicit opt-in profile. Servers never perform startup migration or
+automatic data repair, and reset remains explicit and profile-scoped. The exact boundary is
+recorded in the
+[deterministic local development hardening plan](../implementation/deterministic-local-development-hardening-plan.md).
+
 ## Production launch baseline
 
 **Locked for Milestone 8**

@@ -9,6 +9,10 @@ import { createApplication } from "../src/app.js";
 import { loadConfig } from "../src/config.js";
 import { createDatabase, executePrepared } from "../src/database/database.js";
 import { migrateDatabase, migrationsFolder } from "../src/database/migrate.js";
+import {
+  loadMigrationManifest,
+  MigrationVerificationError,
+} from "../src/database/migration-verification.js";
 import { createDatabasePool } from "../src/database/pool.js";
 
 const productTableNames = [
@@ -39,6 +43,50 @@ const productTableNames = [
   "workspace_model_policy_revisions",
   "workspaces",
 ] as const;
+
+function finalMigrationObjectNames(source: string): Readonly<{
+  constraints: readonly string[];
+  functions: readonly string[];
+  indexes: readonly string[];
+  tables: readonly string[];
+}> {
+  const normalized = (value: string): string => value.slice(0, 63);
+  const constraints = new Set<string>();
+  const indexes = new Set<string>();
+  for (const match of source.matchAll(
+    /DROP\s+CONSTRAINT\s+"([^"]+)"|(?:ADD\s+)?CONSTRAINT\s+"([^"]+)"/giu,
+  )) {
+    const dropped = match[1];
+    const added = match[2];
+    if (dropped !== undefined) {
+      constraints.delete(normalized(dropped));
+    } else if (added !== undefined) {
+      constraints.add(normalized(added));
+    }
+  }
+  for (const match of source.matchAll(
+    /DROP\s+INDEX\s+(?:"public"\.)?"([^"]+)"|CREATE\s+(?:UNIQUE\s+)?INDEX\s+"([^"]+)"/giu,
+  )) {
+    const dropped = match[1];
+    const added = match[2];
+    if (dropped !== undefined) {
+      indexes.delete(normalized(dropped));
+    } else if (added !== undefined) {
+      indexes.add(normalized(added));
+    }
+  }
+  const extracted = (pattern: RegExp): readonly string[] =>
+    [...source.matchAll(pattern)]
+      .flatMap((match) => (match[1] === undefined ? [] : [normalized(match[1])]))
+      .filter((value, index, values) => values.indexOf(value) === index)
+      .sort();
+  return Object.freeze({
+    constraints: [...constraints].sort(),
+    functions: extracted(/CREATE\s+FUNCTION\s+(?:"?public"?\.)?"?([a-z0-9_]+)"?/giu),
+    indexes: [...indexes].sort(),
+    tables: extracted(/CREATE\s+TABLE\s+"([^"]+)"/giu),
+  });
+}
 
 function databaseUrlFor(baseUrl: string, databaseName: string): string {
   const parsed = new URL(baseUrl);
@@ -1219,6 +1267,24 @@ describe("PostgreSQL application schema", () => {
     expect(journal.entries?.map(({ tag }) => `${tag}.sql`)).toEqual(migrationFiles);
   });
 
+  it("keeps the explicit migration-object contract synchronized with committed SQL", async () => {
+    const manifest = await loadMigrationManifest();
+    const migrationFiles = (await readdir(migrationsFolder))
+      .filter((fileName) => /^\d{4}_.+\.sql$/u.test(fileName))
+      .sort();
+    const source = (
+      await Promise.all(
+        migrationFiles.map((fileName) => readFile(resolve(migrationsFolder, fileName), "utf8")),
+      )
+    ).join("\n");
+    const derived = finalMigrationObjectNames(source);
+
+    expect(manifest.constraintNames).toEqual(derived.constraints);
+    expect(manifest.functionNames).toEqual(derived.functions);
+    expect(manifest.indexNames).toEqual(derived.indexes);
+    expect(manifest.tableNames).toEqual(derived.tables);
+  });
+
   it("applies server-side timeouts to every application connection", async () => {
     const applicationPool = createDatabasePool(databaseUrl);
     try {
@@ -1274,6 +1340,178 @@ describe("PostgreSQL application schema", () => {
       expect(Number(plans.rows[0]?.genericPlans)).toBeGreaterThan(0);
     } finally {
       await pool.end();
+    }
+  });
+
+  it("rejects divergent migration ledgers before applying later DDL", async () => {
+    const manifest = await loadMigrationManifest();
+    const first = manifest.entries[0];
+    const second = manifest.entries[1];
+    if (first === undefined || second === undefined) {
+      throw new Error("Migration fixture requires two releases");
+    }
+    const firstSql = await readFile(resolve(migrationsFolder, `${first.tag}.sql`), "utf8");
+    const secondSql = await readFile(resolve(migrationsFolder, `${second.tag}.sql`), "utf8");
+    const administrativePool = new Pool({ connectionString: databaseUrl });
+    const fixturePools: Pool[] = [];
+
+    const createFixture = async (name: string): Promise<{ pool: Pool; url: string }> => {
+      await administrativePool.query(`CREATE DATABASE "${name}"`);
+      const url = databaseUrlFor(databaseUrl, name);
+      const pool = new Pool({ connectionString: url });
+      fixturePools.push(pool);
+      return { pool, url };
+    };
+    const applySql = async (pool: Pool, source: string): Promise<void> => {
+      for (const statement of source.split("--> statement-breakpoint")) {
+        if (statement.trim()) {
+          await pool.query(statement);
+        }
+      }
+    };
+    const createLedger = async (pool: Pool): Promise<void> => {
+      await pool.query(`
+        CREATE SCHEMA drizzle;
+        CREATE TABLE drizzle.__drizzle_migrations (
+          id SERIAL PRIMARY KEY,
+          hash text NOT NULL,
+          created_at bigint
+        )
+      `);
+    };
+
+    try {
+      const changed = await createFixture("capstone_migration_changed_hash");
+      await applySql(changed.pool, firstSql);
+      await createLedger(changed.pool);
+      await changed.pool.query(
+        "INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES ($1, $2)",
+        ["0".repeat(64), first.timestamp],
+      );
+      await expect(migrateDatabase(changed.url)).rejects.toMatchObject({
+        name: "MigrationVerificationError",
+        operationalCode: "history-diverged",
+      });
+      expect(
+        (
+          await changed.pool.query<{ tableName: string | null }>(
+            "SELECT to_regclass('public.conversations')::text AS \"tableName\"",
+          )
+        ).rows,
+      ).toEqual([{ tableName: null }]);
+      const reordered = await createFixture("capstone_migration_reordered");
+      await applySql(reordered.pool, firstSql);
+      await applySql(reordered.pool, secondSql);
+      await createLedger(reordered.pool);
+      await reordered.pool.query(
+        `INSERT INTO drizzle.__drizzle_migrations (hash, created_at)
+         VALUES ($1, $2), ($3, $4)`,
+        [second.hash, first.timestamp, first.hash, second.timestamp],
+      );
+      await expect(migrateDatabase(reordered.url)).rejects.toBeInstanceOf(
+        MigrationVerificationError,
+      );
+      const missing = await createFixture("capstone_migration_missing_ledger");
+      await applySql(missing.pool, firstSql);
+      await applySql(missing.pool, secondSql);
+      await createLedger(missing.pool);
+      await missing.pool.query(
+        "INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES ($1, $2)",
+        [first.hash, first.timestamp],
+      );
+      expect(
+        (
+          await missing.pool.query<{ tableName: string | null }>(
+            "SELECT to_regclass('public.generations')::text AS \"tableName\"",
+          )
+        ).rows,
+      ).toEqual([{ tableName: null }]);
+      await expect(migrateDatabase(missing.url)).rejects.toMatchObject({
+        operationalCode: "history-diverged",
+      });
+      expect(
+        (
+          await missing.pool.query<{ tableName: string | null }>(
+            "SELECT to_regclass('public.generations')::text AS \"tableName\"",
+          )
+        ).rows,
+      ).toEqual([{ tableName: null }]);
+      const extra = await createFixture("capstone_migration_extra");
+      await createLedger(extra.pool);
+      await extra.pool.query(
+        "INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES ($1, $2)",
+        ["f".repeat(64), second.timestamp],
+      );
+      await expect(migrateDatabase(extra.url)).rejects.toMatchObject({
+        operationalCode: "history-diverged",
+      });
+    } finally {
+      try {
+        await Promise.all(fixturePools.map((pool) => pool.end()));
+      } finally {
+        await administrativePool.end();
+      }
+    }
+  });
+
+  it("rejects product schema without history and incomplete migrated objects", async () => {
+    const administrativePool = new Pool({ connectionString: databaseUrl });
+    const unmanagedName = "capstone_schema_without_history";
+    const incompleteName = "capstone_schema_incomplete";
+    try {
+      await administrativePool.query(`CREATE DATABASE "${unmanagedName}"`);
+      await administrativePool.query(`CREATE DATABASE "${incompleteName}"`);
+    } finally {
+      await administrativePool.end();
+    }
+
+    const unmanagedUrl = databaseUrlFor(databaseUrl, unmanagedName);
+    const unmanagedPool = new Pool({ connectionString: unmanagedUrl });
+    try {
+      await unmanagedPool.query(
+        "CREATE TABLE public.manual_product_table (id integer PRIMARY KEY)",
+      );
+      await expect(migrateDatabase(unmanagedUrl)).rejects.toMatchObject({
+        operationalCode: "schema-without-history",
+      });
+      expect(
+        (
+          await unmanagedPool.query(
+            "SELECT count(*)::integer AS count FROM public.manual_product_table",
+          )
+        ).rows,
+      ).toEqual([{ count: 0 }]);
+    } finally {
+      await unmanagedPool.end();
+    }
+
+    const incompleteUrl = databaseUrlFor(databaseUrl, incompleteName);
+    await migrateDatabase(incompleteUrl);
+    const incompletePool = new Pool({ connectionString: incompleteUrl });
+    try {
+      await incompletePool.query("DROP INDEX public.generations_conversation_idx");
+      await expect(migrateDatabase(incompleteUrl)).rejects.toMatchObject({
+        migrationObjectCount: 1,
+        migrationObjectKind: "index",
+        migrationObjectName: "generations_conversation_idx",
+        operationalCode: "schema-incomplete",
+      });
+      await incompletePool.query(`
+        CREATE INDEX generations_conversation_idx
+        ON public.generations USING btree (conversation_id)
+        WHERE conversation_id IS NOT NULL;
+        ALTER TABLE public.generations DROP CONSTRAINT generations_system_prompt_version_check;
+        ALTER TABLE public.generations ADD CONSTRAINT generations_system_prompt_version_check
+          CHECK (behavior_contract_version IN (1, 2));
+      `);
+      await expect(migrateDatabase(incompleteUrl)).rejects.toMatchObject({
+        migrationObjectCount: 1,
+        migrationObjectKind: "constraint",
+        migrationObjectName: "generations_system_prompt_version_check",
+        operationalCode: "schema-incomplete",
+      });
+    } finally {
+      await incompletePool.end();
     }
   });
 

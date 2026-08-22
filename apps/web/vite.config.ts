@@ -8,7 +8,7 @@ const brandIcons = fileURLToPath(new URL("../../packages/brand/assets/icons", im
 const bundleEvidenceFile = ".vite/capstone-bundle-evidence.json";
 
 function readPort(value: string | undefined, fallback: number, name: string): number {
-  const port = Number(value ?? fallback);
+  const port = Number(value?.trim() || fallback);
 
   if (!Number.isInteger(port) || port < 1 || port > 65_535) {
     throw new Error(`${name} must be an integer from 1 to 65535`);
@@ -89,7 +89,7 @@ export function createViteConfig(environment: ViteEnvironment): UserConfig {
     plugins: [react(), bundleEvidencePlugin()],
     publicDir: brandIcons,
     server: {
-      host: "localhost",
+      host: "127.0.0.1",
       port: readPort(environment.CAPSTONE_WEB_PORT, 5173, "CAPSTONE_WEB_PORT"),
       strictPort: true,
       proxy: {

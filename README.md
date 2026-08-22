@@ -25,54 +25,48 @@ Requirements:
 - Corepack and pnpm 11.20.0
 - Docker with Docker Compose
 
-Install dependencies and start PostgreSQL:
+Install dependencies, then start the complete deterministic fake environment:
 
 ```sh
 corepack enable
 pnpm install --frozen-lockfile
-docker compose up -d --wait postgres
-```
-
-Development has safe local defaults, so `.env` is optional. [`.env.example`](./.env.example) lists
-the supported overrides. Never reuse its synthetic auth secret or any development credential in a
-hosted environment.
-
-Apply migrations and initialize the local workspace explicitly:
-
-```sh
-pnpm db:migrate
-pnpm identity:bootstrap \
-  --workspace capstone \
-  --name "Capstone" \
-  --email admin@example.test
-pnpm model-policy:bootstrap \
-  --mode simulated \
-  --workspace capstone \
-  --monthly-budget-usd 100 \
-  --fast-max-output 4096 \
-  --balanced-max-output 8192 \
-  --pro-max-output 16384 \
-  --employee-generation-limit 2 \
-  --reservation-margin-bps 2000
 pnpm dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173). Vite proxies `/api` to Fastify at
-`http://127.0.0.1:3000`. Development uses a deterministic zero-cost model and a process-local fake
-mailbox at [http://localhost:5173/api/dev/mailbox](http://localhost:5173/api/dev/mailbox). The
-bootstrap result includes a safe `signUpPath`; the mailbox contains subsequent verification and
-password-reset deliveries and is cleared when the API restarts.
+The command starts the shared loopback-only Compose PostgreSQL server, creates a persistent logical
+database isolated by worktree and `fake` profile, verifies and applies migrations, initializes the
+`capstone` workspace and zero-cost simulated model policy, and starts Fastify plus Vite. It prints
+the selected application, `/sign-up`, and fake-mailbox URLs; ports are selected from `3000–3029`
+and `5173–5199` unless `CAPSTONE_API_PORT` or `CAPSTONE_WEB_PORT` is explicit.
 
-Migrations, workspace initialization, model policy, and employee approval are operator actions.
-The API never performs them during startup. Exact bootstrap retries are safe; conflicting inputs
-fail explicitly.
+Development has safe local defaults, so `.env` is optional. [`.env.example`](./.env.example) lists
+the supported overrides. Managed fake development ignores conflicting database, origin, gateway,
+email, provider, recovery, and telemetry values and never makes a provider request. The
+`CAPSTONE_DEV_ADMIN_EMAIL` default is `admin@example.test`; finish account creation through the
+normal sign-up screen. Never reuse the synthetic auth secret or any development credential in a
+hosted environment.
+
+The database persists across runs. If a disposable local profile must be discarded, use the exact
+destructive command; it cannot target the shared default, staging, or production databases:
+
+```sh
+pnpm dev:reset -- --profile fake --confirm-local-data-loss
+```
+
+Managed development rejects `DOCKER_HOST` and remote Docker contexts. Before reset it pins the
+repository Compose file and project and verifies the PostgreSQL image, healthy service, loopback
+publication, server identity, and generated database name.
+
+Migrations and bootstrap remain explicit operator actions performed by the development command
+before server startup. Neither the API nor Vite migrates or initializes on startup. Exact bootstrap
+retries are safe; migration history or schema drift fails closed and prints the profile-scoped reset
+command without repairing or deleting data automatically.
 
 ### Optional OpenRouter development
 
-Real inference is an explicit development opt-in. Use a dedicated key, set
-`MODEL_GATEWAY=openrouter` and `OPENROUTER_API_KEY`, and first verify that OpenRouter data-discount
-logging, input/output observability logging, and broadcast are disabled. Record a fresh UTC
-attestation outside Git:
+Real inference is an explicit, separately isolated development profile. Set only a dedicated
+development `OPENROUTER_API_KEY`, first verify that OpenRouter data-discount logging, input/output
+observability logging, and broadcast are disabled, and record a fresh UTC attestation outside Git:
 
 ```json
 {
@@ -84,17 +78,25 @@ attestation outside Git:
 }
 ```
 
-Bootstrap with `--mode openrouter --privacy-attestation -` and pipe that document through standard
-input. Attestations expire after 30 days and renew through `pnpm model-policy:attest`. See the
+Initialize the independent OpenRouter database with the absolute document path:
+
+```sh
+pnpm dev:openrouter -- --privacy-attestation /absolute/path/openrouter-privacy.json
+```
+
+Later runs use `pnpm dev:openrouter` and verify the stored policy without refreshing the provider
+catalog. Pass a new attestation path to the same command when renewal is required. The fake and
+OpenRouter profiles never share users, policies, catalogs, or conversations. See the
 [provider and budget runbook](./docs/operations/providers-and-budget.md) for the complete provider,
-privacy, and spend boundary. Configuring a key or refreshing model metadata does not request a
-generation.
+privacy, and spend boundary. Configuration and metadata validation do not request a generation.
 
 ## Everyday commands
 
 | Command | Purpose |
 | --- | --- |
-| `pnpm dev` | Build the protocol and run the API and web development servers |
+| `pnpm dev` | Prepare and run the isolated deterministic fake environment |
+| `pnpm dev:openrouter` | Prepare and run the isolated real-inference development profile |
+| `pnpm dev:reset -- …` | Explicitly discard one managed local profile database |
 | `pnpm run ci` | Run checks, audits, types, tests, builds, and the bundle report |
 | `pnpm check` | Run Biome formatting, linting, and import checks |
 | `pnpm typecheck` | Run strict TypeScript checks, including unused-code rejection |
@@ -107,7 +109,7 @@ generation.
 | `pnpm verify:recovery -- <evidence.json>` | Validate content-free PITR/recreation evidence |
 | `pnpm smoke:container -- <image> <full-sha>` | Probe a built image against disposable PostgreSQL |
 | `pnpm test:load -- <image>` | Run deterministic one-CPU/512-MiB built-container capacity evidence |
-| `pnpm db:migrate` | Apply the committed migration history to `DATABASE_URL` |
+| `pnpm db:migrate` | Verify and apply the committed migration history to `DATABASE_URL` |
 
 Use `pnpm run ci`, not `pnpm ci`: the latter is pnpm's clean-install alias. Docker must be running
 for API integration and Playwright tests. Install Playwright's supported browsers once with:
@@ -124,6 +126,7 @@ pnpm --filter @capstone/web exec playwright install chromium firefox webkit
 | `pnpm identity:deactivate …` | Block an employee and revoke sessions |
 | `pnpm model-policy:bootstrap …` | Create simulated or OpenRouter workspace policy |
 | `pnpm model-policy:attest …` | Renew an existing OpenRouter privacy attestation |
+| `pnpm model-policy:verify …` | Verify stored policy compatibility without provider access |
 | `pnpm model-catalog:refresh` | Refresh approved model metadata without inference |
 | `pnpm environment:initialize` | Run the schema-1 latched empty-database initializer |
 | `pnpm identity:invite-initial` | Send the initial hosted owner invitation after acceptance |

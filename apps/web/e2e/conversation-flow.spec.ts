@@ -110,16 +110,39 @@ test("completes the real conversation and model-tier lifecycle through the brows
   // Phase 10: an employee may report a terminal answer; the consented pair goes to administrators
   // and the reported state survives reloads.
   const reportTrigger = page.getByRole("button", { name: copy.conversations.messages.report });
+  await page.setViewportSize({ height: 777, width: 568 });
   await reportTrigger.click();
   const reportDialog = page.getByRole("dialog", { name: copy.conversations.report.title });
   await expect(reportDialog).toBeVisible();
   await expect(reportDialog.getByText(copy.conversations.report.disclosure)).toBeVisible();
-  await reportDialog
-    .getByRole("radio", { name: copy.conversations.report.reasons.outdated })
-    .check();
+  const outdatedReason = reportDialog.getByRole("radio", {
+    name: copy.conversations.report.reasons.outdated,
+  });
+  const dialogGeometry = await reportDialog.evaluate((dialog) => {
+    const bounds = dialog.getBoundingClientRect();
+    return {
+      bottom: bounds.bottom,
+      innerHeight: window.innerHeight,
+      overflowY: getComputedStyle(dialog).overflowY,
+      top: bounds.top,
+    };
+  });
+  expect(dialogGeometry.top).toBeGreaterThanOrEqual(0);
+  expect(dialogGeometry.bottom).toBeLessThanOrEqual(dialogGeometry.innerHeight);
+  expect(dialogGeometry.overflowY).toBe("auto");
+  expect(
+    await outdatedReason.evaluate((radio) => radio.getBoundingClientRect().height),
+  ).toBeLessThanOrEqual(24);
+  await outdatedReason.check();
   await reportDialog.getByLabel(copy.conversations.report.noteLabel).fill("La cifra cambió.");
-  await reportDialog.getByRole("button", { name: copy.conversations.report.submit }).click();
+  const reportSubmit = reportDialog.getByRole("button", {
+    name: copy.conversations.report.submit,
+  });
+  await reportSubmit.scrollIntoViewIfNeeded();
+  await expect(reportSubmit).toBeInViewport();
+  await reportSubmit.click();
   await expect(reportDialog).toBeHidden();
+  await page.setViewportSize({ height: 720, width: 1_280 });
   const reportedTrigger = page.getByRole("button", {
     name: copy.conversations.messages.reported,
   });

@@ -1362,7 +1362,7 @@ select:focus-visible,
 }
 
 .search-input,
-.action-dialog input {
+.action-dialog input:not([type="checkbox"]):not([type="radio"]) {
   width: 100%;
   min-height: 3rem;
   padding: var(--capstone-space-3) var(--capstone-space-4);
@@ -2753,6 +2753,12 @@ select:focus-visible,
 }
 
 /* Phase 10 — answer report dialog */
+.answer-report-dialog {
+  max-block-size: min(85svh, 48rem);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
 .answer-report-reasons {
   margin: 0 0 var(--capstone-space-4);
   padding: 0;

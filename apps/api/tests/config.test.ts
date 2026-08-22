@@ -138,6 +138,15 @@ describe("application configuration", () => {
     }
   });
 
+  it("treats explicitly blank development telemetry as disabled", () => {
+    expect(
+      loadConfig({
+        OTEL_EXPORTER_OTLP_ENDPOINT: "",
+        OTEL_EXPORTER_OTLP_HEADERS: "",
+      }),
+    ).toMatchObject({ otlpEndpoint: null, otlpHeaders: {} });
+  });
+
   it("applies direct verify-full PostgreSQL and hosted runtime policy equally", () => {
     for (const environment of [stagingEnvironment, productionEnvironment]) {
       expect(() =>
@@ -191,6 +200,9 @@ describe("application configuration", () => {
     expect(() =>
       loadConfig({ ...stagingEnvironment, CAPSTONE_STAGING_EMAIL_RECIPIENTS: undefined }),
     ).toThrow("1 to 10");
+    expect(() =>
+      loadConfig({ ...stagingEnvironment, CAPSTONE_STAGING_EMAIL_RECIPIENTS: "" }),
+    ).toThrow("1 to 10");
     for (const recipients of [
       "Administrator@capstone.com.ec",
       " administrator@capstone.com.ec",
@@ -208,6 +220,15 @@ describe("application configuration", () => {
         CAPSTONE_STAGING_EMAIL_RECIPIENTS: "qa@capstone.com.ec",
       }),
     ).toThrow("only in staging");
+    expect(
+      loadConfig({
+        ...productionEnvironment,
+        CAPSTONE_STAGING_EMAIL_RECIPIENTS: "",
+      }).stagingEmailRecipients,
+    ).toEqual([]);
+    expect(loadConfig({ CAPSTONE_STAGING_EMAIL_RECIPIENTS: "" }).stagingEmailRecipients).toEqual(
+      [],
+    );
   });
 
   it.each([

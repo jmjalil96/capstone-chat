@@ -156,18 +156,34 @@ Shared executable TypeScript is limited to transport contracts. The brand packag
 
 **Locked**
 
-- Developers run Fastify and Vite directly through pnpm.
-- Docker Compose runs PostgreSQL only.
-- `pnpm dev` starts the API and web workspace scripts in parallel.
+- Developers run Fastify and Vite directly through pnpm after a repository-local pre-server
+  orchestration step; neither application server owns environment preparation.
+- Docker Compose runs PostgreSQL only. One loopback-only Compose server holds persistent logical
+  databases isolated by absolute worktree path and `fake` or `openrouter` profile.
+- `pnpm dev` starts PostgreSQL when necessary, atomically leases available API and web ports,
+  verifies and applies migrations, idempotently bootstraps local identity and simulated model
+  policy, and then starts the API and web workspace scripts in parallel.
+- `pnpm dev:openrouter` uses a separate logical database, requires a development-only provider key,
+  and requires an explicit privacy attestation before its first policy initialization.
+- Application servers never migrate, initialize, repair, reset, or delete a database on startup.
+  Local data deletion requires the explicit profile-scoped `pnpm dev:reset` confirmation command.
 - Vite proxies `/api` to the local Fastify process.
-- Migrations and the idempotent workspace/administrator bootstrap are explicit scripts.
+- The managed development commands construct database, origin, port, fake-email, and model-profile
+  settings themselves. Low-level migration and bootstrap scripts remain explicit operator tools.
+- Every migration execution first requires the stored ledger to be an exact ordered prefix of the
+  release journal by timestamp and SQL SHA-256 hash, then verifies the complete ledger and an
+  explicit critical-schema contract. This verifier is shared by development, CI, hosted migration
+  jobs, and recovery final verification; recovery alone retains its approved pre-verification
+  reconstruction of restored provider-managed objects.
 - A committed `.env.example` documents optional development overrides without containing secrets;
-  the hosted contract defines required deployment variables.
+  managed development deliberately overrides safety-critical local settings, while the hosted
+  contract defines required deployment variables.
 - `FakeModelGateway` is the default local model implementation.
 - Real OpenRouter calls require an explicit development key and opt-in setting.
 - Tests use isolated Testcontainers PostgreSQL instances and never the developer database.
 - The API container build is production-focused and is not part of the ordinary edit-refresh loop.
-- Seed data contains only one workspace, an approved administrator email, and curated model placeholders.
+- Bootstrap data contains only the `capstone` workspace, its approved administrator email, and the
+  existing curated simulated policy; employees still register through the normal sign-up flow.
 
 ## Configuration boundary
 

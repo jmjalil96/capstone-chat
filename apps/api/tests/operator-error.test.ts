@@ -36,4 +36,35 @@ describe("operationalErrorMetadata", () => {
     });
     expect(JSON.stringify(metadata)).not.toContain("private draft text");
   });
+
+  it("allows a bounded operational code without exposing migration details", () => {
+    const migrationError = Object.assign(new Error("schema contained an employee identifier"), {
+      migrationObjectCount: 2,
+      migrationObjectKind: "index",
+      migrationObjectName: "generations_conversation_idx",
+      operationalCode: "history-diverged",
+    });
+
+    expect(operationalErrorMetadata(migrationError)).toEqual({
+      errorName: "Error",
+      migrationObjectCount: "2",
+      migrationObjectKind: "index",
+      migrationObjectName: "generations_conversation_idx",
+      operationalCode: "history-diverged",
+    });
+    expect(
+      operationalErrorMetadata(
+        Object.assign(new Error("private"), { operationalCode: "invalid code with details" }),
+      ),
+    ).toEqual({ errorName: "Error" });
+    expect(
+      operationalErrorMetadata(
+        Object.assign(new Error("private"), {
+          migrationObjectCount: 1,
+          migrationObjectKind: "table",
+          migrationObjectName: "private employee name",
+        }),
+      ),
+    ).toEqual({ errorName: "Error" });
+  });
 });

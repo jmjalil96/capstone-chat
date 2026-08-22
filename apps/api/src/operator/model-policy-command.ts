@@ -22,7 +22,7 @@ import { parsePrivacyAttestationDocument } from "./model-policy-input.js";
 import { loadApprovedOpenRouterCatalog } from "./openrouter-bootstrap-catalog.js";
 import { readBoundedStdinDocument } from "./stdin-document.js";
 
-type Command = "attest" | "bootstrap" | "refresh";
+type Command = "attest" | "bootstrap" | "refresh" | "verify";
 
 const bootstrapArguments = new Set([
   "--balanced-max-output",
@@ -36,6 +36,7 @@ const bootstrapArguments = new Set([
   "--workspace",
 ]);
 const attestationArguments = new Set(["--privacy-attestation", "--workspace"]);
+const verificationArguments = new Set(["--mode"]);
 
 function integerArgument(
   argumentsMap: ReadonlyMap<string, string>,
@@ -73,8 +74,13 @@ function outputLimits(
 
 async function run(): Promise<void> {
   const command = process.argv[2] as Command | undefined;
-  if (command !== "attest" && command !== "bootstrap" && command !== "refresh") {
-    throw new Error("Command must be attest, bootstrap, or refresh");
+  if (
+    command !== "attest" &&
+    command !== "bootstrap" &&
+    command !== "refresh" &&
+    command !== "verify"
+  ) {
+    throw new Error("Command must be attest, bootstrap, refresh, or verify");
   }
   const argumentsMap = parseOperatorArguments(process.argv.slice(3));
   rejectUnknownOperatorArguments(
@@ -83,7 +89,9 @@ async function run(): Promise<void> {
       ? bootstrapArguments
       : command === "attest"
         ? attestationArguments
-        : new Set(),
+        : command === "verify"
+          ? verificationArguments
+          : new Set(),
   );
   const config = loadDatabaseConfig();
   const pool = createDatabasePool(config.databaseUrl);
@@ -158,6 +166,16 @@ async function run(): Promise<void> {
       process.stdout.write(
         `${JSON.stringify({ command, mode, repeated: result.repeated, workspace: workspaceIdentity })}\n`,
       );
+      return;
+    }
+
+    if (command === "verify") {
+      const mode = requiredOperatorArgument(argumentsMap, "--mode");
+      if (mode !== "simulated" && mode !== "openrouter") {
+        throw new Error("--mode must be simulated or openrouter");
+      }
+      await service.assertRuntimeMode(mode);
+      process.stdout.write(`${JSON.stringify({ command, mode, outcome: "compatible" })}\n`);
       return;
     }
 

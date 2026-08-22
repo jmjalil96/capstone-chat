@@ -109,7 +109,9 @@ Texto con **énfasis** y [fuente](https://example.com/informe).
         "Campo\tValor\nTotal\t42",
       ].join("\n\n"),
     );
-    expect(await screen.findByRole("status")).toHaveTextContent(copy.conversations.messages.copied);
+    const status = await screen.findByRole("status");
+    expect(status).toHaveTextContent(copy.conversations.messages.copied);
+    expect(status).toHaveClass("visually-hidden");
   });
 
   it("falls back to readable plain text only when rich capability is absent", async () => {

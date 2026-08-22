@@ -13,6 +13,7 @@ type TableCopyState = "failure" | "idle" | "pending" | "success";
 interface HandoffFeedback {
   readonly kind: "error" | "status";
   readonly message: string;
+  readonly visuallyHidden?: boolean;
 }
 
 interface AnswerHandoffActionsProps {
@@ -85,7 +86,11 @@ export function AnswerHandoffActions({
       if (!renderedRoot) {
         await writeClipboardText(source);
         setPrimaryState("markdown");
-        setFeedback({ kind: "status", message: copy.conversations.messages.markdownCopied });
+        setFeedback({
+          kind: "status",
+          message: copy.conversations.messages.markdownCopied,
+          visuallyHidden: true,
+        });
         return;
       }
       const snapshot = createAnswerHandoffSnapshot(renderedRoot);
@@ -97,6 +102,7 @@ export function AnswerHandoffActions({
           result === "rich"
             ? copy.conversations.messages.copied
             : copy.conversations.messages.copiedPlain,
+        visuallyHidden: true,
       });
     } catch {
       setPrimaryState("idle");
@@ -252,7 +258,7 @@ export function AnswerHandoffActions({
       </div>
       {feedback ? (
         <span
-          className="answer-handoff-feedback"
+          className={`answer-handoff-feedback${feedback.visuallyHidden ? " visually-hidden" : ""}`}
           role={feedback.kind === "error" ? "alert" : "status"}
         >
           {feedback.message}

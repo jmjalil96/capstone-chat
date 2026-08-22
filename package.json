@@ -9,9 +9,11 @@
     "pnpm": "11.20.0"
   },
   "scripts": {
-    "dev": "pnpm --filter @capstone/protocol build && pnpm --parallel --filter @capstone/api --filter @capstone/web run dev",
+    "dev": "node scripts/development.mjs fake",
+    "dev:openrouter": "node scripts/development.mjs openrouter",
+    "dev:reset": "node scripts/development.mjs reset",
     "build": "pnpm --filter @capstone/protocol build && pnpm --filter @capstone/api build && pnpm --filter @capstone/web build",
-    "test": "pnpm --filter @capstone/protocol build && pnpm --filter @capstone/protocol test && pnpm --filter @capstone/api test && pnpm --filter @capstone/web test",
+    "test": "node --test scripts/development.test.mjs && pnpm --filter @capstone/protocol build && pnpm --filter @capstone/protocol test && pnpm --filter @capstone/api test && pnpm --filter @capstone/web test",
     "test:e2e": "pnpm --filter @capstone/protocol build && pnpm --filter @capstone/web test:e2e",
     "test:load": "pnpm --filter @capstone/protocol build && node scripts/container-load.mjs",
     "typecheck": "pnpm --filter @capstone/protocol typecheck && pnpm --filter @capstone/api typecheck && pnpm --filter @capstone/web typecheck",
@@ -28,6 +30,7 @@
     "model-catalog:refresh": "pnpm --filter @capstone/api model-catalog:refresh",
     "model-policy:attest": "pnpm --filter @capstone/api model-policy:attest",
     "model-policy:bootstrap": "pnpm --filter @capstone/api model-policy:bootstrap",
+    "model-policy:verify": "pnpm --filter @capstone/api model-policy:verify",
     "environment:initialize": "pnpm --filter @capstone/api environment:initialize",
     "recovery:prepare": "pnpm --filter @capstone/api recovery:prepare",
     "report:bundle": "node scripts/bundle-report.mjs",
